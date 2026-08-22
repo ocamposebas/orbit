@@ -55,5 +55,5 @@ export function apiError(error: unknown) {
   if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status });
   if (error instanceof ZodError) return NextResponse.json({ error: "Invalid request", fields: error.flatten().fieldErrors }, { status: 400 });
   console.error(error);
-  return NextResponse.json({ error: error instanceof Error ? error.message : "Unexpected server error" }, { status: 500 });
+  return NextResponse.json({ error: "Unexpected server error" }, { status: 500 });
 }

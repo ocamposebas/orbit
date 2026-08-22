@@ -99,7 +99,6 @@ model Merchant {
   products              Product[]
   scans                 Scan[]
   stripeConnect         StripeConnectIntegration?
-  stripeEvents          StripeConnectEvent[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
