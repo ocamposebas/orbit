@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { getDatabase } from "@/sentinel/db";
-import { apiError, HttpError, requireRole } from "@/sentinel/http";
+import { apiError, HttpError, requireMerchantAccess, requireRole } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 
 const reviewSchema = z.object({ decision: z.enum(["CONFIRM", "FALSE_POSITIVE", "ACCEPT_RISK", "RESOLVE", "REOPEN", "IGNORE", "NOTE"]), note: z.string().trim().max(2_000).optional() });
@@ -15,6 +15,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const input = reviewSchema.parse(await request.json());
     const finding = await getDatabase().finding.findFirst({ where: { id: findingId, organizationId: organization.id } });
     if (!finding) throw new HttpError(404, "Finding not found");
+    await requireMerchantAccess(request, finding.merchantId, { allowedRoles: ["OWNER", "ADMIN", "ANALYST", "REVIEWER"], mutation: true });
     const nextStatus = statusByDecision[input.decision];
     const updated = await getDatabase().$transaction(async (tx) => {
       await tx.findingReview.create({ data: { findingId, decision: input.decision, note: input.note } });

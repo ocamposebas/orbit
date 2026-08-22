@@ -24,7 +24,7 @@ worker     worker       worker
          PostgreSQL
 ```
 
-Heavy browser work is isolated in persistent workers. Web routes create records, validate tenant access, enqueue jobs and read state; they never launch Chromium.
+Heavy scan-browser work is isolated in persistent workers. The web service uses Chromium only for authenticated, on-demand PDF report rendering.
 
 ## Implemented capabilities
 
@@ -46,6 +46,7 @@ Heavy browser work is isolated in persistent workers. Web routes create records,
 - explainable weighted ORBIT Health score and component deductions;
 - BullMQ retry/backoff, dead-letter jobs and worker heartbeats;
 - Watchtower, merchant dashboard, findings, products, policies, Evidence Vault, scan history and live progress;
+- merchant-scoped client accounts and authenticated, print-ready PDF reports;
 - database and Redis health endpoints;
 - real local HTTP fixture crawl in the automated test suite.
 
@@ -71,7 +72,7 @@ npm run workers
 
 Open `http://localhost:3000/sentinel`. The seed is visibly marked as a demo workspace and uses only an intentionally invalid demonstration domain. Add a merchant with a publicly reachable HTTP or HTTPS URL to run a real scan.
 
-The seeded owner signs in at `/login` with `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD`. If no password is configured in local development, the seed uses `orbit-demo-change-me`; change it before allowing network access. Owners and administrators can add users from **Users & roles**. `VIEWER` is the read-only user role.
+The seeded owner signs in at `/login` with `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD`. If no password is configured in local development, the seed uses `orbit-demo-change-me`; change it before allowing network access. Owners and administrators can add users from **Users & access**. `VIEWER` is a read-only client role and must be assigned to at least one merchant.
 
 Docker can run the worker group too:
 
@@ -162,7 +163,7 @@ Findings are fingerprinted by rule, URL and evidence-bearing text. A repeated si
 - DNS is resolved before requests and every browser resource/navigation is revalidated;
 - redirects, response size, depth, page count, concurrency and navigation time are bounded;
 - only public pages are rendered; there is no authentication, CAPTCHA or anti-bot bypass;
-- all data queries include organization scope;
+- all data queries include organization scope, and client roles are additionally constrained by explicit merchant grants;
 - login passwords use salted scrypt hashes and session cookies are `HttpOnly`, `SameSite=Lax` and `Secure` in production;
 - raw session tokens never enter the database; only SHA-256 token hashes are stored;
 - mutations require an allowed membership role;
@@ -211,7 +212,7 @@ npx prisma migrate deploy
 npm run db:seed
 ```
 
-Open `/login`. The seeded account is the workspace owner. It can add administrators, analysts, reviewers and read-only users from **Users & roles**. Every user can rotate their own password from **Profile & security**. Keep `ORBIT_DEMO_MODE=false` for a real workspace.
+Open `/login`. The seeded account is the workspace owner. It can add administrators, analysts, reviewers and merchant-scoped client users from **Users & access**. A client with one assignment lands directly on that merchant report and can download the authenticated PDF. Every user can rotate their own password from **Profile & security**. Keep `ORBIT_DEMO_MODE=false` for a real workspace.
 
 For an initial VPS deployment, install Docker and run the PostgreSQL/Redis services plus the `workers` profile. The development Compose file binds database ports only to `127.0.0.1`; do not publish ports `5432` or `6379` to the internet. Put the web app behind HTTPS, replace every development credential, restrict firewall ingress, configure encrypted database backups and monitor disk usage for evidence retention. A managed PostgreSQL service is preferable once the system holds operational data.
 
