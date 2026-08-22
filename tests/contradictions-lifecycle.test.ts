@@ -4,6 +4,7 @@ import { evaluateContradictions } from "@/sentinel/analysis/contradictions";
 import { findingsToResolve } from "@/sentinel/analysis/lifecycle";
 import { analyzeClaim, LocalSemanticAnalyzer } from "@/sentinel/analysis/semantic";
 import { evaluatePage } from "@/sentinel/analysis/rules";
+import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
 
 function page(url: string, type: "HOME" | "PRODUCT", body: string) { return { url, pageType: type, content: extractNormalizedContent(`<main><h1>Page</h1><p>${body}</p></main>`, url) }; }
 
@@ -14,13 +15,45 @@ describe("cross-page contradictions and finding lifecycle", () => {
     expect(analyzeClaim("Do not consume. Not for human use.").consumerDirected).toBe(false);
     const directUsePage = page("https://example.test/product", "PRODUCT", "Take one capsule twice daily for personal use.");
     const findings = await evaluatePage(directUsePage, new LocalSemanticAnalyzer());
-    expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "RSRCH-ADMIN-001", severity: "HIGH" })]));
+    expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "RSRCH-ADMIN-001", severity: "CRITICAL" })]));
   });
   it("flags consumer-directed language embedded in a public URL slug", async () => {
     const url = "https://example.test/products/alpha-weight-loss-dosage";
     const content = extractNormalizedContent("<main><h1>Alpha reference</h1><p>Laboratory research material only.</p></main>", url);
     const findings = await evaluatePage({ url, pageType: "PRODUCT", content }, new LocalSemanticAnalyzer());
-    expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "MKT-SLUG-001", severity: "HIGH" })]));
+    expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "MKT-SLUG-001", severity: "MEDIUM" })]));
+  });
+  it("treats an explicit prohibition on human consumption as research context", () => {
+    const text = "No product is offered, intended, or permitted for human consumption or for any personal or non-research purpose.";
+    expect(analyzeClaim(text)).toEqual(expect.objectContaining({ classification: "neutral", consumerDirected: false, risk: "none", signalType: "RESEARCH_RESTRICTION" }));
+  });
+  it("does not build a contradiction from the prohibited activity inside a research policy", () => {
+    const research = page("https://example.test/", "HOME", "All materials are strictly for laboratory research.");
+    const policy = page("https://example.test/policies", "HOME", "No product is offered, intended, or permitted for human consumption or for any personal or non-research purpose.");
+    expect(evaluateContradictions([research, policy]).some((finding) => finding.ruleKey === "POSITION-CONFLICT-001")).toBe(false);
+  });
+  it("pairs separate primary and research-positioning evidence for a real contradiction", () => {
+    const research = page("https://example.test/policies", "HOME", "No product is intended or permitted for human consumption.");
+    const product = page("https://example.test/product", "PRODUCT", "Inject 2mg weekly to lose weight.");
+    const finding = evaluateContradictions([research, product]).find((item) => item.ruleKey === "POSITION-CONFLICT-001");
+    expect(finding).toEqual(expect.objectContaining({ severity: "CRITICAL", detectedText: "Inject 2mg weekly to lose weight.", secondaryEvidence: expect.objectContaining({ url: research.url, role: "research-positioning" }) }));
+  });
+  it.each([
+    ["Investigated in preclinical receptor-binding models.", "SCIENTIFIC_DISCUSSION", false],
+    ["Inject 2mg weekly to lose weight.", "HUMAN_ADMINISTRATION", true],
+    ["Reconstitute with 2ml and administer once weekly.", "HUMAN_ADMINISTRATION", true],
+    ["Treats diabetes and prevents cardiovascular disease.", "MEDICAL_CLAIM", true],
+    ["I lost weight and my energy improved in 3 weeks.", "HUMAN_TESTIMONIAL", true],
+    ["Before and after body transformation photos.", "BEFORE_AFTER_OUTCOME", true],
+    ["Available to pharmacy partners.", "PRESCRIPTION_SIGNAL", false],
+    ["This analytical reference is supplied with bacteriostatic water.", "SCIENTIFIC_DISCUSSION", false],
+    ["Injection", "AMBIGUOUS", false],
+    ["No content on this website shall be interpreted as medical advice, dosage guidance, treatment guidance, or a recommendation for any non-research use.", "RESEARCH_RESTRICTION", false],
+    ["Products are not intended to diagnose, treat, cure, mitigate, or prevent any disease or condition.", "RESEARCH_RESTRICTION", false],
+    ["We improve website performance and maintain account functionality.", "NONE", false],
+    ["Not intended for human use, but inject 2mg weekly.", "HUMAN_ADMINISTRATION", true],
+  ])("classifies contextual text without raw keyword conclusions: %s", (text, type, material) => {
+    expect(analyzeContext(text)).toEqual(expect.objectContaining({ type, material }));
   });
   it("does not report concentration mismatch when all concentrations are declared variants", () => {
     const url = "https://example.test/products/alpha";
@@ -31,6 +64,11 @@ describe("cross-page contradictions and finding lifecycle", () => {
     const url = "https://example.test/products/alpha";
     const content = extractNormalizedContent(`<main><h1>Reference Alpha 5mg</h1><p>This vial contains 10mg of research material.</p></main>`, url);
     expect(evaluateContradictions([{ url, pageType: "PRODUCT", content }])).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "PRODUCT-CONCENTRATION-001", severity: "MEDIUM" })]));
+  });
+  it("does not compare product mass with an unrelated liquid volume", () => {
+    const url = "https://example.test/products/alpha";
+    const content = extractNormalizedContent(`<main><h1>Reference Alpha 20mg</h1><p>Laboratory preparation may use a 2ml vial.</p></main>`, url);
+    expect(evaluateContradictions([{ url, pageType: "PRODUCT", content }]).some((finding) => finding.ruleKey === "PRODUCT-CONCENTRATION-001")).toBe(false);
   });
   it("resolves only signals absent from the new complete scan", () => { const active = [{ id: "keep", fingerprint: "a" }, { id: "resolve", fingerprint: "b" }]; expect(findingsToResolve(active, new Set(["a"]))).toEqual([{ id: "resolve", fingerprint: "b" }]); });
 });

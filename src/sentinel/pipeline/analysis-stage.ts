@@ -10,6 +10,8 @@ import { getDatabase } from "@/sentinel/db";
 import { queues } from "@/sentinel/queue";
 import { advanceScanStatus, updateProgress } from "@/sentinel/services/progress";
 import { detectPolicySignals, type PolicySignalType } from "@/sentinel/classification/policy-signals";
+import { buildProductIntelligence } from "@/sentinel/analysis/product-intelligence";
+import { evaluateWebsiteLegitimacy } from "@/sentinel/analysis/legitimacy";
 
 export async function runAnalysisStage(scanId: string) {
   const db = getDatabase();
@@ -32,7 +34,15 @@ export async function runAnalysisStage(scanId: string) {
     const processed = Math.min(offset + batch.length, pagesForDeepAnalysis.length);
     await updateProgress(scanId, { stage: "analyzing", message: `Evaluating page context (${processed}/${pagesForDeepAnalysis.length})`, stageProcessed: processed, stageTotal: pagesForDeepAnalysis.length });
   }
-  const candidates = [...pageFindingGroups.flat(), ...evaluateSiteCoverage(pages), ...evaluateContradictions(pages)];
+  const rawCandidates = [...pageFindingGroups.flat(), ...evaluateSiteCoverage(pages), ...evaluateWebsiteLegitimacy(pages), ...evaluateContradictions(pages)];
+  const severityRank = { INFO: 0, LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 } as const;
+  const candidateByRuleAndPage = new Map<string, CandidateFinding>();
+  for (const candidate of rawCandidates) {
+    const key = `${candidate.ruleKey}|${candidate.url}`;
+    const current = candidateByRuleAndPage.get(key);
+    if (!current || severityRank[candidate.severity] > severityRank[current.severity] || (candidate.severity === current.severity && candidate.confidence > current.confidence)) candidateByRuleAndPage.set(key, candidate);
+  }
+  const candidates = [...candidateByRuleAndPage.values()];
   const storedRuleVersions = await db.ruleVersion.findMany({ where: { version: 1, rule: { key: { in: [...new Set(candidates.map((candidate) => candidate.ruleKey))] } } }, include: { rule: { select: { key: true } } } });
   const ruleVersionByKey = new Map(storedRuleVersions.map((version) => [version.rule.key, version]));
 
@@ -41,9 +51,11 @@ export async function runAnalysisStage(scanId: string) {
   for (const page of pages) {
     if (page.httpStatus !== undefined && page.httpStatus >= 400) continue;
     if (page.pageType === "PRODUCT" && page.content.productName) {
+      const intelligence = buildProductIntelligence(page.content, page.url, scan.merchant.businessName);
       const numericPrice = page.content.prices[0]?.replace(/[^\d.,]/g, "").replace(",", ".");
       const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl: page.url } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl: page.url, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers } });
-      const productSnapshotData = { data: page.content as unknown as Prisma.InputJsonValue, hash: contentHash(page.content) };
+      const productSnapshotPayload = { content: page.content, intelligence };
+      const productSnapshotData = { data: productSnapshotPayload as unknown as Prisma.InputJsonValue, hash: contentHash(productSnapshotPayload) };
       const existingProductSnapshot = await db.productSnapshot.findFirst({ where: { productId: product.id, scanId }, select: { id: true } });
       if (existingProductSnapshot) await db.productSnapshot.update({ where: { id: existingProductSnapshot.id }, data: productSnapshotData });
       else await db.productSnapshot.create({ data: { productId: product.id, scanId, ...productSnapshotData } });
@@ -62,6 +74,12 @@ export async function runAnalysisStage(scanId: string) {
     }
   }
   const policiesDetected = presentPolicyTypes.size;
+  const productsDiscovered = pages.filter((page) => page.pageType === "PRODUCT").length;
+  const variantsScanned = pages.reduce((sum, page) => sum + (page.pageType === "PRODUCT" ? page.content.variants.length : 0), 0);
+  const imagesAnalyzed = pages.reduce((sum, page) => sum + page.content.images.length, 0);
+  const certificatesDiscovered = new Set(pages.flatMap((page) => page.content.certificateLinks)).size;
+  const checkoutFlowsInspected = pages.filter((page) => page.pageType === "CART" || page.pageType === "CHECKOUT").length;
+  const scanCoveragePercent = Math.min(100, Math.round((pages.length / Math.max(scan.pagesDiscovered, pages.length, 1)) * 100));
   const expectedPolicyTypes = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
   for (const type of expectedPolicyTypes) if (!presentPolicyTypes.has(type)) await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type } }, update: { coverage: "MISSING", url: null }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type, coverage: "MISSING" } });
 
@@ -84,14 +102,22 @@ export async function runAnalysisStage(scanId: string) {
     const fingerprint = contentHash(`${candidate.ruleKey}|${candidate.url}|${candidate.detectedText ?? candidate.title}`);
     fingerprints.add(fingerprint);
     const existing = await db.finding.findFirst({ where: { merchantId: scan.merchantId, fingerprint, status: { notIn: ["RESOLVED", "FALSE_POSITIVE", "IGNORED"] } }, orderBy: { firstDetectedAt: "asc" } });
-    const finding = existing ? await db.finding.update({ where: { id: existing.id }, data: { scanId, ruleVersionId: ruleVersion?.id, severity: candidate.severity, confidence: candidate.confidence, status: candidate.status, lastDetectedAt: new Date(), description: candidate.description, reason: candidate.reason, recommendedAction: candidate.recommendedAction } }) : await db.finding.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, siteId: scan.siteId, scanId, ruleVersionId: ruleVersion?.id, severity: candidate.severity, confidence: candidate.confidence, status: candidate.status, category: candidate.category, title: candidate.title, description: candidate.description, url: candidate.url, pageType: candidate.pageType, detectedText: candidate.detectedText, reason: candidate.reason, recommendedAction: candidate.recommendedAction, fingerprint } });
+    const finding = existing ? await db.finding.update({ where: { id: existing.id }, data: { scanId, ruleVersionId: ruleVersion?.id, severity: candidate.severity, confidence: candidate.confidence, status: candidate.status, category: candidate.category, title: candidate.title, url: candidate.url, pageType: candidate.pageType, detectedText: candidate.detectedText, lastDetectedAt: new Date(), description: candidate.description, reason: candidate.reason, recommendedAction: candidate.recommendedAction } }) : await db.finding.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, siteId: scan.siteId, scanId, ruleVersionId: ruleVersion?.id, severity: candidate.severity, confidence: candidate.confidence, status: candidate.status, category: candidate.category, title: candidate.title, description: candidate.description, url: candidate.url, pageType: candidate.pageType, detectedText: candidate.detectedText, reason: candidate.reason, recommendedAction: candidate.recommendedAction, fingerprint } });
     if (!existing) findingsCreated++;
     const sourcePage = pages.find((page) => page.url === candidate.url);
     const pageHash = sourcePage ? contentHash(sourcePage.content) : fingerprint;
-    const evidenceData = { snapshotId: sourcePage?.snapshotId, pageUrl: candidate.url, normalizedText: candidate.detectedText, evidenceSnippet: candidate.detectedText, pageHash, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion: analyzer.model, classificationConfidence: candidate.confidence, metadata: { ruleKey: candidate.ruleKey } };
-    const existingEvidence = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: "TEXT", pageHash, modelVersion: analyzer.model }, select: { id: true } });
+    const evidenceData = { snapshotId: sourcePage?.snapshotId, pageUrl: candidate.url, normalizedText: candidate.detectedText, evidenceSnippet: candidate.detectedText, pageHash, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion: analyzer.model, classificationConfidence: candidate.confidence, metadata: { ruleKey: candidate.ruleKey, role: "primary", affectedUrls: candidate.affectedUrls ?? [] } };
+    const existingEvidence = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: "TEXT", pageHash, modelVersion: analyzer.model, normalizedText: candidate.detectedText ?? null }, select: { id: true } });
     if (existingEvidence) await db.findingEvidence.update({ where: { id: existingEvidence.id }, data: evidenceData });
     else await db.findingEvidence.create({ data: { findingId: finding.id, kind: "TEXT", ...evidenceData } });
+    if (candidate.secondaryEvidence) {
+      const secondaryPage = pages.find((page) => page.url === candidate.secondaryEvidence!.url);
+      const secondaryHash = secondaryPage ? contentHash(secondaryPage.content) : contentHash(candidate.secondaryEvidence.text);
+      const secondaryData = { snapshotId: secondaryPage?.snapshotId, pageUrl: candidate.secondaryEvidence.url, normalizedText: candidate.secondaryEvidence.text, evidenceSnippet: candidate.secondaryEvidence.text, pageHash: secondaryHash, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion: analyzer.model, classificationConfidence: candidate.confidence, metadata: { ruleKey: candidate.ruleKey, role: candidate.secondaryEvidence.role } };
+      const existingSecondary = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: "TEXT", pageHash: secondaryHash, modelVersion: analyzer.model, normalizedText: candidate.secondaryEvidence.text }, select: { id: true } });
+      if (existingSecondary) await db.findingEvidence.update({ where: { id: existingSecondary.id }, data: secondaryData });
+      else await db.findingEvidence.create({ data: { findingId: finding.id, kind: "TEXT", ...secondaryData } });
+    }
     if (candidate.severity === "HIGH" || candidate.severity === "CRITICAL") evidenceJobs.push(finding.id);
   }
 
@@ -104,7 +130,7 @@ export async function runAnalysisStage(scanId: string) {
     if (toResolve.length) { const result = await db.finding.updateMany({ where: { id: { in: toResolve.map((item) => item.id) } }, data: { status: "RESOLVED", resolvedAt: new Date(), resolvedByScanId: scanId } }); findingsResolved = result.count; }
   }
 
-  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
+  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesAnalyzed, certificatesDiscovered, certificatesAnalyzed: 0, checkoutFlowsInspected, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
   await advanceScanStatus(scanId, "SCORING");
   const score = calculateHealthScore([...candidates, ...retainedForScore]);
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });

@@ -8,7 +8,7 @@ const stageOrder: ScanProgress["stage"][] = ["queued", "discovering", "crawling"
 const statusOrder: ScanStatus[] = ["QUEUED", "DISCOVERING", "CRAWLING", "CLASSIFYING", "ANALYZING", "EVIDENCE", "SCORING", "COMPLETED"];
 
 export function initialProgress(): ScanProgress {
-  return { pipelineVersion, stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
+  return { pipelineVersion, stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, productsDiscovered: 0, productsScanned: 0, variantsScanned: 0, imagesAnalyzed: 0, certificatesDiscovered: 0, certificatesAnalyzed: 0, checkoutFlowsInspected: 0, scanCoveragePercent: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
 }
 
 export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<ScanProgress>, updatedAt = new Date().toISOString()): ScanProgress {
@@ -26,6 +26,14 @@ export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<Sca
     pagesProcessed: Math.max(current.pagesProcessed ?? 0, patch.pagesProcessed ?? 0),
     pagesTotal: Math.max(current.pagesTotal ?? 0, patch.pagesTotal ?? 0),
     productsDetected: Math.max(current.productsDetected ?? 0, patch.productsDetected ?? 0),
+    productsDiscovered: Math.max(current.productsDiscovered ?? 0, patch.productsDiscovered ?? 0),
+    productsScanned: Math.max(current.productsScanned ?? 0, patch.productsScanned ?? 0),
+    variantsScanned: Math.max(current.variantsScanned ?? 0, patch.variantsScanned ?? 0),
+    imagesAnalyzed: Math.max(current.imagesAnalyzed ?? 0, patch.imagesAnalyzed ?? 0),
+    certificatesDiscovered: Math.max(current.certificatesDiscovered ?? 0, patch.certificatesDiscovered ?? 0),
+    certificatesAnalyzed: Math.max(current.certificatesAnalyzed ?? 0, patch.certificatesAnalyzed ?? 0),
+    checkoutFlowsInspected: Math.max(current.checkoutFlowsInspected ?? 0, patch.checkoutFlowsInspected ?? 0),
+    scanCoveragePercent: Math.max(current.scanCoveragePercent ?? 0, patch.scanCoveragePercent ?? 0),
     policiesDetected: Math.max(current.policiesDetected ?? 0, patch.policiesDetected ?? 0),
     claimsInspected: Math.max(current.claimsInspected ?? 0, patch.claimsInspected ?? 0),
     findings: Math.max(current.findings ?? 0, patch.findings ?? 0),

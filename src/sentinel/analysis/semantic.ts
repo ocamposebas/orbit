@@ -1,27 +1,20 @@
 import { semanticResultSchema, type SemanticResult } from "@/sentinel/types";
 import { contentHash } from "@/sentinel/extraction/normalize";
 import { getDatabase } from "@/sentinel/db";
+import { analyzeContext } from "./contextual-signals";
 
-const consumerOutcome = /\b(weight loss|fat loss|burn(?:s|ing)? fat|boosts? metabolism|suppress(?:es)? appetite|anti-aging|muscle growth|body transformation|treat(?:s|ment)?|cure[sd]?|heal(?:s|ing)?|improves? (?:sleep|mood|energy|focus)|relieves? (?:pain|anxiety|symptoms?))\b/i;
-const administration = /\b(inject(?:ion|ed)?|dosage|dose|consume|consumption|ingest|swallow|serving size|oral use|sublingual|apply topically|topical use|for human use|personal use|take (?:one|two|three|\d+)|(?:once|twice) (?:daily|weekly)|daily use|subcutaneous|intramuscular)\b/i;
-const explicitNegation = /\b(?:(?:not|never)\s+(?:intended|designed|recommended|approved|sold)?\s*(?:for|to)?\s*(?:human use|human consumption|consumption|injection|treatment|diagnosis|weight loss|fat loss)|do not (?:consume|ingest|swallow|inject|use on humans?))\b/i;
-const researchLanguage = /\b(research use only|for research purposes only|laboratory (?:use|analysis|research)|not for human (?:use|consumption)|preclinical|in vitro|analytical (?:use|reference)|research material|not intended for (?:clinical|diagnostic|therapeutic) use)\b/i;
-
-export const LOCAL_SEMANTIC_VERSION = "local-semantic-v2";
+export const LOCAL_SEMANTIC_VERSION = "local-semantic-v3";
 
 export function analyzeClaim(input: string): SemanticResult {
   const text = input.trim();
   if (!text) return semanticResultSchema.parse({ classification: "neutral", risk: "none", confidence: 1, consumerDirected: false, researchContext: false, reason: "Empty text has no analyzable claim.", evidenceSpan: "" });
-  const negated = explicitNegation.test(text);
-  const research = researchLanguage.test(text);
-  const hasAdministration = administration.test(text);
-  const hasOutcome = consumerOutcome.test(text);
-
-  if (negated) return semanticResultSchema.parse({ classification: "neutral", risk: "none", confidence: 0.93, consumerDirected: false, researchContext: research, reason: "The relevant action or outcome is explicitly negated.", evidenceSpan: text });
-  if (research && !hasAdministration) return semanticResultSchema.parse({ classification: "research_context", risk: "none", confidence: 0.9, consumerDirected: false, researchContext: true, reason: "The statement is framed as laboratory or research context rather than consumer efficacy guidance.", evidenceSpan: text });
-  if (hasAdministration) return semanticResultSchema.parse({ classification: "administration_instruction", risk: "high", confidence: 0.91, consumerDirected: true, researchContext: research, reason: "The statement provides or implies administration instructions.", evidenceSpan: text });
-  if (hasOutcome) return semanticResultSchema.parse({ classification: "consumer_claim", risk: "high", confidence: 0.88, consumerDirected: true, researchContext: false, reason: "The statement presents a consumer-directed efficacy or outcome claim.", evidenceSpan: text });
-  return semanticResultSchema.parse({ classification: "neutral", risk: "none", confidence: 0.78, consumerDirected: false, researchContext: research, reason: "No consumer outcome or administration instruction was identified.", evidenceSpan: text });
+  const context = analyzeContext(text);
+  if (context.type === "RESEARCH_RESTRICTION") return semanticResultSchema.parse({ classification: /\b(?:research use only|for research purposes only|solely|exclusively|strictly)\b/i.test(text) ? "research_context" : "neutral", risk: "none", confidence: context.confidence, consumerDirected: false, researchContext: true, reason: context.rationale, evidenceSpan: text, signalType: context.type });
+  if (context.type === "SCIENTIFIC_DISCUSSION") return semanticResultSchema.parse({ classification: "research_context", risk: "none", confidence: context.confidence, consumerDirected: false, researchContext: true, reason: context.rationale, evidenceSpan: text, signalType: context.type });
+  if (context.type === "HUMAN_ADMINISTRATION") return semanticResultSchema.parse({ classification: "administration_instruction", risk: context.confidence >= 0.95 ? "critical" : "high", confidence: context.confidence, consumerDirected: true, researchContext: context.researchContext, reason: context.rationale, evidenceSpan: text, signalType: context.type });
+  if (["HUMAN_OUTCOME", "MEDICAL_CLAIM", "HUMAN_TESTIMONIAL", "BEFORE_AFTER_OUTCOME"].includes(context.type)) return semanticResultSchema.parse({ classification: "consumer_claim", risk: context.type === "MEDICAL_CLAIM" ? "critical" : "high", confidence: context.confidence, consumerDirected: true, researchContext: false, reason: context.rationale, evidenceSpan: text, signalType: context.type });
+  if (context.type === "PRESCRIPTION_SIGNAL" || context.type === "AMBIGUOUS") return semanticResultSchema.parse({ classification: "needs_review", risk: context.type === "PRESCRIPTION_SIGNAL" ? "medium" : "low", confidence: context.confidence, consumerDirected: false, researchContext: context.researchContext, reason: context.rationale, evidenceSpan: text, signalType: context.type });
+  return semanticResultSchema.parse({ classification: "neutral", risk: "none", confidence: context.confidence, consumerDirected: false, researchContext: context.researchContext, reason: context.rationale, evidenceSpan: text, signalType: context.type });
 }
 
 export interface SemanticAnalyzer {
@@ -34,7 +27,7 @@ export interface SemanticAnalyzer {
 export class LocalSemanticAnalyzer implements SemanticAnalyzer {
   readonly provider = "local";
   readonly model = LOCAL_SEMANTIC_VERSION;
-  readonly promptVersion = "claim-intent-v2";
+  readonly promptVersion = "claim-intent-v3";
   async analyze(text: string) { return analyzeClaim(text); }
 }
 

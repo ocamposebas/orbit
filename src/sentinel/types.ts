@@ -5,7 +5,7 @@ export type SentinelPageType = (typeof pageTypes)[number];
 export type SentinelSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
 export const linkSchema = z.object({ text: z.string(), href: z.string(), rel: z.string().optional() });
-export const formSchema = z.object({ action: z.string(), method: z.string(), fields: z.array(z.object({ name: z.string(), type: z.string(), required: z.boolean() })) });
+export const formSchema = z.object({ action: z.string(), method: z.string(), fields: z.array(z.object({ name: z.string(), type: z.string(), required: z.boolean(), checked: z.boolean().default(false), disabled: z.boolean().default(false) })) });
 
 export const normalizedContentSchema = z.object({
   title: z.string(),
@@ -23,7 +23,11 @@ export const normalizedContentSchema = z.object({
   claims: z.array(z.string()),
   disclaimers: z.array(z.string()),
   technologies: z.array(z.string()),
-  controls: z.object({ ageGate: z.boolean(), cookieBanner: z.boolean(), loginWall: z.boolean(), modal: z.boolean() }),
+  images: z.array(z.object({ src: z.string(), filename: z.string(), alt: z.string(), title: z.string() })).default([]),
+  breadcrumbs: z.array(z.string()).default([]),
+  certificateLinks: z.array(z.string()).default([]),
+  metadata: z.object({ title: z.string(), description: z.string(), openGraphTitle: z.string(), openGraphDescription: z.string() }).default({ title: "", description: "", openGraphTitle: "", openGraphDescription: "" }),
+  controls: z.object({ ageGate: z.boolean(), cookieBanner: z.boolean(), loginWall: z.boolean(), modal: z.boolean(), researchGate: z.boolean().default(false), acknowledgementUnchecked: z.boolean().default(false), continueInitiallyDisabled: z.boolean().default(false) }),
 });
 
 export type NormalizedContent = z.infer<typeof normalizedContentSchema>;
@@ -36,6 +40,7 @@ export const semanticResultSchema = z.object({
   researchContext: z.boolean(),
   reason: z.string().min(1),
   evidenceSpan: z.string(),
+  signalType: z.enum(["RESEARCH_RESTRICTION", "SCIENTIFIC_DISCUSSION", "HUMAN_ADMINISTRATION", "HUMAN_OUTCOME", "MEDICAL_CLAIM", "HUMAN_TESTIMONIAL", "BEFORE_AFTER_OUTCOME", "PRESCRIPTION_SIGNAL", "AMBIGUOUS", "NONE"]).optional(),
 });
 
 export type SemanticResult = z.infer<typeof semanticResultSchema>;
@@ -60,6 +65,8 @@ export interface CandidateFinding {
   reason: string;
   recommendedAction: string;
   scoreComponent: ScoreComponentKey;
+  secondaryEvidence?: { url: string; text: string; role: string };
+  affectedUrls?: string[];
 }
 
 export type ScoreComponentKey = "POLICY_COVERAGE" | "PRODUCT_INTEGRITY" | "RESEARCH_CONTROLS" | "MARKETING_RISK" | "SITE_CONTROLS" | "OPERATIONAL_CONSISTENCY";
@@ -72,6 +79,14 @@ export interface ScanProgress {
   pagesProcessed: number;
   pagesTotal: number;
   productsDetected: number;
+  productsDiscovered: number;
+  productsScanned: number;
+  variantsScanned: number;
+  imagesAnalyzed: number;
+  certificatesDiscovered: number;
+  certificatesAnalyzed: number;
+  checkoutFlowsInspected: number;
+  scanCoveragePercent: number;
   policiesDetected: number;
   claimsInspected: number;
   findings: number;

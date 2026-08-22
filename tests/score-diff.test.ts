@@ -13,5 +13,10 @@ describe("explainable scoring and smart diff", () => {
     expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
     expect(score.explanation.scale).toEqual({ minimum: 0, maximum: 100, higherIsBetter: true });
   });
+  it("deducts a repeated rule only once per page even when evidence snippets differ", () => {
+    const second = { ...finding, detectedText: "A second claim on the same page" };
+    const score = calculateHealthScore([{ ...finding, detectedText: "First claim" }, second]);
+    expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
+  });
   it("marks a newly introduced consumer outcome as high impact", () => { const diff = smartDiff("Investigated in metabolic research models.", "Supports rapid fat loss and appetite suppression."); expect(diff.riskImpact).toBe("HIGH"); expect(diff.additions).toHaveLength(1); expect(diff.removals).toHaveLength(1); });
 });

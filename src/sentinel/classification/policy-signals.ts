@@ -28,7 +28,7 @@ const rules: SignalRule[] = [
   {
     type: "SHIPPING",
     path: /(?:^|\/)(?:shipping|delivery|shipping[-_/]and[-_/]delivery|shipping[-_/]policy|delivery[-_/]information|fulfillment|envios?)(?:[-_/]|$)/i,
-    content: /\b(?:shipping policy|shipping rates?|shipping methods?|delivery (?:time|times|window|information)|estimated delivery|order fulfillment|dispatch time|pol[ií]tica de env[ií]os)\b/i,
+    content: /\b(?:shipping policy|shipping and delivery|shipping rates?|shipping methods?|delivery (?:time|times|window|information)|estimated delivery|order fulfillment|dispatch time|pol[ií]tica de env[ií]os)\b/i,
   },
   {
     type: "CONTACT",
@@ -38,7 +38,7 @@ const rules: SignalRule[] = [
   {
     type: "RESEARCH_USE",
     path: /(?:^|\/)(?:research[-_/]use(?:[-_/]only)?|research[-_/]disclaimer|laboratory[-_/]use|research[-_/]policy|analytical[-_/]use)(?:[-_/]|$)/i,
-    content: /\b(?:research use only|for research purposes only|not for human (?:use|consumption)|laboratory (?:use|research|analysis)|analytical (?:use|reference)|research material|not intended for (?:human|clinical|diagnostic|therapeutic) use)\b/i,
+    content: /\b(?:research use (?:only|disclaimer|policy)|for research purposes only|not for human (?:use|consumption)|laboratory (?:use|research|analysis)|analytical (?:use|reference)|research material|not intended for (?:human|clinical|diagnostic|therapeutic) use)\b/i,
   },
   {
     type: "AGE",
@@ -60,21 +60,17 @@ const pageTypePolicy: Partial<Record<SentinelPageType, PolicySignalType>> = {
   CONTACT: "CONTACT",
 };
 
-function pageText(content: Pick<NormalizedContent, "title" | "headings" | "visibleText">) {
-  return `${content.title} ${content.headings.join(" ")} ${content.visibleText}`;
-}
-
 export function detectPolicySignals(
   url: string,
   content: Pick<NormalizedContent, "title" | "headings" | "visibleText">,
   pageType?: SentinelPageType,
 ): PolicySignalType[] {
   const path = new URL(url).pathname;
-  const text = pageText(content);
+  const structuralText = `${content.title} ${content.headings.join(" ")}`;
   const detected = new Set<PolicySignalType>();
   const direct = pageType ? pageTypePolicy[pageType] : undefined;
   if (direct) detected.add(direct);
-  for (const rule of rules) if (rule.path.test(path) || rule.content.test(text)) detected.add(rule.type);
+  for (const rule of rules) if (rule.path.test(path) || rule.content.test(structuralText) || (pageType === "POLICY" && rule.content.test(content.visibleText))) detected.add(rule.type);
   return [...detected];
 }
 
@@ -87,4 +83,3 @@ export function complianceUrlPriority(input: string): number {
   if (/\/(?:products?|collections?|categories?|catalog)(?:[-_/]|$)/i.test(path)) return 60;
   return path === "/" ? 30 : 40;
 }
-
