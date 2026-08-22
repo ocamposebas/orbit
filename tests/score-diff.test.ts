@@ -18,5 +18,10 @@ describe("explainable scoring and smart diff", () => {
     const score = calculateHealthScore([{ ...finding, detectedText: "First claim" }, second]);
     expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
   });
+  it("does not award a perfect score to material assessment areas that were not inspected", () => {
+    const score = calculateHealthScore([], { SITE_CONTROLS: 0, OPERATIONAL_CONSISTENCY: 50 });
+    expect(score.total).toBeLessThan(100);
+    expect(score.components.find((item) => item.key === "SITE_CONTROLS")).toEqual(expect.objectContaining({ observedScore: 100, assessmentCoverage: 0, score: 70 }));
+  });
   it("marks a newly introduced consumer outcome as high impact", () => { const diff = smartDiff("Investigated in metabolic research models.", "Supports rapid fat loss and appetite suppression."); expect(diff.riskImpact).toBe("HIGH"); expect(diff.additions).toHaveLength(1); expect(diff.removals).toHaveLength(1); });
 });

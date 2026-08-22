@@ -12,6 +12,7 @@ import { advanceScanStatus, updateProgress } from "@/sentinel/services/progress"
 import { detectPolicySignals, type PolicySignalType } from "@/sentinel/classification/policy-signals";
 import { buildProductIntelligence } from "@/sentinel/analysis/product-intelligence";
 import { evaluateWebsiteLegitimacy } from "@/sentinel/analysis/legitimacy";
+import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
 
 export async function runAnalysisStage(scanId: string) {
   const db = getDatabase();
@@ -132,7 +133,19 @@ export async function runAnalysisStage(scanId: string) {
 
   await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesAnalyzed, certificatesDiscovered, certificatesAnalyzed: 0, checkoutFlowsInspected, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
   await advanceScanStatus(scanId, "SCORING");
-  const score = calculateHealthScore([...candidates, ...retainedForScore]);
+  const productPages = pages.filter((page) => page.pageType === "PRODUCT");
+  const researchCoveredProducts = productPages.filter((page) => page.content.disclaimers.some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
+  const requiredPoliciesFound = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"].filter((type) => presentPolicyTypes.has(type as PolicySignalType)).length;
+  const documentCoverage = certificatesDiscovered > 0 ? 0 : 100;
+  const assessmentCoverage = {
+    POLICY_COVERAGE: Math.round(scanCoveragePercent * 0.6 + (requiredPoliciesFound / 5) * 40),
+    PRODUCT_INTEGRITY: productPages.length ? Math.round((productsDetected / productPages.length) * 100) : 50,
+    RESEARCH_CONTROLS: productPages.length ? Math.round((researchCoveredProducts / productPages.length) * 100) : 50,
+    MARKETING_RISK: scanCoveragePercent,
+    SITE_CONTROLS: productPages.length ? (checkoutFlowsInspected > 0 ? 100 : 0) : 100,
+    OPERATIONAL_CONSISTENCY: Math.round(scanCoveragePercent * 0.6 + documentCoverage * 0.4),
+  } as const;
+  const score = calculateHealthScore([...candidates, ...retainedForScore], assessmentCoverage);
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
   const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));
   await db.healthScore.upsert({ where: { merchantId_scanId: { merchantId: scan.merchantId, scanId } }, update: { total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { deleteMany: {}, create: scoreComponents } }, create: { merchantId: scan.merchantId, scanId, total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { create: scoreComponents } } });
