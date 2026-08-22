@@ -1,0 +1,19 @@
+FROM node:20-bookworm AS generated
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npx prisma generate
+
+FROM mcr.microsoft.com/playwright:v1.62.1-noble
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+COPY src ./src
+COPY prisma ./prisma
+COPY prisma.config.ts tsconfig.json ./
+COPY --from=generated /app/src/generated/prisma ./src/generated/prisma
+
+CMD ["npm", "run", "workers"]

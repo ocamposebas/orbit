@@ -1,4 +1,4 @@
-import { ArrowRight, BadgeCheck, Check, Database, FileClock, FileSearch, Fingerprint, Globe2, KeyRound, Layers3, Link2, LockKeyhole, Radar, RefreshCw, Users } from "lucide-react";
+import { ArrowRight, Check, Database, FileClock, FileSearch, Globe2, KeyRound, Layers3, LockKeyhole, ShieldCheck, SlidersHorizontal, Users } from "lucide-react";
 import { MonitoringScanner } from "@/components/dashboard-demo/monitoring-scanner";
 import { HealthDashboard } from "@/components/dashboard-demo/health-dashboard";
 import { ChangeDiff } from "@/components/dashboard-demo/change-diff";
@@ -82,7 +82,7 @@ export function MerchantHealthSection() {
   return (
     <section className="py-24 sm:py-36">
       <div className="container-shell">
-        <Reveal><SectionHeading eyebrow="Merchant health" title="One view of merchant health." description="Bring website compliance, policy coverage, verification, findings, and operational signals together without mistaking an internal indicator for a processor decision." /></Reveal>
+        <Reveal><SectionHeading eyebrow="Merchant health" title="One view of merchant health." description="Bring website compliance, policy coverage, verification, findings, and review activity together in one focused workspace." /></Reveal>
         <Reveal delay={.12} className="mt-12 sm:mt-16"><HealthDashboard /></Reveal>
       </div>
     </section>
@@ -106,7 +106,7 @@ export function AuditSection() {
   return (
     <section id="audit-trail" className="py-24 sm:py-36">
       <div className="container-shell grid gap-14 lg:grid-cols-[.8fr_1.2fr] lg:items-center">
-        <Reveal><SectionHeading eyebrow="Audit trail" title="Every decision has a history." description="ORBIT keeps findings, evidence, assignments, remediation, rescans, and review outcomes connected — ready for internal oversight and underwriting support." /></Reveal>
+        <Reveal><SectionHeading eyebrow="Audit trail" title="Every decision has a history." description="ORBIT keeps findings, evidence, assignments, remediation, rescans, and review outcomes connected — ready for internal oversight and structured reviews." /></Reveal>
         <Reveal delay={.1}>
           <div className="panel rounded-2xl p-5 sm:p-7">
             <div className="flex items-center justify-between border-b border-white/[.07] pb-4"><div className="flex items-center gap-2"><FileClock className="size-4 text-[#a9aaff]"/><span className="text-xs font-medium">Finding history</span></div><StatusPill tone="success">Resolved</StatusPill></div>
@@ -137,31 +137,9 @@ export function RulesetsSection() {
   );
 }
 
-export function PaymentsSection() {
-  return (
-    <section className="py-24 sm:py-36">
-      <div className="container-shell grid gap-14 lg:grid-cols-[.9fr_1.1fr] lg:items-center">
-        <Reveal><SectionHeading eyebrow="Payment infrastructure" title="Compliance intelligence meets payment infrastructure." description="ORBIT can surface account requirements, merchant status, compliance findings, and operational signals within one workspace — including connected-account ecosystems such as Stripe Connect." /></Reveal>
-        <Reveal delay={.1}>
-          <div className="panel relative overflow-hidden rounded-2xl p-6 sm:p-8">
-            <div className="absolute inset-0 surface-grid opacity-50"/>
-            <div className="relative mx-auto flex max-w-md items-center justify-between gap-5 py-8">
-              <div className="grid size-24 place-items-center rounded-2xl border border-[#8b8cff]/20 bg-[#8b8cff]/[.07]"><div className="text-center"><Radar className="mx-auto size-5 text-[#a9aaff]"/><span className="mt-2 block text-[10px] font-semibold tracking-[.18em]">ORBIT</span></div></div>
-              <div className="relative h-px flex-1 bg-gradient-to-r from-[#8b8cff]/60 to-[#68d4dc]/50"><span className="absolute left-1/2 top-1/2 grid size-7 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-white/10 bg-[#111318]"><Link2 className="size-3 text-[#8f929b]"/></span></div>
-              <div className="grid size-24 place-items-center rounded-2xl border border-white/10 bg-white/[.025]"><div className="text-center"><Layers3 className="mx-auto size-5 text-[#68d4dc]"/><span className="mt-2 block text-[9px] text-[#989ba3]">Connected account<br/>ecosystem</span></div></div>
-            </div>
-            <div className="relative mt-3 grid gap-px overflow-hidden rounded-lg border border-white/[.07] bg-white/[.07] sm:grid-cols-3">{["Account requirements", "Merchant status", "Operational signals"].map((item) => <div key={item} className="bg-[#0d0f12] px-3 py-3 text-center text-[9px] text-[#777a83]">{item}</div>)}</div>
-          </div>
-          <p className="mt-4 text-[10px] leading-5 text-[#5c5f67]">ORBIT is an independent software platform and is not affiliated with or endorsed by Stripe unless expressly stated.</p>
-        </Reveal>
-      </div>
-    </section>
-  );
-}
-
 const audiences = [
   { label: "Merchants", text: "Understand your compliance posture before problems escalate.", icon: Globe2 },
-  { label: "Platforms", text: "Monitor connected merchants continuously.", icon: Layers3 },
+  { label: "Platforms", text: "Monitor merchant portfolios continuously.", icon: Layers3 },
   { label: "Risk teams", text: "Centralize findings, remediation, and audit history.", icon: Users },
 ];
 
@@ -181,8 +159,7 @@ export function BuiltForSection() {
 const security = [
   { label: "Encryption in transit", icon: LockKeyhole }, { label: "Role-based access architecture", icon: KeyRound },
   { label: "Audit logging", icon: FileClock }, { label: "Minimal sensitive-data collection", icon: Database },
-  { label: "Stripe-hosted onboarding when applicable", icon: BadgeCheck }, { label: "Secure webhook verification", icon: Fingerprint },
-  { label: "Signed API communication", icon: RefreshCw },
+  { label: "Workspace access controls", icon: ShieldCheck }, { label: "Configurable review permissions", icon: SlidersHorizontal },
 ];
 
 export function SecuritySection() {

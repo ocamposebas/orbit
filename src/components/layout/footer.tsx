@@ -28,7 +28,7 @@ export function Footer() {
           </div>
         </div>
         <div className="mt-14 border-t border-white/[.08] pt-7">
-          <p className="max-w-4xl text-xs leading-5 text-[#666a73]">ORBIT provides software for compliance monitoring and risk intelligence. ORBIT is not a bank, acquiring institution, card network, legal advisor, or money transmitter and does not guarantee payment-processing approval.</p>
+          <p className="max-w-4xl text-xs leading-5 text-[#666a73]">ORBIT provides B2B software for compliance monitoring and risk intelligence. ORBIT is not a legal advisor and does not make legal determinations or guarantee compliance outcomes.</p>
           <div className="mt-5 flex flex-col gap-2 text-xs text-[#5e626b] sm:flex-row sm:items-center sm:justify-between">
             <span>© {new Date().getFullYear()} ORBIT. All rights reserved.</span>
             <span>Independent B2B software platform.</span>

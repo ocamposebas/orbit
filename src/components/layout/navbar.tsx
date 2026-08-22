@@ -3,10 +3,9 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Menu, X } from "lucide-react";
+import { ArrowUpRight, Menu, X } from "lucide-react";
 import { primaryNav } from "@/config/site";
 import { Logo } from "@/components/ui/logo";
-import { ButtonLink } from "@/components/ui/button-link";
 import { cn } from "@/lib/utils";
 
 export function Navbar() {
@@ -14,7 +13,7 @@ export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 24);
+    const onScroll = () => setScrolled(window.scrollY > 18);
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -26,32 +25,49 @@ export function Navbar() {
   }, [open]);
 
   return (
-    <header className="fixed inset-x-0 top-3 z-50 px-3 sm:top-4">
-      <div className={cn("mx-auto flex h-[60px] max-w-[1180px] items-center justify-between rounded-[14px] border px-4 transition-all duration-300 sm:px-5", scrolled || open ? "border-white/[.11] bg-[#0c0e13]/92 shadow-[0_14px_50px_rgba(0,0,0,.38)] backdrop-blur-xl" : "border-white/[.08] bg-[#0a0c11]/62 backdrop-blur-md")}>
+    <header className={cn(
+      "fixed inset-x-0 top-0 z-50 border-b transition-[background-color,border-color] duration-300",
+      scrolled || open ? "border-white/[.08] bg-[#08090b]/88 backdrop-blur-xl" : "border-transparent bg-transparent",
+    )}>
+      <div className="container-shell flex h-14 items-center justify-between">
         <Logo />
-        <nav aria-label="Primary navigation" className="hidden items-center gap-8 md:flex">
-          {primaryNav.map((item) => <Link key={item.href} href={item.href} className="text-[12px] font-medium text-[#8d9099] transition-colors hover:text-white">{item.label}</Link>)}
+
+        <nav aria-label="Primary navigation" className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-7 md:flex">
+          {primaryNav.map((item) => (
+            <Link key={item.href} href={item.href} className="text-[12px] font-medium text-[#858892] transition-colors duration-200 hover:text-[#f2f0eb]">
+              {item.label}
+            </Link>
+          ))}
         </nav>
-        <div className="hidden items-center gap-2 md:flex">
-          <ButtonLink href="/login" variant="ghost">Sign in</ButtonLink>
-          <ButtonLink href="/request-access">Request access</ButtonLink>
+
+        <div className="hidden items-center gap-5 md:flex">
+          <Link href="/login" className="text-[12px] font-medium text-[#92959e] transition-colors hover:text-white">Sign in</Link>
+          <Link href="/request-access" className="group inline-flex h-9 items-center gap-2 rounded-lg bg-[#f2f0eb] px-3.5 text-[12px] font-medium text-[#090a0c] transition-colors hover:bg-white">
+            Request access
+            <ArrowUpRight aria-hidden="true" className="size-3.5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+          </Link>
         </div>
-        <button type="button" aria-expanded={open} aria-label={open ? "Close menu" : "Open menu"} onClick={() => setOpen(!open)} className="grid size-9 place-items-center rounded-lg border border-white/10 bg-white/[.025] text-white md:hidden">
-          {open ? <X className="size-5" /> : <Menu className="size-5" />}
+
+        <button type="button" aria-expanded={open} aria-label={open ? "Close menu" : "Open menu"} onClick={() => setOpen(!open)} className="grid size-8 place-items-center rounded-md border border-white/10 bg-white/[.025] text-white md:hidden">
+          {open ? <X className="size-4" /> : <Menu className="size-4" />}
         </button>
       </div>
+
       <AnimatePresence>
         {open && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "calc(100dvh - 82px)" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: .25 }} className="mx-auto mt-2 max-w-[1180px] overflow-hidden rounded-[14px] border border-white/[.09] bg-[#0a0c11]/98 shadow-2xl backdrop-blur-xl md:hidden">
-            <nav aria-label="Mobile navigation" className="flex h-full flex-col px-5 py-5">
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "calc(100dvh - 56px)" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: .24, ease: [0.22, 1, 0.36, 1] }} className="overflow-hidden bg-[#08090b] md:hidden">
+            <nav aria-label="Mobile navigation" className="container-shell flex h-full flex-col py-5">
               {primaryNav.map((item, index) => (
-                <motion.div key={item.href} initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * .04 }}>
-                  <Link href={item.href} onClick={() => setOpen(false)} className="block border-b border-white/[.07] py-5 text-2xl font-medium tracking-[-.03em]">{item.label}</Link>
+                <motion.div key={item.href} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .035 }}>
+                  <Link href={item.href} onClick={() => setOpen(false)} className="flex items-center justify-between border-b border-white/[.07] py-4 text-xl font-medium tracking-[-.025em]">
+                    {item.label}
+                    <ArrowUpRight className="size-4 text-[#60636c]" />
+                  </Link>
                 </motion.div>
               ))}
-              <div className="mt-auto grid gap-3 pb-6">
-                <ButtonLink href="/request-access" className="w-full">Request access</ButtonLink>
-                <ButtonLink href="/login" variant="secondary" className="w-full">Sign in</ButtonLink>
+              <div className="mt-auto grid gap-2 pb-3">
+                <Link href="/request-access" onClick={() => setOpen(false)} className="flex h-11 items-center justify-center rounded-lg bg-[#f2f0eb] text-sm font-medium text-[#090a0c]">Request access</Link>
+                <Link href="/login" onClick={() => setOpen(false)} className="flex h-11 items-center justify-center rounded-lg border border-white/10 text-sm font-medium text-[#b3b5bc]">Sign in</Link>
               </div>
             </nav>
           </motion.div>

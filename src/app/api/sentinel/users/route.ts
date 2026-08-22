@@ -1,0 +1,13 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { z } from "zod";
+import { getDatabase } from "@/sentinel/db";
+import { hashPassword } from "@/sentinel/auth/password";
+import { requestSession } from "@/sentinel/auth/session";
+import { apiError, HttpError, requireRole } from "@/sentinel/http";
+import { enforceRateLimit } from "@/sentinel/rate-limit";
+
+const createUserSchema = z.object({ email: z.string().trim().email().transform((value) => value.toLowerCase()), name: z.string().trim().min(2).max(120), password: z.string().min(12).max(128), role: z.enum(["ADMIN", "ANALYST", "REVIEWER", "VIEWER"]).default("VIEWER") });
+
+export async function GET(request: NextRequest) { try { const organization = await requireRole(request, ["OWNER", "ADMIN"]); const memberships = await getDatabase().membership.findMany({ where: { organizationId: organization.id }, orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, email: true, name: true, active: true, lastLoginAt: true, createdAt: true } } } }); return NextResponse.json({ users: memberships.map((membership) => ({ ...membership.user, role: membership.role })) }); } catch (error) { return apiError(error); } }
+
+export async function POST(request: NextRequest) { try { await enforceRateLimit(request, "user-create", 20); const organization = await requireRole(request, ["OWNER", "ADMIN"]); const session = await requestSession(request); if (!session) throw new HttpError(401, "Authentication is required"); const input = createUserSchema.parse(await request.json()); if (input.role === "ADMIN" && session.role !== "OWNER") throw new HttpError(403, "Only an owner can add administrators"); const passwordHash = await hashPassword(input.password); const user = await getDatabase().$transaction(async (tx) => { const account = await tx.user.upsert({ where: { email: input.email }, update: { name: input.name, passwordHash, passwordUpdatedAt: new Date(), active: true }, create: { email: input.email, name: input.name, passwordHash, passwordUpdatedAt: new Date() } }); await tx.membership.upsert({ where: { organizationId_userId: { organizationId: organization.id, userId: account.id } }, update: { role: input.role }, create: { organizationId: organization.id, userId: account.id, role: input.role } }); await tx.auditLog.create({ data: { organizationId: organization.id, actorId: session.user.id, action: "user.created", targetType: "User", targetId: account.id, metadata: { role: input.role } } }); return account; }); return NextResponse.json({ user: { id: user.id, email: user.email, name: user.name, role: input.role } }, { status: 201 }); } catch (error) { return apiError(error); } }

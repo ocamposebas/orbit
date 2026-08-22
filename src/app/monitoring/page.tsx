@@ -19,7 +19,7 @@ const features = [
 
 export default function MonitoringPage() {
   return <>
-    <PageHero eyebrow="Continuous website monitoring" title="A current view, not a stale review." description="Merchant websites change after onboarding. ORBIT keeps watch across pages, products, policies, claims, and material content so teams can respond with context." />
+    <PageHero eyebrow="Continuous website monitoring" title="A current view, not a stale review." description="Merchant websites change after the initial review. ORBIT keeps watch across pages, products, policies, claims, and material content so teams can respond with context." />
     <section className="py-24 sm:py-32"><div className="container-shell"><SectionHeading eyebrow="How it works" title="Watch the surface. Preserve the evidence." description="A clean monitoring loop makes change visible without turning every edit into an emergency."/><div className="mt-12"><MonitoringScanner/></div></div></section>
     <section className="border-y border-white/[.07] bg-[#0a0b0e] py-24 sm:py-32"><div className="container-shell grid gap-14 lg:grid-cols-[.7fr_1.3fr]"><SectionHeading eyebrow="Monitoring workflow" title="Designed for continuous review." description="Configure the surface, collect changes, prioritize signals, and preserve the record."/><FeatureList items={features}/></div></section>
     <FinalCta/>

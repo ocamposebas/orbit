@@ -1,0 +1,705 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = "ts"
+  moduleFormat        = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Organization {
+  id                      String        @id @default(cuid())
+  name                    String
+  slug                    String        @unique
+  isDemo                  Boolean       @default(false)
+  snapshotRetentionDays   Int           @default(365)
+  screenshotRetentionDays Int           @default(90)
+  scanRetentionDays       Int           @default(365)
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+  alerts                  Alert[]
+  auditLogs               AuditLog[]
+  findings                Finding[]
+  integrations            Integration[]
+  memberships             Membership[]
+  merchants               Merchant[]
+  sessions                Session[]
+}
+
+model User {
+  id                String          @id @default(cuid())
+  email             String          @unique
+  name              String?
+  passwordHash      String?
+  active            Boolean         @default(true)
+  lastLoginAt       DateTime?
+  passwordUpdatedAt DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  auditLogs         AuditLog[]
+  reviews           FindingReview[]
+  memberships       Membership[]
+  sessions          Session[]
+}
+
+model Session {
+  id             String       @id @default(cuid())
+  tokenHash      String       @unique
+  userId         String
+  organizationId String
+  expiresAt      DateTime
+  lastSeenAt     DateTime     @default(now())
+  ipHash         String?
+  userAgent      String?
+  createdAt      DateTime     @default(now())
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([organizationId, expiresAt])
+}
+
+model Membership {
+  id             String         @id @default(cuid())
+  organizationId String
+  userId         String
+  role           MembershipRole @default(VIEWER)
+  createdAt      DateTime       @default(now())
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Merchant {
+  id                    String         @id @default(cuid())
+  organizationId        String
+  businessName          String
+  slug                  String
+  industry              String
+  country               String
+  businessDescription   String
+  expectedMonthlyVolume String?
+  status                MerchantStatus @default(ONBOARDING)
+  isDemo                Boolean        @default(false)
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  alerts                Alert[]
+  auditLogs             AuditLog[]
+  findings              Finding[]
+  healthScores          HealthScore[]
+  organization          Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sites                 MerchantSite[]
+  policies              Policy[]
+  products              Product[]
+  scans                 Scan[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId, status])
+}
+
+model MerchantSite {
+  id                       String          @id @default(cuid())
+  merchantId               String
+  url                      String
+  normalizedUrl            String
+  hostname                 String
+  environment              SiteEnvironment @default(PRODUCTION)
+  active                   Boolean         @default(true)
+  lastScannedAt            DateTime?
+  monitoringCadenceMinutes Int             @default(1440)
+  nextScanAt               DateTime?
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+  findings                 Finding[]
+  merchant                 Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  policies                 Policy[]
+  products                 Product[]
+  scans                    Scan[]
+  pages                    ScanPage[]
+
+  @@unique([merchantId, normalizedUrl])
+  @@index([hostname])
+}
+
+model Scan {
+  id               String        @id @default(cuid())
+  merchantId       String
+  siteId           String
+  mode             ScanMode
+  status           ScanStatus    @default(QUEUED)
+  progress         Json          @default("{}")
+  targetUrls       Json?
+  pagesDiscovered  Int           @default(0)
+  pagesProcessed   Int           @default(0)
+  productsDetected Int           @default(0)
+  policiesDetected Int           @default(0)
+  findingsCreated  Int           @default(0)
+  findingsResolved Int           @default(0)
+  scoreBefore      Int?
+  scoreAfter       Int?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  error            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  auditLogs        AuditLog[]
+  findings         Finding[]
+  healthScores     HealthScore[]
+  changes          PageChange[]
+  merchant         Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  site             MerchantSite  @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  pages            ScanPage[]
+
+  @@index([merchantId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ScanPage {
+  id                       String         @id @default(cuid())
+  scanId                   String
+  siteId                   String
+  url                      String
+  canonicalUrl             String?
+  httpStatus               Int?
+  contentType              String?
+  title                    String?
+  metaDescription          String?
+  canonicalTag             String?
+  robotsDirectives         String?
+  discoveredFrom           String?
+  depth                    Int            @default(0)
+  pageType                 PageType       @default(OTHER)
+  classificationConfidence Float          @default(0)
+  classificationReasons    Json           @default("[]")
+  normalizedContent        Json?
+  contentHash              String?
+  inaccessibleReason       String?
+  firstSeenAt              DateTime       @default(now())
+  lastSeenAt               DateTime       @default(now())
+  createdAt                DateTime       @default(now())
+  changes                  PageChange[]
+  snapshots                PageSnapshot[]
+  scan                     Scan           @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  site                     MerchantSite   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([scanId, url])
+  @@index([siteId, url])
+  @@index([pageType])
+}
+
+model PageSnapshot {
+  id                String            @id @default(cuid())
+  scanPageId        String
+  contentHash       String
+  semanticHash      String?
+  normalizedContent Json
+  visibleText       String
+  capturedAt        DateTime          @default(now())
+  evidence          FindingEvidence[]
+  currentChanges    PageChange[]      @relation("CurrentSnapshot")
+  previousChanges   PageChange[]      @relation("PreviousSnapshot")
+  scanPage          ScanPage          @relation(fields: [scanPageId], references: [id], onDelete: Cascade)
+
+  @@index([scanPageId, capturedAt])
+  @@index([contentHash])
+}
+
+model PageChange {
+  id                 String        @id @default(cuid())
+  scanId             String
+  scanPageId         String
+  previousSnapshotId String?
+  currentSnapshotId  String
+  type               ChangeType
+  riskImpact         RiskImpact    @default(NONE)
+  diff               Json
+  summary            String?
+  createdAt          DateTime      @default(now())
+  currentSnapshot    PageSnapshot  @relation("CurrentSnapshot", fields: [currentSnapshotId], references: [id])
+  previousSnapshot   PageSnapshot? @relation("PreviousSnapshot", fields: [previousSnapshotId], references: [id])
+  scan               Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  scanPage           ScanPage      @relation(fields: [scanPageId], references: [id], onDelete: Cascade)
+
+  @@index([scanId, riskImpact])
+}
+
+model Product {
+  id           String            @id @default(cuid())
+  merchantId   String
+  siteId       String
+  canonicalUrl String
+  name         String
+  sku          String?
+  currentPrice Decimal?          @db.Decimal(12, 2)
+  availability String?
+  categories   Json              @default("[]")
+  disclaimers  Json              @default("[]")
+  claims       Json              @default("[]")
+  firstSeenAt  DateTime          @default(now())
+  lastSeenAt   DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  merchant     Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  site         MerchantSite      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  snapshots    ProductSnapshot[]
+  variants     ProductVariant[]
+
+  @@unique([merchantId, canonicalUrl])
+}
+
+model ProductVariant {
+  id            String   @id @default(cuid())
+  productId     String
+  name          String
+  sku           String?
+  concentration String?
+  size          String?
+  price         Decimal? @db.Decimal(12, 2)
+  availability  String?
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model ProductSnapshot {
+  id        String   @id @default(cuid())
+  productId String
+  scanId    String
+  data      Json
+  hash      String
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, createdAt])
+}
+
+model Policy {
+  id          String           @id @default(cuid())
+  merchantId  String
+  siteId      String
+  type        PolicyType
+  coverage    PolicyCoverage
+  url         String?
+  currentHash String?
+  clauses     Json             @default("[]")
+  updatedAt   DateTime         @updatedAt
+  merchant    Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  site        MerchantSite     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  snapshots   PolicySnapshot[]
+
+  @@unique([merchantId, siteId, type])
+}
+
+model PolicySnapshot {
+  id        String         @id @default(cuid())
+  policyId  String
+  scanId    String
+  text      String
+  textHash  String
+  coverage  PolicyCoverage
+  clauses   Json           @default("[]")
+  createdAt DateTime       @default(now())
+  policy    Policy         @relation(fields: [policyId], references: [id], onDelete: Cascade)
+}
+
+model RuleSet {
+  id            String    @id @default(cuid())
+  code          String
+  version       Int
+  name          String
+  description   String
+  industry      String?
+  enabled       Boolean   @default(true)
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+  rules         Rule[]
+
+  @@unique([code, version])
+}
+
+model Rule {
+  id             String        @id @default(cuid())
+  ruleSetId      String
+  key            String
+  currentVersion Int           @default(1)
+  enabled        Boolean       @default(true)
+  ruleSet        RuleSet       @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  versions       RuleVersion[]
+
+  @@unique([ruleSetId, key])
+}
+
+model RuleVersion {
+  id                  String         @id @default(cuid())
+  ruleId              String
+  version             Int
+  name                String
+  description         String
+  category            String
+  severity            Severity
+  evaluationType      EvaluationType
+  appliesTo           PageType?
+  condition           Json
+  remediationGuidance String
+  sourceName          String?
+  sourceUrl           String?
+  sourceLastReviewed  DateTime?
+  jurisdiction        String?
+  effectiveFrom       DateTime       @default(now())
+  effectiveTo         DateTime?
+  createdAt           DateTime       @default(now())
+  findings            Finding[]
+  rule                Rule           @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, version])
+}
+
+model Finding {
+  id                String            @id @default(cuid())
+  organizationId    String
+  merchantId        String
+  siteId            String
+  scanId            String
+  ruleVersionId     String?
+  severity          Severity
+  confidence        Float
+  status            FindingStatus     @default(OPEN)
+  category          String
+  title             String
+  description       String
+  url               String
+  pageType          PageType
+  detectedText      String?
+  reason            String
+  recommendedAction String
+  fingerprint       String
+  firstDetectedAt   DateTime          @default(now())
+  lastDetectedAt    DateTime          @default(now())
+  resolvedAt        DateTime?
+  resolvedByScanId  String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  alerts            Alert[]
+  merchant          Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ruleVersion       RuleVersion?      @relation(fields: [ruleVersionId], references: [id])
+  scan              Scan              @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  site              MerchantSite      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  evidence          FindingEvidence[]
+  reviews           FindingReview[]
+  remediations      Remediation[]
+
+  @@unique([merchantId, fingerprint, firstDetectedAt])
+  @@index([organizationId, status, severity])
+  @@index([merchantId, lastDetectedAt])
+}
+
+model FindingEvidence {
+  id                       String        @id @default(cuid())
+  findingId                String
+  snapshotId               String?
+  kind                     EvidenceKind
+  pageUrl                  String
+  normalizedText           String?
+  evidenceSnippet          String?
+  pageHash                 String
+  domSelector              String?
+  storageKey               String?
+  ruleVersion              String?
+  modelVersion             String?
+  classificationConfidence Float?
+  metadata                 Json          @default("{}")
+  createdAt                DateTime      @default(now())
+  finding                  Finding       @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  snapshot                 PageSnapshot? @relation(fields: [snapshotId], references: [id])
+
+  @@index([findingId, createdAt])
+}
+
+model FindingReview {
+  id         String         @id @default(cuid())
+  findingId  String
+  reviewerId String?
+  decision   ReviewDecision
+  note       String?
+  createdAt  DateTime       @default(now())
+  finding    Finding        @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  reviewer   User?          @relation(fields: [reviewerId], references: [id])
+}
+
+model Remediation {
+  id          String    @id @default(cuid())
+  findingId   String
+  status      String
+  owner       String?
+  note        String?
+  dueAt       DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  finding     Finding   @relation(fields: [findingId], references: [id], onDelete: Cascade)
+}
+
+model HealthScore {
+  id             String                 @id @default(cuid())
+  merchantId     String
+  scanId         String
+  total          Int
+  formulaVersion String
+  explanation    Json
+  createdAt      DateTime               @default(now())
+  merchant       Merchant               @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  scan           Scan                   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  components     HealthScoreComponent[]
+
+  @@unique([merchantId, scanId])
+}
+
+model HealthScoreComponent {
+  id            String      @id @default(cuid())
+  healthScoreId String
+  key           String
+  label         String
+  score         Int
+  deductions    Json
+  healthScore   HealthScore @relation(fields: [healthScoreId], references: [id], onDelete: Cascade)
+}
+
+model Alert {
+  id             String       @id @default(cuid())
+  organizationId String
+  merchantId     String
+  findingId      String?
+  status         AlertStatus  @default(OPEN)
+  title          String
+  createdAt      DateTime     @default(now())
+  resolvedAt     DateTime?
+  finding        Finding?     @relation(fields: [findingId], references: [id])
+  merchant       Merchant     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model Integration {
+  id              String              @id @default(cuid())
+  organizationId  String
+  provider        IntegrationProvider @default(GENERIC)
+  name            String
+  status          String
+  encryptedConfig Json                @default("{}")
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id             String       @id @default(cuid())
+  organizationId String
+  actorId        String?
+  merchantId     String?
+  scanId         String?
+  action         String
+  targetType     String
+  targetId       String
+  metadata       Json         @default("{}")
+  requestId      String?
+  createdAt      DateTime     @default(now())
+  actor          User?        @relation(fields: [actorId], references: [id])
+  merchant       Merchant?    @relation(fields: [merchantId], references: [id])
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  scan           Scan?        @relation(fields: [scanId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([merchantId, createdAt])
+}
+
+model WorkerHeartbeat {
+  id            String     @id @default(cuid())
+  workerId      String     @unique
+  type          WorkerType
+  status        String
+  currentScanId String?
+  metadata      Json       @default("{}")
+  lastSeenAt    DateTime   @default(now())
+  startedAt     DateTime   @default(now())
+}
+
+model SemanticAnalysis {
+  id            String   @id @default(cuid())
+  contentHash   String
+  promptVersion String
+  provider      String
+  model         String
+  configuration Json
+  result        Json
+  createdAt     DateTime @default(now())
+
+  @@unique([contentHash, promptVersion, provider, model])
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  ANALYST
+  REVIEWER
+  VIEWER
+}
+
+enum MerchantStatus {
+  ONBOARDING
+  SCANNING
+  REVIEW_REQUIRED
+  READY
+  MONITORED
+  PAUSED
+  BLOCKED
+}
+
+enum SiteEnvironment {
+  PRODUCTION
+  CHECKOUT
+  LANDING
+  SECONDARY
+  STAGING
+}
+
+enum ScanMode {
+  FULL
+  INCREMENTAL
+  QUICK
+  TARGETED
+}
+
+enum ScanStatus {
+  QUEUED
+  DISCOVERING
+  CRAWLING
+  CLASSIFYING
+  ANALYZING
+  EVIDENCE
+  SCORING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum PageType {
+  HOME
+  PRODUCT
+  COLLECTION
+  CATEGORY
+  POLICY
+  TERMS
+  PRIVACY
+  REFUND
+  SHIPPING
+  CONTACT
+  FAQ
+  CHECKOUT
+  CART
+  ACCOUNT
+  BLOG
+  ARTICLE
+  LANDING
+  COA
+  OTHER
+}
+
+enum FindingStatus {
+  OPEN
+  NEEDS_REVIEW
+  CONFIRMED
+  FALSE_POSITIVE
+  ACCEPTED_RISK
+  RESOLVED
+  IGNORED
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum EvaluationType {
+  DETERMINISTIC
+  SEMANTIC
+  CONTRADICTION
+}
+
+enum PolicyType {
+  TERMS
+  PRIVACY
+  REFUND
+  RETURNS
+  CANCELLATION
+  SHIPPING
+  CONTACT
+  RESEARCH_USE
+  AGE
+  PROMOTION
+  OTHER
+}
+
+enum PolicyCoverage {
+  FOUND
+  MISSING
+  POTENTIALLY_INCOMPLETE
+  NEEDS_REVIEW
+  NOT_APPLICABLE
+}
+
+enum ChangeType {
+  CONTENT_CHANGE
+  NEW_PAGE
+  REMOVED_PAGE
+  CLASSIFICATION_CHANGE
+}
+
+enum RiskImpact {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  NONE
+}
+
+enum ReviewDecision {
+  CONFIRM
+  FALSE_POSITIVE
+  ACCEPT_RISK
+  RESOLVE
+  REOPEN
+  IGNORE
+  REASSIGN
+  NOTE
+}
+
+enum EvidenceKind {
+  TEXT
+  SCREENSHOT
+  VIEWPORT
+  SELECTOR
+  DOM
+  SNAPSHOT
+  DIFF
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum IntegrationProvider {
+  GENERIC
+}
+
+enum WorkerType {
+  CRAWLER
+  ANALYSIS
+  EVIDENCE
+}

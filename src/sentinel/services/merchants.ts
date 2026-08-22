@@ -1,0 +1,22 @@
+import { z } from "zod";
+import { getDatabase } from "@/sentinel/db";
+import { normalizePublicUrl } from "@/sentinel/security/ssrf";
+
+export const createMerchantSchema = z.object({ organizationId: z.string().min(1), businessName: z.string().trim().min(2).max(120), industry: z.string().trim().min(2).max(80), country: z.string().trim().min(2).max(80), businessDescription: z.string().trim().min(10).max(2_000), website: z.string().trim().min(1), expectedMonthlyVolume: z.string().trim().max(80).optional() });
+
+function slugify(value: string) { return value.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60); }
+
+export async function createMerchant(input: z.infer<typeof createMerchantSchema>) {
+  const data = createMerchantSchema.parse(input);
+  const target = normalizePublicUrl(data.website);
+  const db = getDatabase();
+  const baseSlug = slugify(data.businessName) || "merchant";
+  let slug = baseSlug; let suffix = 1;
+  while (await db.merchant.findUnique({ where: { organizationId_slug: { organizationId: data.organizationId, slug } }, select: { id: true } })) slug = `${baseSlug}-${++suffix}`;
+  return db.$transaction(async (tx) => {
+    const merchant = await tx.merchant.create({ data: { organizationId: data.organizationId, businessName: data.businessName, slug, industry: data.industry, country: data.country, businessDescription: data.businessDescription, expectedMonthlyVolume: data.expectedMonthlyVolume } });
+    await tx.merchantSite.create({ data: { merchantId: merchant.id, url: target.toString(), normalizedUrl: target.toString(), hostname: target.hostname } });
+    await tx.auditLog.create({ data: { organizationId: data.organizationId, merchantId: merchant.id, action: "merchant.created", targetType: "Merchant", targetId: merchant.id, metadata: { website: target.toString() } } });
+    return merchant;
+  });
+}

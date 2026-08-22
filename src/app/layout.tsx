@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { Footer } from "@/components/layout/footer";
-import { Navbar } from "@/components/layout/navbar";
+import { AppFrame } from "@/components/layout/app-frame";
 import { siteConfig } from "@/config/site";
 import "./globals.css";
 
@@ -29,7 +28,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { themeColor: "#08090b", colorScheme: "dark", width: "device-width", initialScale: 1 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
@@ -38,9 +37,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full">
         <a href="#main-content" className="fixed left-4 top-3 z-[100] -translate-y-20 rounded-lg bg-white px-4 py-2 text-sm font-medium text-black focus:translate-y-0">Skip to content</a>
-        <Navbar />
-        <main id="main-content">{children}</main>
-        <Footer />
+        <AppFrame>{children}</AppFrame>
       </body>
     </html>
   );

@@ -6,8 +6,8 @@ import { FinalCta } from "@/components/marketing/home-sections";
 export const metadata: Metadata = { title: "Solutions", description: "Merchant compliance and risk intelligence solutions for merchants, platforms, and risk teams." };
 
 const profiles = [
-  { label: "Merchants", title: "Prepare before issues escalate.", description: "Understand website compliance posture, policy coverage, open findings, and significant changes before the next underwriting or processor review.", bullets: ["Website and policy monitoring", "Remediation workflow", "Audit-ready history"], icon: Store },
-  { label: "Platforms", title: "Monitor connected merchants continuously.", description: "Create a consistent oversight layer across a merchant portfolio while keeping each account's evidence, findings, and operational state separate.", bullets: ["Portfolio monitoring", "Connected-account signals", "Merchant-level evidence"], icon: Building2 },
+  { label: "Merchants", title: "Prepare before issues escalate.", description: "Understand website compliance posture, policy coverage, open findings, and significant changes before the next internal or external review.", bullets: ["Website and policy monitoring", "Remediation workflow", "Audit-ready history"], icon: Store },
+  { label: "Platforms", title: "Monitor merchant portfolios continuously.", description: "Create a consistent oversight layer across a merchant portfolio while keeping each merchant's evidence, findings, and review history separate.", bullets: ["Portfolio monitoring", "Change visibility", "Merchant-level evidence"], icon: Building2 },
   { label: "Risk teams", title: "Replace fragmented review queues.", description: "Centralize findings, ownership, remediation, rescans, and historical decisions in an operating view built for ongoing work.", bullets: ["Prioritized findings", "Review assignments", "Decision history"], icon: Users },
 ];
 

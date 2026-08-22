@@ -3,7 +3,7 @@
 import { FormEvent, useState } from "react";
 import { ArrowUpRight, CheckCircle2 } from "lucide-react";
 
-const monitorOptions = ["Website compliance", "Merchant risk", "Policy coverage", "Change monitoring", "Payment account health", "Other"];
+const monitorOptions = ["Website compliance", "Merchant risk", "Policy coverage", "Change monitoring", "Audit history", "Other"];
 
 export function RequestAccessForm() {
   const [state, setState] = useState<"idle" | "sending" | "success" | "error">("idle");
