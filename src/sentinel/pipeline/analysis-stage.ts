@@ -46,7 +46,10 @@ export async function runAnalysisStage(scanId: string) {
     if (page.pageType === "PRODUCT" && page.content.productName) {
       const numericPrice = page.content.prices[0]?.replace(/[^\d.,]/g, "").replace(",", ".");
       const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl: page.url } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl: page.url, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers } });
-      await db.productSnapshot.create({ data: { productId: product.id, scanId, data: page.content as unknown as Prisma.InputJsonValue, hash: contentHash(page.content) } });
+      const productSnapshotData = { data: page.content as unknown as Prisma.InputJsonValue, hash: contentHash(page.content) };
+      const existingProductSnapshot = await db.productSnapshot.findFirst({ where: { productId: product.id, scanId }, select: { id: true } });
+      if (existingProductSnapshot) await db.productSnapshot.update({ where: { id: existingProductSnapshot.id }, data: productSnapshotData });
+      else await db.productSnapshot.create({ data: { productId: product.id, scanId, ...productSnapshotData } });
       await db.productVariant.deleteMany({ where: { productId: product.id } });
       if (page.content.variants.length) await db.productVariant.createMany({ data: page.content.variants.map((name) => ({ productId: product.id, name })) });
       productsDetected++;
@@ -54,7 +57,10 @@ export async function runAnalysisStage(scanId: string) {
     const policyType = inferredPolicyType(page);
     if (policyType) {
       const policy = await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type: policyType } }, update: { coverage: "FOUND", url: page.url, currentHash: contentHash(page.content.visibleText), clauses: page.content.paragraphs }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type: policyType, coverage: "FOUND", url: page.url, currentHash: contentHash(page.content.visibleText), clauses: page.content.paragraphs } });
-      await db.policySnapshot.create({ data: { policyId: policy.id, scanId, text: page.content.visibleText, textHash: contentHash(page.content.visibleText), coverage: "FOUND", clauses: page.content.paragraphs } });
+      const policySnapshotData = { text: page.content.visibleText, textHash: contentHash(page.content.visibleText), coverage: "FOUND" as const, clauses: page.content.paragraphs };
+      const existingPolicySnapshot = await db.policySnapshot.findFirst({ where: { policyId: policy.id, scanId }, select: { id: true } });
+      if (existingPolicySnapshot) await db.policySnapshot.update({ where: { id: existingPolicySnapshot.id }, data: policySnapshotData });
+      else await db.policySnapshot.create({ data: { policyId: policy.id, scanId, ...policySnapshotData } });
       policiesDetected++;
     }
   }
@@ -84,9 +90,15 @@ export async function runAnalysisStage(scanId: string) {
     const finding = existing ? await db.finding.update({ where: { id: existing.id }, data: { scanId, ruleVersionId: ruleVersion?.id, severity: candidate.severity, confidence: candidate.confidence, status: candidate.status, lastDetectedAt: new Date(), description: candidate.description, reason: candidate.reason, recommendedAction: candidate.recommendedAction } }) : await db.finding.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, siteId: scan.siteId, scanId, ruleVersionId: ruleVersion?.id, severity: candidate.severity, confidence: candidate.confidence, status: candidate.status, category: candidate.category, title: candidate.title, description: candidate.description, url: candidate.url, pageType: candidate.pageType, detectedText: candidate.detectedText, reason: candidate.reason, recommendedAction: candidate.recommendedAction, fingerprint } });
     if (!existing) findingsCreated++;
     const sourcePage = pages.find((page) => page.url === candidate.url);
-    await db.findingEvidence.create({ data: { findingId: finding.id, snapshotId: sourcePage?.snapshotId, kind: "TEXT", pageUrl: candidate.url, normalizedText: candidate.detectedText, evidenceSnippet: candidate.detectedText, pageHash: sourcePage ? contentHash(sourcePage.content) : fingerprint, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion: analyzer.model, classificationConfidence: candidate.confidence, metadata: { ruleKey: candidate.ruleKey } } });
+    const pageHash = sourcePage ? contentHash(sourcePage.content) : fingerprint;
+    const evidenceData = { snapshotId: sourcePage?.snapshotId, pageUrl: candidate.url, normalizedText: candidate.detectedText, evidenceSnippet: candidate.detectedText, pageHash, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion: analyzer.model, classificationConfidence: candidate.confidence, metadata: { ruleKey: candidate.ruleKey } };
+    const existingEvidence = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: "TEXT", pageHash, modelVersion: analyzer.model }, select: { id: true } });
+    if (existingEvidence) await db.findingEvidence.update({ where: { id: existingEvidence.id }, data: evidenceData });
+    else await db.findingEvidence.create({ data: { findingId: finding.id, kind: "TEXT", ...evidenceData } });
     if (candidate.severity === "HIGH" || candidate.severity === "CRITICAL") evidenceJobs.push(finding.id);
   }
+
+  findingsCreated = await db.finding.count({ where: { scanId, firstDetectedAt: { gte: scan.startedAt ?? scan.createdAt } } });
 
   let findingsResolved = 0;
   if (scan.mode === "FULL") {
@@ -99,11 +111,13 @@ export async function runAnalysisStage(scanId: string) {
   await db.scan.update({ where: { id: scanId }, data: { status: "SCORING" } });
   const score = calculateHealthScore([...candidates, ...retainedForScore]);
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
-  await db.healthScore.create({ data: { merchantId: scan.merchantId, scanId, total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { create: score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue })) } } });
+  const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));
+  await db.healthScore.upsert({ where: { merchantId_scanId: { merchantId: scan.merchantId, scanId } }, update: { total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { deleteMany: {}, create: scoreComponents } }, create: { merchantId: scan.merchantId, scanId, total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { create: scoreComponents } } });
   await db.scan.update({ where: { id: scanId }, data: { status: "COMPLETED", productsDetected, policiesDetected, findingsCreated, findingsResolved, scoreBefore: previousScore?.total, scoreAfter: score.total, completedAt: new Date() } });
   await db.merchant.update({ where: { id: scan.merchantId }, data: { status: candidates.some((finding) => finding.severity === "CRITICAL" || finding.severity === "HIGH") ? "REVIEW_REQUIRED" : "MONITORED" } });
   await db.merchantSite.update({ where: { id: scan.siteId }, data: { nextScanAt: new Date(Date.now() + (await db.merchantSite.findUniqueOrThrow({ where: { id: scan.siteId }, select: { monitoringCadenceMinutes: true } })).monitoringCadenceMinutes * 60_000) } });
-  await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: { score: score.total, findings: candidates.length, pages: pages.length } } });
+  const completionAudit = await db.auditLog.findFirst({ where: { scanId, action: "scan.completed", targetType: "Scan", targetId: scanId }, select: { id: true } });
+  if (!completionAudit) await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: { score: score.total, findings: candidates.length, pages: pages.length } } });
   await updateProgress(scanId, { stage: "completed", message: "Scan completed", pagesProcessed: pages.length, pagesTotal: pages.length });
   await Promise.all(evidenceJobs.map((findingId) => queues().evidence.add("capture", { findingId }, { jobId: `evidence-${findingId}-${scanId}` })));
   return { score: score.total, findings: candidates.length, findingsCreated, productsDetected, policiesDetected };

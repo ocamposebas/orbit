@@ -13,8 +13,10 @@ export function createSentinelWorker(queue: keyof typeof queueNames, handler: (j
   const timer = setInterval(() => void heartbeat(), 15_000);
   timer.unref();
   worker.on("ready", () => logger.info({ workerId, queue: queueNames[queue] }, "worker ready"));
+  worker.on("active", (job) => logger.info({ workerId, queue: queueNames[queue], jobId: job.id, scanId: job.data?.scanId, attempt: job.attemptsMade + 1 }, "job started"));
   worker.on("completed", (job) => logger.info({ workerId, jobId: job.id, scanId: job.data?.scanId }, "job completed"));
   worker.on("failed", async (job, error) => {
+    logger.warn({ workerId, queue: queueNames[queue], jobId: job?.id, scanId: job?.data?.scanId, attempt: job?.attemptsMade, maxAttempts: job?.opts.attempts ?? 1, error: error.message }, "job attempt failed");
     if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) {
       await queues().deadLetter.add("failed-job", { queue, jobId: job.id, data: job.data, error: error.message });
       const scanId = typeof job.data?.scanId === "string" ? job.data.scanId : undefined;
