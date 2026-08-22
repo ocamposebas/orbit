@@ -5,7 +5,7 @@ export type SentinelPageType = (typeof pageTypes)[number];
 export type SentinelSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
 export const linkSchema = z.object({ text: z.string(), href: z.string(), rel: z.string().optional() });
-export const formSchema = z.object({ action: z.string(), method: z.string(), fields: z.array(z.object({ name: z.string(), type: z.string(), required: z.boolean(), checked: z.boolean().default(false), disabled: z.boolean().default(false) })) });
+export const formSchema = z.object({ action: z.string(), method: z.string(), fields: z.array(z.object({ name: z.string(), label: z.string().default(""), type: z.string(), required: z.boolean(), checked: z.boolean().default(false), disabled: z.boolean().default(false) })) });
 
 export const normalizedContentSchema = z.object({
   title: z.string(),
@@ -86,6 +86,9 @@ export interface ScanProgress {
   certificatesDiscovered: number;
   certificatesAnalyzed: number;
   checkoutFlowsInspected: number;
+  disclaimerPagesObserved: number;
+  researchRestrictionPagesObserved: number;
+  researchCoveredProducts: number;
   scanCoveragePercent: number;
   policiesDetected: number;
   claimsInspected: number;

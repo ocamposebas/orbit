@@ -67,10 +67,11 @@ export function detectPolicySignals(
 ): PolicySignalType[] {
   const path = new URL(url).pathname;
   const structuralText = `${content.title} ${content.headings.join(" ")}`;
+  const genericPolicyContainer = /^\/(?:polic(?:y|ies)|legal)\/?$/i.test(path);
   const detected = new Set<PolicySignalType>();
   const direct = pageType ? pageTypePolicy[pageType] : undefined;
   if (direct) detected.add(direct);
-  for (const rule of rules) if (rule.path.test(path) || rule.content.test(structuralText) || (pageType === "POLICY" && rule.content.test(content.visibleText))) detected.add(rule.type);
+  for (const rule of rules) if (rule.path.test(path) || rule.content.test(structuralText) || (pageType === "POLICY" && genericPolicyContainer && rule.content.test(content.visibleText))) detected.add(rule.type);
   return [...detected];
 }
 

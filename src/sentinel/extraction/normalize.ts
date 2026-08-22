@@ -22,5 +22,9 @@ export function contentHash(value: unknown): string {
 }
 
 export function splitSentences(text: string): string[] {
-  return stableUnique(text.split(/(?<=[.!?])\s+|\n+/).map((value) => value.trim()).filter((value) => value.length >= 12 && value.length <= 500));
+  const protectedDot = "\uE000";
+  const protectedText = text
+    .replace(/\b(?:[A-Za-z]\.){2,}/g, (value) => value.replaceAll(".", protectedDot))
+    .replace(/\b(?:e\.g|i\.e|Dr|Mr|Mrs|Ms|Prof|No)\./gi, (value) => value.replaceAll(".", protectedDot));
+  return stableUnique(protectedText.split(/(?<=[.!?])\s+|\n+/).map((value) => value.replaceAll(protectedDot, ".").trim()).filter((value) => value.length >= 12 && value.length <= 500));
 }

@@ -5,6 +5,7 @@ import { findingsToResolve } from "@/sentinel/analysis/lifecycle";
 import { analyzeClaim, LocalSemanticAnalyzer } from "@/sentinel/analysis/semantic";
 import { evaluatePage } from "@/sentinel/analysis/rules";
 import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
+import { consolidateCandidates } from "@/sentinel/analysis/candidate-quality";
 
 function page(url: string, type: "HOME" | "PRODUCT", body: string) { return { url, pageType: type, content: extractNormalizedContent(`<main><h1>Page</h1><p>${body}</p></main>`, url) }; }
 
@@ -50,7 +51,14 @@ describe("cross-page contradictions and finding lifecycle", () => {
     ["Injection", "AMBIGUOUS", false],
     ["No content on this website shall be interpreted as medical advice, dosage guidance, treatment guidance, or a recommendation for any non-research use.", "RESEARCH_RESTRICTION", false],
     ["Products are not intended to diagnose, treat, cure, mitigate, or prevent any disease or condition.", "RESEARCH_RESTRICTION", false],
+    ["Products must not be used in connection with self-experimentation, personal wellness, bodybuilding, weight loss, anti-aging, cosmetic enhancement, treatment, prevention, diagnosis, cure, mitigation, or management of any disease, condition, symptom, or physical objective.", "RESEARCH_RESTRICTION", false],
+    ["Product descriptions do not constitute instructions, warranties, medical claims, safety claims, dosage guidance, therapeutic claims, or recommendations for any use in living organisms.", "RESEARCH_RESTRICTION", false],
+    ["Nothing on this website should be interpreted as medical advice, veterinary advice, dosage guidance, formulation guidance, compounding instructions, treatment guidance, or a recommendation for use in any living organism.", "RESEARCH_RESTRICTION", false],
+    ["Phase One Labz does not make, support, authorize, adopt, or endorse any medical, health, therapeutic, diagnostic, cosmetic, weight-loss, wellness, performance, or disease-related claim regarding any product.", "RESEARCH_RESTRICTION", false],
+    ["Phase One Labz does not provide medical advice, dosage instructions, diagnosis, treatment recommendations, or safety instructions for human or animal use.", "RESEARCH_RESTRICTION", false],
+    ["Products have not been evaluated or authorized for diagnosis, treatment, cure, mitigation, or prevention of any disease.", "RESEARCH_RESTRICTION", false],
     ["We improve website performance and maintain account functionality.", "NONE", false],
+    ["This information helps us operate the website, improve performance, detect fraud, prevent abuse, troubleshoot issues, and understand customer behavior.", "NONE", false],
     ["Not intended for human use, but inject 2mg weekly.", "HUMAN_ADMINISTRATION", true],
   ])("classifies contextual text without raw keyword conclusions: %s", (text, type, material) => {
     expect(analyzeContext(text)).toEqual(expect.objectContaining({ type, material }));
@@ -69,6 +77,22 @@ describe("cross-page contradictions and finding lifecycle", () => {
     const url = "https://example.test/products/alpha";
     const content = extractNormalizedContent(`<main><h1>Reference Alpha 20mg</h1><p>Laboratory preparation may use a 2ml vial.</p></main>`, url);
     expect(evaluateContradictions([{ url, pageType: "PRODUCT", content }]).some((finding) => finding.ruleKey === "PRODUCT-CONCENTRATION-001")).toBe(false);
+  });
+  it("does not call two package volumes a concentration mismatch", () => {
+    const url = "https://example.test/products/recon-water-30ml";
+    const content = extractNormalizedContent(`<main><h1>Research water 30ml</h1><p>Related laboratory containers are also available in 3ml format.</p></main>`, url);
+    expect(evaluateContradictions([{ url, pageType: "PRODUCT", content }]).some((finding) => finding.ruleKey === "PRODUCT-CONCENTRATION-001")).toBe(false);
+  });
+  it("does not assess a post-purchase confirmation as checkout", async () => {
+    const url = "https://example.test/checkout/thank-you";
+    const content = extractNormalizedContent(`<main><h1>Thank you</h1><p>Your order has been received.</p></main>`, url);
+    expect(await evaluatePage({ url, pageType: "CHECKOUT", content }, new LocalSemanticAnalyzer())).not.toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "CHECKOUT-TERMS-001" })]));
+  });
+  it("consolidates a material claim into its stronger cross-page contradiction", () => {
+    const shared = { severity: "HIGH" as const, confidence: 0.92, status: "NEEDS_REVIEW" as const, category: "Marketing", title: "Claim", description: "Observed", url: "https://example.test/product", pageType: "PRODUCT" as const, detectedText: "Supports rapid weight loss.", reason: "Reason", recommendedAction: "Review", scoreComponent: "MARKETING_RISK" as const };
+    const findings = consolidateCandidates([{ ...shared, ruleKey: "MKT-CLAIM-001" }, { ...shared, ruleKey: "POSITION-CONFLICT-001", category: "Positioning", scoreComponent: "OPERATIONAL_CONSISTENCY" }]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].ruleKey).toBe("POSITION-CONFLICT-001");
   });
   it("resolves only signals absent from the new complete scan", () => { const active = [{ id: "keep", fingerprint: "a" }, { id: "resolve", fingerprint: "b" }]; expect(findingsToResolve(active, new Set(["a"]))).toEqual([{ id: "resolve", fingerprint: "b" }]); });
 });

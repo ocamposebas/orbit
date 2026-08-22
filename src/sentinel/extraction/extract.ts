@@ -3,7 +3,7 @@ import { normalizedContentSchema, type NormalizedContent } from "@/sentinel/type
 import { normalizeText, splitSentences, stableUnique } from "./normalize";
 
 const claimTerms = /\b(weight loss|fat loss|burn(?:s|ing)? fat|metabolism|treat|cure|heal|diagnos|dose|dosage|inject|injection|consume|consumption|swallow|sublingual|oral use|topical use|apply topically|serving size|take (?:one|two|three|\d+)|(?:once|twice) (?:daily|weekly)|daily use|for human use|personal use|patient|prescription|pharmacy|telemedicine|before and after|transformation|appetite|anti-aging|performance|body transformation|reconstitut|bacteriostatic|syringe|needle)\b/i;
-const disclaimerTerms = /\b(not intended|research use only|for research|research purposes only|laboratory (?:use|research|analysis)|analytical (?:use|reference)|disclaimer|not for human|do not (?:consume|ingest|inject|use on humans?)|consult|results may vary)\b/i;
+const disclaimerTerms = /\b(not intended|research use only|for research|research purposes only|laboratory (?:use|research|analysis)|analytical (?:use|reference)|disclaimer|not for human|do not (?:consume|ingest|inject|use on humans?)|does not (?:provide|make|support|authorize|endorse|claim)|do not constitute|must not be used|nothing .{0,100}(?:interpreted|construed)|consult|results may vary)\b/i;
 
 function toAbsolute(value: string | undefined, baseUrl: string): string {
   if (!value) return "";
@@ -25,14 +25,20 @@ export function extractNormalizedContent(html: string, url: string): NormalizedC
   $("script,style,noscript,svg,template,iframe").remove();
   $("[hidden],[aria-hidden='true']").remove();
   const title = normalizeText($("title").first().text() || $("h1").first().text());
-  const contentRoot = $("main,article,[role='main']").first().length ? $("main,article,[role='main']").first() : $("body");
+  const primaryRoot = $("main,article,[role='main']").first();
+  const contentRoot = primaryRoot.length ? primaryRoot : $("body");
   const headings = stableUnique(contentRoot.find("h1,h2,h3").map((_, element) => $(element).text()).get());
   const paragraphs = stableUnique(contentRoot.find("p").map((_, element) => $(element).text()).get());
   const buttons = stableUnique(contentRoot.find("button,[role='button'],input[type='submit']").map((_, element) => $(element).text() || $(element).attr("value") || "").get());
   const forms = contentRoot.find("form").map((_, element) => ({
     action: toAbsolute($(element).attr("action") || url, url),
     method: ($(element).attr("method") ?? "GET").toUpperCase(),
-    fields: $(element).find("input,select,textarea").map((__, field) => ({ name: $(field).attr("name") ?? "", type: $(field).attr("type") ?? field.tagName, required: $(field).is("[required]"), checked: $(field).is(":checked"), disabled: $(field).is(":disabled") })).get(),
+    fields: $(element).find("input,select,textarea").map((__, field) => {
+      const id = $(field).attr("id");
+      const explicitLabel = id ? $("label[for]").filter((_, labelElement) => $(labelElement).attr("for") === id).first().text() : "";
+      const label = normalizeText($(field).attr("aria-label") || explicitLabel || $(field).closest("label").text());
+      return { name: $(field).attr("name") ?? "", label, type: $(field).attr("type") ?? field.tagName, required: $(field).is("[required]"), checked: $(field).is(":checked"), disabled: $(field).is(":disabled") };
+    }).get(),
   })).get();
   const images = contentRoot.find("img[src]").map((_, element) => { const src = toAbsolute($(element).attr("src"), url); let filename = ""; try { filename = decodeURIComponent(new URL(src).pathname.split("/").pop() ?? ""); } catch { /* retain empty filename */ } return { src, filename, alt: normalizeText($(element).attr("alt") ?? ""), title: normalizeText($(element).attr("title") ?? "") }; }).get().filter((image) => image.src);
   const breadcrumbs = stableUnique(contentRoot.find("nav[aria-label*='breadcrumb' i] a,[class*='breadcrumb' i] a,[itemtype*='BreadcrumbList'] [itemprop='name']").map((_, element) => $(element).text()).get());

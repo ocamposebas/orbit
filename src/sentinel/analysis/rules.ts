@@ -4,6 +4,17 @@ import { detectPolicySignals, type PolicySignalType } from "@/sentinel/classific
 
 interface PageInput { url: string; pageType: SentinelPageType; content: NormalizedContent; httpStatus?: number }
 
+export function isReviewableCheckout(page: Pick<PageInput, "url" | "pageType" | "content">) {
+  if (page.pageType !== "CHECKOUT") return false;
+  const path = new URL(page.url).pathname;
+  if (/\/(?:checkout|order)(?:\/|[-_])(?:thank[-_]?you|confirmation|confirmed|complete|completed|receipt|success)(?:\/|$)/i.test(path)) return false;
+  const fields = page.content.forms.flatMap((form) => form.fields);
+  const hasCheckoutField = fields.some((field) => /(?:billing|shipping|payment|card|order|checkout|terms|research|age|address)/i.test(`${field.name} ${field.label}`));
+  const hasCheckoutAction = page.content.buttons.some((button) => /\b(?:place|submit|complete) order\b|\bpay(?: now)?\b|continue to (?:payment|review)|complete checkout/i.test(button));
+  const hasCheckoutSummary = /\b(?:order total|billing address|shipping address|payment method|review your order)\b/i.test(page.content.visibleText);
+  return hasCheckoutField || hasCheckoutAction || hasCheckoutSummary;
+}
+
 function candidate(input: Omit<CandidateFinding, "url" | "pageType">, page: PageInput): CandidateFinding {
   return { ...input, url: page.url, pageType: page.pageType };
 }
@@ -38,9 +49,9 @@ export async function evaluatePage(page: PageInput, analyzer: SemanticAnalyzer):
   if (page.content.controls.loginWall && page.pageType !== "ACCOUNT") {
     findings.push(candidate({ ruleKey: "SITE-ACCESS-001", severity: "LOW", confidence: 0.72, status: "NEEDS_REVIEW", category: "Site controls", title: "Content appears gated by authentication", description: "The rendered page exposed a password gate outside an account page.", reason: "A password input and access language were present.", recommendedAction: "Confirm that monitoring can access the public content customers rely on.", scoreComponent: "SITE_CONTROLS" }, page));
   }
-  if (page.pageType === "CHECKOUT") {
+  if (isReviewableCheckout(page)) {
     const checkboxes = page.content.forms.flatMap((form) => form.fields).filter((field) => field.type === "checkbox");
-    const hasTermsAcknowledgement = checkboxes.some((field) => /terms|condition|acknowledge/i.test(field.name));
+    const hasTermsAcknowledgement = checkboxes.some((field) => /terms|condition|acknowledg/i.test(`${field.name} ${field.label}`));
     if (!hasTermsAcknowledgement) findings.push(candidate({ ruleKey: "CHECKOUT-TERMS-001", severity: "MEDIUM", confidence: 0.78, status: "NEEDS_REVIEW", category: "Checkout control", title: "Terms acknowledgement was not detected", description: "The publicly accessible checkout view did not expose a recognizable terms acknowledgement control.", reason: "No checkbox field was associated with terms or acknowledgement language.", recommendedAction: "Review the checkout step manually and confirm that applicable terms are presented clearly before order submission.", scoreComponent: "SITE_CONTROLS" }, page));
   }
   return findings;

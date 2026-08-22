@@ -44,6 +44,16 @@ const beforeAfter = /\b(?:before\s*(?:&|and|\/)?\s*after|transformation|progress
 const prescriptionSignal = /\b(?:prescription|prescriber|pharmacy|telemedicine|medical consultation|prescription fulfillment|patient intake|rx only)\b/i;
 const ambiguousHumanTerm = /\b(?:dose|dosage|injectable|injection|patient|therapy|treatment|weight loss|fat loss|healing|personal use|human use|consumption|bacteriostatic water|syringe|needle)\b/i;
 const operationalPerformance = /\b(?:website|site|system|service|platform|account|checkout|application|business|operational)\s+(?:performance|functionality|availability|security|reliability)\b/i;
+const operationalContext = /\b(?:website|site|system|service|platform|account|checkout|application|analytics|traffic|fraud|abuse|troubleshoot(?:ing)?|customer behavior|technical|operational)\b/i;
+const riskLanguage = /\b(?:medical|health|therapeutic|diagnostic|disease|treatment|cure|mitigation|prevention|dosage|dose|administration|inject(?:ion|ed)?|human|animal|personal wellness|bodybuilding|weight[- ]?loss|anti[- ]?aging|cosmetic|performance outcome|living organisms?)\b/i;
+const explicitDenial = [
+  /\b(?:must|may|shall|should|can)\s+not\s+be\s+(?:used|administered|injected|ingested|consumed|applied|promoted)\b/i,
+  /\b(?:does?|did|will)\s+not\s+(?:make|support|authorize|adopt|endorse|provide|claim|recommend|constitute|guarantee)\b/i,
+  /\b(?:descriptions?|information|content|materials?|products?)\s+(?:do|does|are|is)\s+not\s+(?:constitute|provide|intended|approved|authorized|recommended|offered|sold)\b/i,
+  /\bnothing\b.{0,160}\b(?:should|shall|may|can)?\s*(?:be\s+)?(?:interpreted|construed|understood|relied upon)\b/i,
+  /\b(?:has|have|had)\s+not\s+been\s+(?:evaluated|approved|cleared|authorized|verified|validated)\b/i,
+  /\b(?:not|never)\s+(?:for|intended for|approved for|authorized for)\b/i,
+];
 
 function result(input: Omit<ContextualSignal, "evidence">, evidence: string): ContextualSignal {
   return { ...input, evidence };
@@ -54,9 +64,11 @@ export function analyzeContext(input: string): ContextualSignal {
   if (!text) return result({ type: "NONE", confidence: 1, material: false, consumerDirected: false, researchContext: false, rationale: "No text was available for contextual analysis." }, text);
 
   const restricted = researchRestriction.some((pattern) => pattern.test(text));
-  const adversativeTail = text.match(/\b(?:but|however|yet|nevertheless)\b(.+)$/i)?.[1] ?? "";
-  if (restricted && !(adversativeTail && (directAdministration.test(adversativeTail) || medicalClaim.test(adversativeTail) || directOutcome.test(adversativeTail)))) return result({ type: "RESEARCH_RESTRICTION", confidence: 0.98, material: false, consumerDirected: false, researchContext: true, rationale: "The sentence expressly prohibits human, personal or non-research use; the prohibited activity is not a consumer recommendation." }, text);
-  if (operationalPerformance.test(text)) return result({ type: "NONE", confidence: 0.97, material: false, consumerDirected: false, researchContext: false, rationale: "The outcome term refers to website, platform or operational performance rather than a human result." }, text);
+  const denial = riskLanguage.test(text) && explicitDenial.some((pattern) => pattern.test(text));
+  const adversativeTail = text.match(/\b(?:but|however|yet|nevertheless|although|except)\b(.+)$/i)?.[1] ?? "";
+  const materialTail = adversativeTail && (directAdministration.test(adversativeTail) || medicalClaim.test(adversativeTail) || directOutcome.test(adversativeTail));
+  if ((restricted || denial) && !materialTail) return result({ type: "RESEARCH_RESTRICTION", confidence: 0.99, material: false, consumerDirected: false, researchContext: true, rationale: "The wording expressly denies, prohibits, or disclaims the risky use; terms inside that prohibition are not consumer recommendations." }, text);
+  if (operationalPerformance.test(text) || (operationalContext.test(text) && /\b(?:improv(?:e|es|ed|ing) performance|performance|behavior)\b/i.test(text))) return result({ type: "NONE", confidence: 0.98, material: false, consumerDirected: false, researchContext: false, rationale: "The wording describes website, analytics, fraud-prevention, or operational activity rather than a human outcome." }, text);
 
   const scientific = scientificDiscussion.test(text);
   const administration = directAdministration.test(text) || administrationInstruction.test(text);

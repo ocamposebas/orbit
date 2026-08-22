@@ -3,7 +3,7 @@ import { contentHash } from "@/sentinel/extraction/normalize";
 import { getDatabase } from "@/sentinel/db";
 import { analyzeContext } from "./contextual-signals";
 
-export const LOCAL_SEMANTIC_VERSION = "local-semantic-v3";
+export const LOCAL_SEMANTIC_VERSION = "local-semantic-v4";
 
 export function analyzeClaim(input: string): SemanticResult {
   const text = input.trim();
@@ -27,7 +27,7 @@ export interface SemanticAnalyzer {
 export class LocalSemanticAnalyzer implements SemanticAnalyzer {
   readonly provider = "local";
   readonly model = LOCAL_SEMANTIC_VERSION;
-  readonly promptVersion = "claim-intent-v3";
+  readonly promptVersion = "claim-intent-v4";
   async analyze(text: string) { return analyzeClaim(text); }
 }
 

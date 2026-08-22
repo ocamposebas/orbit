@@ -8,7 +8,7 @@ const stageOrder: ScanProgress["stage"][] = ["queued", "discovering", "crawling"
 const statusOrder: ScanStatus[] = ["QUEUED", "DISCOVERING", "CRAWLING", "CLASSIFYING", "ANALYZING", "EVIDENCE", "SCORING", "COMPLETED"];
 
 export function initialProgress(): ScanProgress {
-  return { pipelineVersion, stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, productsDiscovered: 0, productsScanned: 0, variantsScanned: 0, imagesAnalyzed: 0, certificatesDiscovered: 0, certificatesAnalyzed: 0, checkoutFlowsInspected: 0, scanCoveragePercent: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
+  return { pipelineVersion, stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, productsDiscovered: 0, productsScanned: 0, variantsScanned: 0, imagesAnalyzed: 0, certificatesDiscovered: 0, certificatesAnalyzed: 0, checkoutFlowsInspected: 0, disclaimerPagesObserved: 0, researchRestrictionPagesObserved: 0, researchCoveredProducts: 0, scanCoveragePercent: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
 }
 
 export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<ScanProgress>, updatedAt = new Date().toISOString()): ScanProgress {
@@ -33,6 +33,9 @@ export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<Sca
     certificatesDiscovered: Math.max(current.certificatesDiscovered ?? 0, patch.certificatesDiscovered ?? 0),
     certificatesAnalyzed: Math.max(current.certificatesAnalyzed ?? 0, patch.certificatesAnalyzed ?? 0),
     checkoutFlowsInspected: Math.max(current.checkoutFlowsInspected ?? 0, patch.checkoutFlowsInspected ?? 0),
+    disclaimerPagesObserved: Math.max(current.disclaimerPagesObserved ?? 0, patch.disclaimerPagesObserved ?? 0),
+    researchRestrictionPagesObserved: Math.max(current.researchRestrictionPagesObserved ?? 0, patch.researchRestrictionPagesObserved ?? 0),
+    researchCoveredProducts: Math.max(current.researchCoveredProducts ?? 0, patch.researchCoveredProducts ?? 0),
     scanCoveragePercent: Math.max(current.scanCoveragePercent ?? 0, patch.scanCoveragePercent ?? 0),
     policiesDetected: Math.max(current.policiesDetected ?? 0, patch.policiesDetected ?? 0),
     claimsInspected: Math.max(current.claimsInspected ?? 0, patch.claimsInspected ?? 0),

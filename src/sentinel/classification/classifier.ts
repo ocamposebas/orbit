@@ -3,6 +3,17 @@ import { detectPolicySignals } from "./policy-signals";
 
 type ScoreMap = Partial<Record<SentinelPageType, { score: number; reasons: string[] }>>;
 
+export function looksLikeProductUrl(url: string) {
+  return /\/(?:products?|p)\//i.test(new URL(url).pathname);
+}
+
+export function hasProductEvidence(content: NormalizedContent) {
+  const schemas = JSON.stringify(content.structuredData).toLowerCase();
+  const structuredProduct = schemas.includes('"@type":"product"') || schemas.includes('"@type": "product"');
+  const commerceAction = content.buttons.some((button) => /\b(?:add to cart|buy now|select options?|choose options?)\b/i.test(button));
+  return structuredProduct || content.prices.length > 0 || content.variants.length > 0 || commerceAction;
+}
+
 function add(scores: ScoreMap, type: SentinelPageType, score: number, reason: string) {
   const current = scores[type] ?? { score: 0, reasons: [] };
   current.score += score;
@@ -16,6 +27,12 @@ export function classifyPage(url: string, content: NormalizedContent): Classifie
   const scores: ScoreMap = {};
 
   if (path === "/") add(scores, "HOME", 12, "root URL");
+  if (/\/(?:checkout|order)(?:\/|[-_])(?:thank[-_]?you|confirmation|confirmed|complete|completed|receipt|success)(?:\/|$)/i.test(path)) {
+    return { pageType: "OTHER", confidence: 0.99, reasons: ["post-purchase confirmation URL is not a pre-payment checkout step"] };
+  }
+  if (looksLikeProductUrl(url) && content.controls.loginWall && !hasProductEvidence(content)) {
+    return { pageType: "ACCOUNT", confidence: 0.98, reasons: ["product-shaped URL returned an authentication wall without observable product evidence"] };
+  }
   const pathRules: Array<[RegExp, SentinelPageType, string]> = [
     [/\/(products?|p)\//, "PRODUCT", "product URL pattern"],
     [/\/(collections?|categories?)\//, "COLLECTION", "collection URL pattern"],

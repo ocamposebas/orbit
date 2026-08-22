@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { contentHash } from "@/sentinel/extraction/normalize";
 import { normalizedContentSchema, type CandidateFinding, type SentinelPageType } from "@/sentinel/types";
-import { evaluatePage, evaluateSiteCoverage } from "@/sentinel/analysis/rules";
+import { evaluatePage, evaluateSiteCoverage, isReviewableCheckout } from "@/sentinel/analysis/rules";
 import { CachedSemanticAnalyzer, LocalSemanticAnalyzer } from "@/sentinel/analysis/semantic";
 import { evaluateContradictions } from "@/sentinel/analysis/contradictions";
 import { findingsToResolve } from "@/sentinel/analysis/lifecycle";
@@ -13,6 +13,8 @@ import { detectPolicySignals, type PolicySignalType } from "@/sentinel/classific
 import { buildProductIntelligence } from "@/sentinel/analysis/product-intelligence";
 import { evaluateWebsiteLegitimacy } from "@/sentinel/analysis/legitimacy";
 import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
+import { consolidateCandidates } from "@/sentinel/analysis/candidate-quality";
+import { looksLikeProductUrl } from "@/sentinel/classification/classifier";
 
 export async function runAnalysisStage(scanId: string) {
   const db = getDatabase();
@@ -36,14 +38,7 @@ export async function runAnalysisStage(scanId: string) {
     await updateProgress(scanId, { stage: "analyzing", message: `Evaluating page context (${processed}/${pagesForDeepAnalysis.length})`, stageProcessed: processed, stageTotal: pagesForDeepAnalysis.length });
   }
   const rawCandidates = [...pageFindingGroups.flat(), ...evaluateSiteCoverage(pages), ...evaluateWebsiteLegitimacy(pages), ...evaluateContradictions(pages)];
-  const severityRank = { INFO: 0, LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 } as const;
-  const candidateByRuleAndPage = new Map<string, CandidateFinding>();
-  for (const candidate of rawCandidates) {
-    const key = `${candidate.ruleKey}|${candidate.url}`;
-    const current = candidateByRuleAndPage.get(key);
-    if (!current || severityRank[candidate.severity] > severityRank[current.severity] || (candidate.severity === current.severity && candidate.confidence > current.confidence)) candidateByRuleAndPage.set(key, candidate);
-  }
-  const candidates = [...candidateByRuleAndPage.values()];
+  const candidates = consolidateCandidates(rawCandidates);
   const storedRuleVersions = await db.ruleVersion.findMany({ where: { version: 1, rule: { key: { in: [...new Set(candidates.map((candidate) => candidate.ruleKey))] } } }, include: { rule: { select: { key: true } } } });
   const ruleVersionByKey = new Map(storedRuleVersions.map((version) => [version.rule.key, version]));
 
@@ -75,12 +70,15 @@ export async function runAnalysisStage(scanId: string) {
     }
   }
   const policiesDetected = presentPolicyTypes.size;
-  const productsDiscovered = pages.filter((page) => page.pageType === "PRODUCT").length;
+  const productsDiscovered = scan.pages.filter((page) => looksLikeProductUrl(page.url)).length;
   const variantsScanned = pages.reduce((sum, page) => sum + (page.pageType === "PRODUCT" ? page.content.variants.length : 0), 0);
   const imagesAnalyzed = pages.reduce((sum, page) => sum + page.content.images.length, 0);
   const certificatesDiscovered = new Set(pages.flatMap((page) => page.content.certificateLinks)).size;
-  const checkoutFlowsInspected = pages.filter((page) => page.pageType === "CART" || page.pageType === "CHECKOUT").length;
-  const scanCoveragePercent = Math.min(100, Math.round((pages.length / Math.max(scan.pagesDiscovered, pages.length, 1)) * 100));
+  const checkoutFlowsInspected = pages.filter((page) => page.pageType === "CART" || isReviewableCheckout(page)).length;
+  const pageCoveragePercent = Math.min(100, Math.round((pages.length / Math.max(scan.pagesDiscovered, pages.length, 1)) * 100));
+  const productCoveragePercent = productsDiscovered > 0 ? Math.min(100, Math.round((productsDetected / productsDiscovered) * 100)) : 100;
+  const certificateCoveragePercent = certificatesDiscovered > 0 ? 0 : 100;
+  const scanCoveragePercent = Math.round(pageCoveragePercent * 0.65 + productCoveragePercent * 0.2 + certificateCoveragePercent * 0.15);
   const expectedPolicyTypes = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
   for (const type of expectedPolicyTypes) if (!presentPolicyTypes.has(type)) await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type } }, update: { coverage: "MISSING", url: null }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type, coverage: "MISSING" } });
 
@@ -131,18 +129,20 @@ export async function runAnalysisStage(scanId: string) {
     if (toResolve.length) { const result = await db.finding.updateMany({ where: { id: { in: toResolve.map((item) => item.id) } }, data: { status: "RESOLVED", resolvedAt: new Date(), resolvedByScanId: scanId } }); findingsResolved = result.count; }
   }
 
-  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesAnalyzed, certificatesDiscovered, certificatesAnalyzed: 0, checkoutFlowsInspected, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
-  await advanceScanStatus(scanId, "SCORING");
   const productPages = pages.filter((page) => page.pageType === "PRODUCT");
   const researchCoveredProducts = productPages.filter((page) => page.content.disclaimers.some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
+  const researchRestrictionPagesObserved = pages.filter((page) => [...page.content.disclaimers, ...page.content.paragraphs].some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
+  const disclaimerPagesObserved = pages.filter((page) => /\bdisclaimer\b/i.test(`${new URL(page.url).pathname} ${page.content.title} ${page.content.headings.join(" ")}`) && page.content.disclaimers.length > 0).length;
+  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesAnalyzed, certificatesDiscovered, certificatesAnalyzed: 0, checkoutFlowsInspected, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
+  await advanceScanStatus(scanId, "SCORING");
   const requiredPoliciesFound = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"].filter((type) => presentPolicyTypes.has(type as PolicySignalType)).length;
-  const documentCoverage = certificatesDiscovered > 0 ? 0 : 100;
+  const documentCoverage = certificateCoveragePercent;
   const assessmentCoverage = {
     POLICY_COVERAGE: Math.round(scanCoveragePercent * 0.6 + (requiredPoliciesFound / 5) * 40),
-    PRODUCT_INTEGRITY: productPages.length ? Math.round((productsDetected / productPages.length) * 100) : 50,
-    RESEARCH_CONTROLS: productPages.length ? Math.round((researchCoveredProducts / productPages.length) * 100) : 50,
+    PRODUCT_INTEGRITY: productsDiscovered ? productCoveragePercent : 100,
+    RESEARCH_CONTROLS: productsDiscovered ? Math.round((researchCoveredProducts / productsDiscovered) * 100) : 100,
     MARKETING_RISK: scanCoveragePercent,
-    SITE_CONTROLS: productPages.length ? (checkoutFlowsInspected > 0 ? 100 : 0) : 100,
+    SITE_CONTROLS: productsDiscovered ? (checkoutFlowsInspected > 0 ? 100 : 0) : 100,
     OPERATIONAL_CONSISTENCY: Math.round(scanCoveragePercent * 0.6 + documentCoverage * 0.4),
   } as const;
   const score = calculateHealthScore([...candidates, ...retainedForScore], assessmentCoverage);

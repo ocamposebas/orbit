@@ -29,6 +29,25 @@ describe("page intelligence", () => {
     expect(complianceUrlPriority(url)).toBeLessThan(complianceUrlPriority("https://example.test/products/reference-alpha"));
   });
 
+  it("does not treat a cross-reference as the referenced policy", () => {
+    const url = "https://example.test/policies/research-use-only";
+    const content = extractNormalizedContent("<main><h1>Research Use Only Policy</h1><p>Cancelled orders are handled according to our Refund Policy.</p><p>All materials are for laboratory research only.</p></main>", url);
+    expect(detectPolicySignals(url, content, "POLICY")).toContain("RESEARCH_USE");
+    expect(detectPolicySignals(url, content, "POLICY")).not.toContain("REFUND");
+  });
+
+  it("extracts checkbox label text for checkout-control analysis", () => {
+    const content = extractNormalizedContent(`<main><form><label><input type="checkbox" name="accept" required> I accept the Terms and Conditions</label><button>Place order</button></form></main>`, "https://example.test/checkout");
+    expect(content.forms[0].fields[0]).toEqual(expect.objectContaining({ label: "I accept the Terms and Conditions", checked: false, required: true }));
+  });
+
+  it("keeps regulatory abbreviations attached to their negating sentence", () => {
+    const sentence = "Products have not been evaluated or authorized by the U.S. Food and Drug Administration for diagnosis, treatment, cure, mitigation, or prevention of disease.";
+    const content = extractNormalizedContent(`<main><p>${sentence}</p></main>`, "https://example.test/policies/disclaimer");
+    expect(content.claims).toContain(sentence);
+    expect(content.claims.some((claim) => claim.startsWith("Food and Drug"))).toBe(false);
+  });
+
   it("does not count a policy-looking 404 page as valid coverage", () => {
     const url = "https://example.test/pages/privacy-policy";
     const content = extractNormalizedContent("<main><h1>Page not found</h1></main>", url);
@@ -36,9 +55,21 @@ describe("page intelligence", () => {
     expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "POLICY-PRIVACY-001" })]));
   });
 
+  it("classifies a thank-you receipt as post-purchase content, not checkout", () => {
+    const url = "https://example.test/checkout/thank-you";
+    const content = extractNormalizedContent("<main><h1>Thank you</h1><p>Your order is complete.</p></main>", url);
+    expect(classifyPage(url, content)).toEqual(expect.objectContaining({ pageType: "OTHER", confidence: 0.99 }));
+  });
+
   it("does not treat a global sign-in modal as a content login wall", () => {
     const content = extractNormalizedContent(`<body><div role="dialog"><form><p>Sign in to access your account</p><input type="password"></form></div><main><h1>Reference Alpha</h1><p>Laboratory research material.</p></main></body>`, "https://example.test/products/alpha");
     expect(content.controls.loginWall).toBe(false);
+  });
+
+  it("does not claim a product was inspected when its URL returns only an access wall", () => {
+    const url = "https://example.test/product/private-reference";
+    const content = extractNormalizedContent(`<main><h1>Welcome back</h1><p>Sign in to continue to the private catalog.</p><form><input type="email"><input type="password"><button>Sign in</button></form></main>`, url);
+    expect(classifyPage(url, content)).toEqual(expect.objectContaining({ pageType: "ACCOUNT", confidence: 0.98 }));
   });
 
   it("extracts product prices from structured data when visible currency is absent", () => {
