@@ -1,0 +1,25 @@
+FROM node:24-bookworm-slim
+
+WORKDIR /app
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+COPY package.json package-lock.json ./
+
+# Evita ejecutar prisma generate antes de copiar el schema.
+RUN npm ci --ignore-scripts
+
+COPY . .
+
+# prisma.config.ts necesita que DATABASE_URL exista para generate,
+# pero NO necesita conectarse durante este paso.
+ENV DATABASE_URL="postgresql://orbit:orbit@127.0.0.1:5432/orbit"
+
+RUN npx prisma generate
+RUN npm run build
+
+ENV NODE_ENV=production
+
+EXPOSE 3000
+
+CMD ["npm", "run", "start"]
