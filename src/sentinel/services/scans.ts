@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
 import { getDatabase } from "@/sentinel/db";
-import { enqueueScan } from "@/sentinel/queue";
+import { enqueueScan, pipelineVersion } from "@/sentinel/queue";
 import { initialProgress } from "./progress";
 
 export const createScanSchema = z.object({ merchantId: z.string().min(1), siteId: z.string().min(1).optional(), mode: z.enum(["FULL", "INCREMENTAL", "QUICK", "TARGETED"]).default("FULL"), targetUrls: z.array(z.string().url()).max(25).optional() });
@@ -12,7 +12,11 @@ export async function createScan(input: z.infer<typeof createScanSchema>) {
   const site = data.siteId ? await db.merchantSite.findFirst({ where: { id: data.siteId, merchantId: data.merchantId } }) : await db.merchantSite.findFirst({ where: { merchantId: data.merchantId, active: true }, orderBy: { createdAt: "asc" } });
   if (!site) throw new Error("No active site was found for this merchant");
   const activeScan = await db.scan.findFirst({ where: { siteId: site.id, status: { in: ["QUEUED", "DISCOVERING", "CRAWLING", "CLASSIFYING", "ANALYZING", "EVIDENCE", "SCORING"] } }, orderBy: { createdAt: "desc" } });
-  if (activeScan) return activeScan;
+  if (activeScan) {
+    const activeProgress = activeScan.progress as { pipelineVersion?: string } | null;
+    if (activeProgress?.pipelineVersion === pipelineVersion) return activeScan;
+    await db.scan.update({ where: { id: activeScan.id }, data: { status: "CANCELLED", completedAt: new Date(), error: `Superseded by ${pipelineVersion}` } });
+  }
   if (data.targetUrls?.length) {
     const registeredSites = await db.merchantSite.findMany({ where: { merchantId: data.merchantId, active: true }, select: { hostname: true } });
     const allowedHosts = new Set(registeredSites.map((item) => item.hostname));

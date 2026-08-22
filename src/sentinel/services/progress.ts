@@ -2,12 +2,13 @@ import type { ScanProgress } from "@/sentinel/types";
 import { getDatabase } from "@/sentinel/db";
 import type { Prisma } from "@/generated/prisma/client";
 import type { ScanStatus } from "@/generated/prisma/client";
+import { pipelineVersion } from "@/sentinel/queue";
 
 const stageOrder: ScanProgress["stage"][] = ["queued", "discovering", "crawling", "classifying", "analyzing", "evidence", "scoring", "completed"];
 const statusOrder: ScanStatus[] = ["QUEUED", "DISCOVERING", "CRAWLING", "CLASSIFYING", "ANALYZING", "EVIDENCE", "SCORING", "COMPLETED"];
 
 export function initialProgress(): ScanProgress {
-  return { stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
+  return { pipelineVersion, stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
 }
 
 export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<ScanProgress>, updatedAt = new Date().toISOString()): ScanProgress {
@@ -19,6 +20,7 @@ export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<Sca
     ...initialProgress(),
     ...current,
     ...patch,
+    pipelineVersion,
     stage,
     urlsFound: Math.max(current.urlsFound ?? 0, patch.urlsFound ?? 0),
     pagesProcessed: Math.max(current.pagesProcessed ?? 0, patch.pagesProcessed ?? 0),

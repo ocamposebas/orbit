@@ -65,6 +65,7 @@ export interface CandidateFinding {
 export type ScoreComponentKey = "POLICY_COVERAGE" | "PRODUCT_INTEGRITY" | "RESEARCH_CONTROLS" | "MARKETING_RISK" | "SITE_CONTROLS" | "OPERATIONAL_CONSISTENCY";
 
 export interface ScanProgress {
+  pipelineVersion: string;
   stage: "queued" | "discovering" | "crawling" | "classifying" | "analyzing" | "evidence" | "scoring" | "completed" | "failed";
   message: string;
   urlsFound: number;

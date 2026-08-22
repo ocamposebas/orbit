@@ -1,5 +1,5 @@
 import { Worker, type Job } from "bullmq";
-import { queueNames, queues, redisConnection } from "@/sentinel/queue";
+import { pipelineVersion, queueNames, queues, redisConnection } from "@/sentinel/queue";
 import { getDatabase } from "@/sentinel/db";
 import { logger } from "@/sentinel/logger";
 import type { WorkerType } from "@/generated/prisma/client";
@@ -14,7 +14,7 @@ export function createSentinelWorker(queue: keyof typeof queueNames, handler: (j
   void heartbeat();
   const timer = setInterval(() => void heartbeat(), 15_000);
   timer.unref();
-  worker.on("ready", () => logger.info({ workerId, queue: queueNames[queue] }, "worker ready"));
+  worker.on("ready", () => logger.info({ workerId, queue: queueNames[queue], pipelineVersion }, "worker ready"));
   worker.on("active", (job) => { currentScanId = typeof job.data?.scanId === "string" ? job.data.scanId : undefined; void heartbeat(); logger.info({ workerId, queue: queueNames[queue], jobId: job.id, scanId: job.data?.scanId, attempt: job.attemptsMade + 1 }, "job started"); });
   worker.on("completed", (job) => { currentScanId = undefined; void heartbeat(); logger.info({ workerId, jobId: job.id, scanId: job.data?.scanId }, "job completed"); });
   worker.on("failed", async (job, error) => {

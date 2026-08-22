@@ -1,7 +1,8 @@
 import { Queue, type ConnectionOptions } from "bullmq";
 import { getServerEnv } from "./config";
 
-export const queueNames = { crawler: "sentinel-crawler", analysis: "sentinel-analysis", evidence: "sentinel-evidence", deadLetter: "sentinel-dead-letter" } as const;
+export const pipelineVersion = "sentinel-pipeline-v2";
+export const queueNames = { crawler: `${pipelineVersion}-crawler`, analysis: `${pipelineVersion}-analysis`, evidence: `${pipelineVersion}-evidence`, deadLetter: `${pipelineVersion}-dead-letter` } as const;
 
 export function redisConnection(): ConnectionOptions {
   const url = new URL(getServerEnv().REDIS_URL);

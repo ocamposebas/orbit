@@ -121,10 +121,10 @@ Jobs use exponential retry. Exhausted jobs enter a dead-letter queue and mark th
 
 ## Queue layout
 
-- `sentinel-crawler`: discovery, rendering and snapshots;
-- `sentinel-analysis`: extraction, rules, contradictions, reconciliation and scoring;
-- `sentinel-evidence`: selective screenshots;
-- `sentinel-dead-letter`: terminal failures with original job context.
+- `sentinel-pipeline-v2-crawler`: discovery, rendering and snapshots;
+- `sentinel-pipeline-v2-analysis`: extraction, rules, contradictions, reconciliation and scoring;
+- `sentinel-pipeline-v2-evidence`: selective screenshots;
+- `sentinel-pipeline-v2-dead-letter`: terminal failures with original job context.
 
 ## Rules engine
 
