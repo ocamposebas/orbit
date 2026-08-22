@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
+    "start:deploy": "prisma migrate deploy && next start",
     "lint": "eslint src tests vitest.config.ts",
     "typecheck": "prisma generate && next typegen && tsc --noEmit",
     "test": "vitest run",

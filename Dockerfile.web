@@ -25,4 +25,7 @@ ENV NODE_ENV=production
 
 EXPOSE 3000
 
-CMD ["npm", "run", "start"]
+# Apply committed, forward-only migrations before accepting traffic. Prisma's
+# migration lock keeps concurrent deploys safe; a failed migration prevents the
+# new application version from serving against an incompatible schema.
+CMD ["npm", "run", "start:deploy"]
