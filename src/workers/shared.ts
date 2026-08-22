@@ -10,11 +10,12 @@ export function createSentinelWorker(queue: keyof typeof queueNames, handler: (j
   const type = queue.toUpperCase() as WorkerType;
   let currentScanId: string | undefined;
   const worker = new Worker(queueNames[queue], handler, { connection: redisConnection(), concurrency: queue === "crawler" ? 2 : 4, lockDuration: 120_000, stalledInterval: 30_000, maxStalledCount: 2 });
-  const heartbeat = async () => { await getDatabase().workerHeartbeat.upsert({ where: { workerId }, update: { type, status: worker.isRunning() ? "ready" : "paused", currentScanId, lastSeenAt: new Date() }, create: { workerId, type, status: "ready", currentScanId } }).catch((error) => logger.warn({ workerId, error }, "worker heartbeat failed")); };
+  const heartbeatMetadata = { pipelineVersion, queue: queueNames[queue] };
+  const heartbeat = async () => { await getDatabase().workerHeartbeat.upsert({ where: { workerId }, update: { type, status: worker.isRunning() ? "ready" : "paused", currentScanId, metadata: heartbeatMetadata, lastSeenAt: new Date() }, create: { workerId, type, status: "ready", currentScanId, metadata: heartbeatMetadata } }).catch((error) => logger.warn({ workerId, error }, "worker heartbeat failed")); };
   void heartbeat();
   const timer = setInterval(() => void heartbeat(), 15_000);
   timer.unref();
-  worker.on("ready", () => logger.info({ workerId, queue: queueNames[queue], pipelineVersion }, "worker ready"));
+  worker.on("ready", () => { void heartbeat(); logger.info({ workerId, queue: queueNames[queue], pipelineVersion }, "worker ready"); });
   worker.on("active", (job) => { currentScanId = typeof job.data?.scanId === "string" ? job.data.scanId : undefined; void heartbeat(); logger.info({ workerId, queue: queueNames[queue], jobId: job.id, scanId: job.data?.scanId, attempt: job.attemptsMade + 1 }, "job started"); });
   worker.on("completed", (job) => { currentScanId = undefined; void heartbeat(); logger.info({ workerId, jobId: job.id, scanId: job.data?.scanId }, "job completed"); });
   worker.on("failed", async (job, error) => {

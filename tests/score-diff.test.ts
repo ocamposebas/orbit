@@ -7,5 +7,11 @@ const finding: CandidateFinding = { ruleKey: "MKT-001", severity: "HIGH", confid
 
 describe("explainable scoring and smart diff", () => {
   it("deducts the documented amount from the affected component", () => { const score = calculateHealthScore([finding]); const marketing = score.components.find((item) => item.key === "MARKETING_RISK"); expect(marketing?.score).toBe(84); expect(marketing?.deductions[0].points).toBe(16); expect(score.total).toBe(97); });
+  it("uses 100 for the strongest posture and deduplicates identical observations", () => {
+    expect(calculateHealthScore([]).total).toBe(100);
+    const score = calculateHealthScore([finding, finding]);
+    expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
+    expect(score.explanation.scale).toEqual({ minimum: 0, maximum: 100, higherIsBetter: true });
+  });
   it("marks a newly introduced consumer outcome as high impact", () => { const diff = smartDiff("Investigated in metabolic research models.", "Supports rapid fat loss and appetite suppression."); expect(diff.riskImpact).toBe("HIGH"); expect(diff.additions).toHaveLength(1); expect(diff.removals).toHaveLength(1); });
 });

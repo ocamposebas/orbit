@@ -9,20 +9,7 @@ import { calculateHealthScore } from "@/sentinel/analysis/score";
 import { getDatabase } from "@/sentinel/db";
 import { queues } from "@/sentinel/queue";
 import { advanceScanStatus, updateProgress } from "@/sentinel/services/progress";
-
-const policyTypes: Partial<Record<SentinelPageType, "PRIVACY" | "TERMS" | "REFUND" | "SHIPPING" | "CONTACT">> = { PRIVACY: "PRIVACY", TERMS: "TERMS", REFUND: "REFUND", SHIPPING: "SHIPPING", CONTACT: "CONTACT" };
-
-function inferredPolicyType(page: { pageType: SentinelPageType; content: { visibleText: string } }) {
-  const direct = policyTypes[page.pageType]; if (direct) return direct;
-  if (page.pageType !== "POLICY") return undefined;
-  const text = page.content.visibleText.toLowerCase();
-  if (/research use only|not for human/.test(text)) return "RESEARCH_USE" as const;
-  if (/age (?:policy|requirement)|years? of age/.test(text)) return "AGE" as const;
-  if (/promotion|discount|offer terms/.test(text)) return "PROMOTION" as const;
-  if (/returns? policy/.test(text)) return "RETURNS" as const;
-  if (/cancellation/.test(text)) return "CANCELLATION" as const;
-  return "OTHER" as const;
-}
+import { detectPolicySignals, type PolicySignalType } from "@/sentinel/classification/policy-signals";
 
 export async function runAnalysisStage(scanId: string) {
   const db = getDatabase();
@@ -31,7 +18,7 @@ export async function runAnalysisStage(scanId: string) {
   await updateProgress(scanId, { stage: "analyzing", message: "Evaluating page context and site coverage", stageProcessed: 0, stageTotal: scan.pages.length });
   const pages = scan.pages.flatMap((page) => {
     const parsed = normalizedContentSchema.safeParse(page.normalizedContent);
-    return parsed.success ? [{ id: page.id, snapshotId: page.snapshots[0]?.id, url: page.url, pageType: page.pageType as SentinelPageType, content: parsed.data }] : [];
+    return parsed.success ? [{ id: page.id, snapshotId: page.snapshots[0]?.id, url: page.url, httpStatus: page.httpStatus ?? undefined, pageType: page.pageType as SentinelPageType, content: parsed.data }] : [];
   });
   if (!pages.length) throw new Error("The crawl completed without any valid normalized pages to analyze.");
   const analyzer = new CachedSemanticAnalyzer(new LocalSemanticAnalyzer());
@@ -49,8 +36,10 @@ export async function runAnalysisStage(scanId: string) {
   const storedRuleVersions = await db.ruleVersion.findMany({ where: { version: 1, rule: { key: { in: [...new Set(candidates.map((candidate) => candidate.ruleKey))] } } }, include: { rule: { select: { key: true } } } });
   const ruleVersionByKey = new Map(storedRuleVersions.map((version) => [version.rule.key, version]));
 
-  let productsDetected = 0; let policiesDetected = 0;
+  let productsDetected = 0;
+  const presentPolicyTypes = new Set<PolicySignalType>();
   for (const page of pages) {
+    if (page.httpStatus !== undefined && page.httpStatus >= 400) continue;
     if (page.pageType === "PRODUCT" && page.content.productName) {
       const numericPrice = page.content.prices[0]?.replace(/[^\d.,]/g, "").replace(",", ".");
       const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl: page.url } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl: page.url, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers } });
@@ -62,18 +51,18 @@ export async function runAnalysisStage(scanId: string) {
       if (page.content.variants.length) await db.productVariant.createMany({ data: page.content.variants.map((name) => ({ productId: product.id, name })) });
       productsDetected++;
     }
-    const policyType = inferredPolicyType(page);
-    if (policyType) {
+    const detectedPolicyTypes = detectPolicySignals(page.url, page.content, page.pageType);
+    for (const policyType of detectedPolicyTypes) {
+      presentPolicyTypes.add(policyType);
       const policy = await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type: policyType } }, update: { coverage: "FOUND", url: page.url, currentHash: contentHash(page.content.visibleText), clauses: page.content.paragraphs }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type: policyType, coverage: "FOUND", url: page.url, currentHash: contentHash(page.content.visibleText), clauses: page.content.paragraphs } });
       const policySnapshotData = { text: page.content.visibleText, textHash: contentHash(page.content.visibleText), coverage: "FOUND" as const, clauses: page.content.paragraphs };
       const existingPolicySnapshot = await db.policySnapshot.findFirst({ where: { policyId: policy.id, scanId }, select: { id: true } });
       if (existingPolicySnapshot) await db.policySnapshot.update({ where: { id: existingPolicySnapshot.id }, data: policySnapshotData });
       else await db.policySnapshot.create({ data: { policyId: policy.id, scanId, ...policySnapshotData } });
-      policiesDetected++;
     }
   }
+  const policiesDetected = presentPolicyTypes.size;
   const expectedPolicyTypes = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
-  const presentPolicyTypes = new Set(pages.map(inferredPolicyType).filter(Boolean));
   for (const type of expectedPolicyTypes) if (!presentPolicyTypes.has(type)) await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type } }, update: { coverage: "MISSING", url: null }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type, coverage: "MISSING" } });
 
   const fingerprints = new Set<string>();

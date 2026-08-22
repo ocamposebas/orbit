@@ -2,12 +2,12 @@ import { semanticResultSchema, type SemanticResult } from "@/sentinel/types";
 import { contentHash } from "@/sentinel/extraction/normalize";
 import { getDatabase } from "@/sentinel/db";
 
-const consumerOutcome = /\b(weight loss|fat loss|burn(?:s|ing)? fat|boosts? metabolism|suppress(?:es)? appetite|anti-aging|muscle growth|body transformation|treat(?:s|ment)?|cure[sd]?|heal(?:s|ing)?)\b/i;
-const administration = /\b(inject(?:ion|ed)?|dosage|dose|take \d|twice (?:daily|weekly)|once (?:daily|weekly)|subcutaneous|intramuscular)\b/i;
-const explicitNegation = /\b(?:not|never|no)\s+(?:intended|designed|recommended|approved|for)?\s*(?:for|to)?\s*(?:human use|consumption|injection|treat|cure|weight loss|fat loss)/i;
-const researchLanguage = /\b(research use only|laboratory (?:analysis|research)|not for human (?:use|consumption)|preclinical|in vitro|analytical reference|research material)\b/i;
+const consumerOutcome = /\b(weight loss|fat loss|burn(?:s|ing)? fat|boosts? metabolism|suppress(?:es)? appetite|anti-aging|muscle growth|body transformation|treat(?:s|ment)?|cure[sd]?|heal(?:s|ing)?|improves? (?:sleep|mood|energy|focus)|relieves? (?:pain|anxiety|symptoms?))\b/i;
+const administration = /\b(inject(?:ion|ed)?|dosage|dose|consume|consumption|ingest|swallow|serving size|oral use|sublingual|apply topically|topical use|for human use|personal use|take (?:one|two|three|\d+)|(?:once|twice) (?:daily|weekly)|daily use|subcutaneous|intramuscular)\b/i;
+const explicitNegation = /\b(?:(?:not|never)\s+(?:intended|designed|recommended|approved|sold)?\s*(?:for|to)?\s*(?:human use|human consumption|consumption|injection|treatment|diagnosis|weight loss|fat loss)|do not (?:consume|ingest|swallow|inject|use on humans?))\b/i;
+const researchLanguage = /\b(research use only|for research purposes only|laboratory (?:use|analysis|research)|not for human (?:use|consumption)|preclinical|in vitro|analytical (?:use|reference)|research material|not intended for (?:clinical|diagnostic|therapeutic) use)\b/i;
 
-export const LOCAL_SEMANTIC_VERSION = "local-semantic-v1";
+export const LOCAL_SEMANTIC_VERSION = "local-semantic-v2";
 
 export function analyzeClaim(input: string): SemanticResult {
   const text = input.trim();
@@ -34,7 +34,7 @@ export interface SemanticAnalyzer {
 export class LocalSemanticAnalyzer implements SemanticAnalyzer {
   readonly provider = "local";
   readonly model = LOCAL_SEMANTIC_VERSION;
-  readonly promptVersion = "claim-intent-v1";
+  readonly promptVersion = "claim-intent-v2";
   async analyze(text: string) { return analyzeClaim(text); }
 }
 

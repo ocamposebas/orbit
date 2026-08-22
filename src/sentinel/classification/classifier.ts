@@ -1,4 +1,5 @@
 import type { ClassifiedPage, NormalizedContent, SentinelPageType } from "@/sentinel/types";
+import { detectPolicySignals } from "./policy-signals";
 
 type ScoreMap = Partial<Record<SentinelPageType, { score: number; reasons: string[] }>>;
 
@@ -33,6 +34,11 @@ export function classifyPage(url: string, content: NormalizedContent): Classifie
     [/\/(polic(?:y|ies)|research-use|age-policy|promotion-terms)(?:[-_/]|$)/, "POLICY", "general policy URL pattern"],
   ];
   for (const [pattern, type, reason] of pathRules) if (pattern.test(path)) add(scores, type, 8, reason);
+
+  for (const signal of detectPolicySignals(url, content)) {
+    const type = signal === "RESEARCH_USE" || signal === "AGE" || signal === "PROMOTION" ? "POLICY" : signal;
+    add(scores, type, 9, `${signal.toLowerCase().replaceAll("_", "-")} policy signal`);
+  }
 
   const schemas = JSON.stringify(content.structuredData).toLowerCase();
   if (schemas.includes('"@type":"product"') || schemas.includes('"@type": "product"')) add(scores, "PRODUCT", 10, "Product structured data");

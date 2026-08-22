@@ -6,6 +6,7 @@ import { getServerEnv } from "@/sentinel/config";
 import { normalizePublicUrl, validatePublicUrl } from "@/sentinel/security/ssrf";
 import type { ClassifiedPage, NormalizedContent } from "@/sentinel/types";
 import { discoverSeedUrls, parseRobots, type RobotsPolicy } from "./discovery";
+import { complianceUrlPriority } from "@/sentinel/classification/policy-signals";
 
 export interface CrawledPage {
   url: string;
@@ -95,7 +96,7 @@ async function crawlWithRecovery(page: Page, url: string, depth: number, discove
 }
 
 function internalLinks(page: CrawledPage, origin: string, robots: RobotsPolicy): string[] {
-  return page.normalized?.links.map((link) => canonicalize(link.href, page.url)).filter((url): url is string => Boolean(url)).filter((url) => new URL(url).origin === origin && robots.isAllowed(url)) ?? [];
+  return page.normalized?.links.map((link) => canonicalize(link.href, page.url)).filter((url): url is string => Boolean(url)).filter((url) => new URL(url).origin === origin && robots.isAllowed(url)).sort((left, right) => complianceUrlPriority(left) - complianceUrlPriority(right)) ?? [];
 }
 
 export async function crawlSite(targetInput: string, options: CrawlOptions = {}): Promise<CrawledPage[]> {
@@ -106,7 +107,9 @@ export async function crawlSite(targetInput: string, options: CrawlOptions = {})
   const maxPages = Math.min(options.maxPages ?? env.CRAWLER_MAX_PAGES, 1_000);
   const maxDepth = Math.min(options.maxDepth ?? env.CRAWLER_MAX_DEPTH, 10);
   const concurrency = Math.min(options.concurrency ?? env.CRAWLER_CONCURRENCY, 8);
-  const discovery = testOverride ? { robots: parseRobots("", target.origin), urls: [target.toString()] } : await discoverSeedUrls(target, maxPages);
+  const reservedForNavigation = Math.min(30, Math.max(8, Math.ceil(maxPages * 0.2)));
+  const seedBudget = Math.max(1, maxPages - reservedForNavigation);
+  const discovery = testOverride ? { robots: parseRobots("", target.origin), urls: [target.toString()] } : await discoverSeedUrls(target, seedBudget);
   const queue = discovery.urls.map((url) => ({ url: canonicalize(url, target.toString())!, depth: 0, from: undefined as string | undefined }));
   const seen = new Set(queue.map((item) => item.url));
   const resultUrls = new Set<string>();

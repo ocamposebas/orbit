@@ -37,7 +37,9 @@ async function seed() {
   const general = await db.ruleSet.upsert({ where: { code_version: { code: "ORBIT-GENERAL", version: 1 } }, update: {}, create: { code: "ORBIT-GENERAL", version: 1, name: "ORBIT General", description: "Baseline website intelligence and policy-coverage signals." } });
   const ruleDefinitions = [
     ["MKT-CLAIM-001", "Potential consumer-directed efficacy claim", "Marketing", "HIGH", "SEMANTIC", "PRODUCT"],
+    ["MKT-SLUG-001", "Consumer-directed URL signal detected", "Navigation language", "HIGH", "DETERMINISTIC", null],
     ["RSRCH-ADMIN-001", "Potential administration instruction", "Research positioning", "HIGH", "SEMANTIC", "PRODUCT"],
+    ["RSRCH-DISC-001", "Research-use disclosure not detected on product page", "Research controls", "MEDIUM", "CONTRADICTION", "PRODUCT"],
     ["PROD-PRICE-001", "Product price not detected", "Product integrity", "LOW", "DETERMINISTIC", "PRODUCT"],
     ["PROD-DISC-001", "Qualifying language not detected", "Disclosure", "MEDIUM", "DETERMINISTIC", "PRODUCT"],
     ["SITE-ACCESS-001", "Unexpected public content gate", "Site controls", "LOW", "DETERMINISTIC", null],
@@ -49,11 +51,12 @@ async function seed() {
     ["POLICY-CONTACT-001", "Contact page not found", "Policy coverage", "MEDIUM", "DETERMINISTIC", null],
     ["POSITION-CONFLICT-001", "Research and consumer positioning conflict", "Positioning conflict", "HIGH", "CONTRADICTION", null],
     ["POSITION-COSMETIC-001", "Cosmetic positioning conflict", "Positioning conflict", "HIGH", "CONTRADICTION", "PRODUCT"],
-    ["PRODUCT-CONCENTRATION-001", "Potential concentration mismatch", "Product consistency", "HIGH", "CONTRADICTION", "PRODUCT"],
+    ["PRODUCT-CONCENTRATION-001", "Potential concentration mismatch", "Product consistency", "MEDIUM", "CONTRADICTION", "PRODUCT"],
   ] as const;
   for (const [key, name, category, severity, evaluationType, appliesTo] of ruleDefinitions) {
     const rule = await db.rule.upsert({ where: { ruleSetId_key: { ruleSetId: general.id, key } }, update: {}, create: { ruleSetId: general.id, key } });
-    await db.ruleVersion.upsert({ where: { ruleId_version: { ruleId: rule.id, version: 1 } }, update: {}, create: { ruleId: rule.id, version: 1, name, description: `${name} observed by ORBIT Sentinel.`, category, severity, evaluationType, appliesTo, condition: { key, requiresEvidence: true }, remediationGuidance: "Review the observation in context and document the resulting decision." } });
+    const versionData = { name, description: `${name} observed by ORBIT Sentinel.`, category, severity, evaluationType, appliesTo, condition: { key, requiresEvidence: true }, remediationGuidance: "Review the observation in context and document the resulting decision." };
+    await db.ruleVersion.upsert({ where: { ruleId_version: { ruleId: rule.id, version: 1 } }, update: versionData, create: { ruleId: rule.id, version: 1, ...versionData } });
   }
   if (!(await db.auditLog.findFirst({ where: { organizationId: organization.id, action: "demo.seeded" } }))) await db.auditLog.create({ data: { organizationId: organization.id, merchantId: merchant.id, action: "demo.seeded", targetType: "Organization", targetId: organization.id, metadata: { demo: true } } });
   console.log(`Seeded ${organization.name}. Sign in with ${adminEmail}; use SEED_ADMIN_PASSWORD or the documented development default.`);

@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { safeFetchText } from "@/sentinel/security/ssrf";
+import { complianceUrlPriority } from "@/sentinel/classification/policy-signals";
 
 export interface RobotsPolicy {
   sitemaps: string[];
@@ -56,6 +57,9 @@ export async function discoverSeedUrls(target: URL, maximum: number) {
   const robots = await loadRobots(target.origin);
   const sitemapCandidates = robots.sitemaps.length ? robots.sitemaps : [new URL("/sitemap.xml", target).toString()];
   const batches = await Promise.all(sitemapCandidates.slice(0, 10).map((url) => sitemapUrls(url, target.origin)));
-  const urls = [target.toString(), ...batches.flat()].filter((url, index, all) => all.indexOf(url) === index && robots.isAllowed(url)).slice(0, maximum);
+  const urls = [target.toString(), ...batches.flat()]
+    .filter((url, index, all) => all.indexOf(url) === index && robots.isAllowed(url))
+    .sort((left, right) => complianceUrlPriority(left) - complianceUrlPriority(right))
+    .slice(0, maximum);
   return { robots, urls };
 }

@@ -1,7 +1,8 @@
 import type { CandidateFinding, NormalizedContent, SentinelPageType } from "@/sentinel/types";
 import type { SemanticAnalyzer } from "./semantic";
+import { detectPolicySignals, type PolicySignalType } from "@/sentinel/classification/policy-signals";
 
-interface PageInput { url: string; pageType: SentinelPageType; content: NormalizedContent }
+interface PageInput { url: string; pageType: SentinelPageType; content: NormalizedContent; httpStatus?: number }
 
 function candidate(input: Omit<CandidateFinding, "url" | "pageType">, page: PageInput): CandidateFinding {
   return { ...input, url: page.url, pageType: page.pageType };
@@ -9,6 +10,11 @@ function candidate(input: Omit<CandidateFinding, "url" | "pageType">, page: Page
 
 export async function evaluatePage(page: PageInput, analyzer: SemanticAnalyzer): Promise<CandidateFinding[]> {
   const findings: CandidateFinding[] = [];
+  let decodedPath = new URL(page.url).pathname;
+  try { decodedPath = decodeURIComponent(decodedPath); } catch { /* retain the encoded path */ }
+  decodedPath = decodedPath.replace(/[-_/]+/g, " ");
+  const humanDirectedPath = decodedPath.match(/\b(?:for human use|weight loss|fat loss|how to use|dosage|dosing|serving size|oral use|injectable|injection)\b/i)?.[0];
+  if (humanDirectedPath) findings.push(candidate({ ruleKey: "MKT-SLUG-001", severity: "HIGH", confidence: 0.9, status: "NEEDS_REVIEW", category: "Navigation language", title: "Consumer-directed URL signal detected", description: "The public URL contains language associated with a consumer outcome or administration path.", detectedText: humanDirectedPath, reason: "URL slugs are public positioning signals and can conflict with a research-only business model even when the body copy is qualified.", recommendedAction: "Review the URL, page purpose and visible content together, then align the public positioning with the declared research-only model.", scoreComponent: "RESEARCH_CONTROLS" }, page));
   for (const claim of page.content.claims) {
     const analysis = await analyzer.analyze(claim);
     if (analysis.classification === "administration_instruction") {
@@ -38,13 +44,14 @@ export async function evaluatePage(page: PageInput, analyzer: SemanticAnalyzer):
 export function evaluateSiteCoverage(pages: PageInput[]): CandidateFinding[] {
   if (!pages.length) return [];
   const home = pages.find((page) => page.pageType === "HOME") ?? pages[0];
-  const present = new Set(pages.map((page) => page.pageType));
-  const required: Array<{ type: SentinelPageType; key: string; title: string; severity: "HIGH" | "MEDIUM" }> = [
+  const usablePages = pages.filter((page) => page.httpStatus === undefined || page.httpStatus < 400);
+  const present = new Set<PolicySignalType>(usablePages.flatMap((page) => detectPolicySignals(page.url, page.content, page.pageType)));
+  const required: Array<{ type: PolicySignalType; key: string; title: string; severity: "HIGH" | "MEDIUM" }> = [
     { type: "PRIVACY", key: "POLICY-PRIVACY-001", title: "Privacy policy not found", severity: "HIGH" },
     { type: "TERMS", key: "POLICY-TERMS-001", title: "Terms of service not found", severity: "MEDIUM" },
     { type: "REFUND", key: "POLICY-REFUND-001", title: "Refund or cancellation policy not found", severity: "MEDIUM" },
     { type: "SHIPPING", key: "POLICY-SHIPPING-001", title: "Shipping policy not found", severity: "MEDIUM" },
     { type: "CONTACT", key: "POLICY-CONTACT-001", title: "Public contact page not found", severity: "MEDIUM" },
   ];
-  return required.filter(({ type }) => !present.has(type)).map(({ type, key, title, severity }) => candidate({ ruleKey: key, severity, confidence: 0.9, status: "OPEN", category: "Policy coverage", title, description: `A recognizable ${type.toLowerCase()} page was not found during this scan.`, reason: "No discovered page met the classifier threshold for this coverage area.", recommendedAction: "Publish a clear, accessible policy and link it from persistent site navigation.", scoreComponent: "POLICY_COVERAGE" }, home));
+  return required.filter(({ type }) => !present.has(type)).map(({ type, key, title, severity }) => candidate({ ruleKey: key, severity, confidence: 0.92, status: "OPEN", category: "Policy coverage", title, description: `A recognizable ${type.toLowerCase()} policy was not found in the successfully scanned pages.`, reason: "No accessible page matched this coverage area by URL slug, page classification, heading or policy-language signals.", recommendedAction: "Confirm that the policy is public, accessible and linked from persistent site navigation.", scoreComponent: "POLICY_COVERAGE" }, home));
 }
