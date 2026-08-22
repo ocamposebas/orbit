@@ -1,0 +1,9 @@
+import Link from "next/link";
+import { siteConfig } from "@/config/site";
+
+export function LegalShell({ title, summary, children }: { title: string; summary: string; children: React.ReactNode }) {
+  return <>
+    <header className="border-b border-white/[.07] pb-16 pt-32 sm:pb-20 sm:pt-40"><div className="container-shell"><p className="eyebrow">Legal</p><h1 className="mt-6 max-w-4xl text-balance text-[clamp(2.8rem,7vw,6rem)] font-medium leading-[.94] tracking-[-.065em]">{title}</h1><p className="mt-6 max-w-2xl text-base leading-7 text-[#92959e]">{summary}</p><p className="mt-5 font-mono text-[10px] text-[#5d6068]">Effective date: August 21, 2026</p></div></header>
+    <section className="py-16 sm:py-24"><div className="container-shell grid gap-12 lg:grid-cols-[220px_1fr]"><aside><div className="sticky top-28 rounded-xl border border-white/[.08] bg-white/[.018] p-5"><p className="text-[10px] font-semibold uppercase tracking-[.13em] text-[#666a73]">ORBIT legal</p><nav className="mt-4 space-y-3" aria-label="Legal pages"><Link className="block text-xs text-[#989ba3] hover:text-white" href="/privacy">Privacy Policy</Link><Link className="block text-xs text-[#989ba3] hover:text-white" href="/terms">Terms of Service</Link><Link className="block text-xs text-[#989ba3] hover:text-white" href="/refund">Refund &amp; Cancellation</Link></nav></div></aside><article className="prose-legal max-w-3xl">{children}<h2>Contact</h2><p>Questions about this policy may be directed to {siteConfig.supportEmail}. Notices may also be sent to {siteConfig.legalName} at {siteConfig.address}.</p><div className="mt-12 rounded-lg border border-[#e7bd72]/15 bg-[#e7bd72]/[.035] p-4 text-xs leading-6 text-[#9d927d]">The bracketed company details are centralized placeholders and must be replaced in <span className="font-mono">src/config/site.ts</span> before public launch.</div></article></div></section>
+  </>;
+}
