@@ -98,9 +98,56 @@ model Merchant {
   policies              Policy[]
   products              Product[]
   scans                 Scan[]
+  stripeConnect         StripeConnectIntegration?
+  stripeEvents          StripeConnectEvent[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
+}
+
+model StripeConnectIntegration {
+  id                              String                     @id @default(cuid())
+  merchantId                      String                     @unique
+  stripeAccountId                 String                     @unique
+  stripeEnvironment               StripeEnvironment
+  accountApiVersion               StripeAccountApiVersion    @default(V2)
+  displayStatus                   StripeConnectDisplayStatus @default(ONBOARDING)
+  cardPaymentsStatus              String?
+  payoutsStatus                   String?
+  requirementsCurrentlyDue        Json                       @default("[]")
+  requirementsEventuallyDue       Json                       @default("[]")
+  requirementsPastDue             Json                       @default("[]")
+  requirementsPendingVerification Json                       @default("[]")
+  futureRequirements              Json                       @default("[]")
+  statusDetails                   Json                       @default("[]")
+  disabledReason                  String?
+  onboardingStartedAt             DateTime?
+  onboardingCompletedAt           DateTime?
+  lastSyncedAt                    DateTime?
+  rawStripeState                  Json                       @default("{}")
+  createdAt                       DateTime                   @default(now())
+  updatedAt                       DateTime                   @updatedAt
+  merchant                        Merchant                   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  events                          StripeConnectEvent[]
+
+  @@index([stripeEnvironment, displayStatus])
+}
+
+model StripeConnectEvent {
+  id             String                          @id @default(cuid())
+  stripeEventId  String                          @unique
+  stripeAccountId String?
+  integrationId  String?
+  type            String
+  livemode        Boolean
+  status          StripeConnectEventStatus       @default(PROCESSING)
+  processedAt     DateTime?
+  errorCode       String?
+  createdAt       DateTime                       @default(now())
+  integration     StripeConnectIntegration?      @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+
+  @@index([stripeAccountId, createdAt])
+  @@index([status, createdAt])
 }
 
 model MerchantAccess {
@@ -710,6 +757,33 @@ enum AlertStatus {
 
 enum IntegrationProvider {
   GENERIC
+}
+
+enum StripeEnvironment {
+  TEST
+  LIVE
+}
+
+enum StripeAccountApiVersion {
+  V1
+  V2
+}
+
+enum StripeConnectDisplayStatus {
+  NOT_CONNECTED
+  ONBOARDING
+  ACTION_REQUIRED
+  IN_REVIEW
+  RESTRICTED
+  ENABLED
+  UNKNOWN
+}
+
+enum StripeConnectEventStatus {
+  PROCESSING
+  PROCESSED
+  IGNORED
+  FAILED
 }
 
 enum WorkerType {

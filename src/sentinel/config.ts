@@ -20,6 +20,11 @@ const serverEnvSchema = z.object({
   SESSION_TTL_DAYS: int(14),
   SEED_ADMIN_EMAIL: z.string().email().default("admin@orbit.local"),
   SEED_ADMIN_PASSWORD: z.string().min(12).optional(),
+  STRIPE_SECRET_KEY: z.string().trim().min(1).optional(),
+  STRIPE_MODE: z.enum(["test", "live"]).default("test"),
+  STRIPE_CONNECT_ACCOUNT_API: z.enum(["v1", "v2"]).default("v2"),
+  STRIPE_CONNECT_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
+  STRIPE_API_VERSION: z.string().trim().min(1).optional(),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
