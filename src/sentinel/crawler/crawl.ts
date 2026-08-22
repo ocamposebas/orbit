@@ -28,6 +28,8 @@ export interface CrawlOptions {
   maxDepth?: number;
   concurrency?: number;
   onProgress?: (event: { processed: number; total: number; currentUrl: string }) => Promise<void> | void;
+  onPage?: (page: CrawledPage, event: { processed: number; total: number; recovered: boolean }) => Promise<void> | void;
+  resumePages?: ReadonlyMap<string, CrawledPage>;
   unsafeAllowPrivateTestTarget?: boolean;
 }
 
@@ -82,6 +84,16 @@ async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?:
   }
 }
 
+async function crawlWithRecovery(page: Page, url: string, depth: number, discoveredFrom?: string, unsafeAllowPrivateTestTarget = false) {
+  let result: CrawledPage = { url, depth, discoveredFrom, inaccessibleReason: "Page was not attempted" };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    result = await crawlOne(page, url, depth, discoveredFrom, unsafeAllowPrivateTestTarget);
+    if (!result.inaccessibleReason || attempt === 3) return result;
+    await page.waitForTimeout(attempt * 350);
+  }
+  return result;
+}
+
 function internalLinks(page: CrawledPage, origin: string, robots: RobotsPolicy): string[] {
   return page.normalized?.links.map((link) => canonicalize(link.href, page.url)).filter((url): url is string => Boolean(url)).filter((url) => new URL(url).origin === origin && robots.isAllowed(url)) ?? [];
 }
@@ -97,6 +109,7 @@ export async function crawlSite(targetInput: string, options: CrawlOptions = {})
   const discovery = testOverride ? { robots: parseRobots("", target.origin), urls: [target.toString()] } : await discoverSeedUrls(target, maxPages);
   const queue = discovery.urls.map((url) => ({ url: canonicalize(url, target.toString())!, depth: 0, from: undefined as string | undefined }));
   const seen = new Set(queue.map((item) => item.url));
+  const resultUrls = new Set<string>();
   const results: CrawledPage[] = [];
   const browser = await chromium.launch({ headless: true });
   const context = await secureContext(browser, testOverride);
@@ -104,12 +117,19 @@ export async function crawlSite(targetInput: string, options: CrawlOptions = {})
     while (queue.length && results.length < maxPages) {
       const batch = queue.splice(0, Math.min(concurrency, maxPages - results.length));
       const pages = await Promise.all(batch.map(async (item) => {
+        const recovered = options.resumePages?.get(item.url);
+        if (recovered) return { crawled: recovered, recovered: true };
         const tab = await context.newPage();
-        try { return await crawlOne(tab, item.url, item.depth, item.from, testOverride); }
+        try { return { crawled: await crawlWithRecovery(tab, item.url, item.depth, item.from, testOverride), recovered: false }; }
         finally { await tab.close(); }
       }));
-      for (const crawled of pages) {
+      for (const item of pages) {
+        const { crawled } = item;
+        const resultKey = canonicalize(crawled.url, target.toString()) ?? crawled.url;
+        if (resultUrls.has(resultKey)) continue;
+        resultUrls.add(resultKey);
         results.push(crawled);
+        await options.onPage?.(crawled, { processed: results.length, total: Math.min(maxPages, results.length + queue.length), recovered: item.recovered });
         await options.onProgress?.({ processed: results.length, total: Math.min(maxPages, results.length + queue.length), currentUrl: crawled.url });
         if (crawled.depth >= maxDepth) continue;
         for (const url of internalLinks(crawled, target.origin, discovery.robots)) if (!seen.has(url) && seen.size < maxPages) { seen.add(url); queue.push({ url, depth: crawled.depth + 1, from: crawled.url }); }

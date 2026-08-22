@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { sentinelFetch } from "./client";
 import { cn } from "@/lib/utils";
 
-type Progress = { stage: string; message: string; urlsFound: number; pagesProcessed: number; pagesTotal: number; productsDetected: number; policiesDetected: number; claimsInspected: number; findings: number; currentUrl?: string; updatedAt: string };
+type Progress = { stage: string; message: string; urlsFound: number; pagesProcessed: number; pagesTotal: number; productsDetected: number; policiesDetected: number; claimsInspected: number; findings: number; attempt?: number; recoveredPages?: number; stageProcessed?: number; stageTotal?: number; currentUrl?: string; updatedAt: string };
 type Scan = { id: string; merchantId: string; status: string; mode: string; progress: Progress; pagesDiscovered: number; pagesProcessed: number; productsDetected: number; policiesDetected: number; findingsCreated: number; scoreBefore?: number; scoreAfter?: number; error?: string; createdAt: string; completedAt?: string; changes: Array<{ id: string; type: string; riskImpact: string; summary?: string; diff: { additions?: string[]; removals?: string[] }; scanPage: { url: string; title?: string } }> };
 const order = ["queued", "discovering", "crawling", "classifying", "analyzing", "evidence", "scoring", "completed"];
 
@@ -24,7 +24,7 @@ export function LiveScan({ scanId }: { scanId: string }) {
     <section aria-label="Overall scan progress" className="mt-6 border border-white/[.075] bg-[#0c0e12] p-4 sm:p-5">
       <div className="flex items-end justify-between gap-4"><div><p className="text-[9px] font-semibold uppercase tracking-[.14em] text-[#666b74]">Pipeline progress</p><p className="mt-1.5 text-xs capitalize text-[#c9cbc6]">{progress.stage.replaceAll("_", " ")}</p></div><p className="font-mono text-2xl font-medium tracking-[-.05em] text-[#e2e3df]">{overallProgress}<span className="ml-0.5 text-xs text-[#777b84]">%</span></p></div>
       <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/[.055]"><div className={cn("relative h-full rounded-full bg-[#8588ef] transition-[width] duration-700 ease-out", !["COMPLETED", "FAILED", "CANCELLED"].includes(scan.status) && "after:absolute after:inset-y-0 after:right-0 after:w-10 after:bg-gradient-to-r after:from-transparent after:to-white/35")} style={{ width: `${overallProgress}%` }} /></div>
-      <div className="mt-3 grid grid-cols-3 gap-3 text-[9px]"><div><span className="block text-[#555a62]">Elapsed</span><span className="mt-1 block font-mono text-[#92969e]">{elapsed}</span></div><div className="text-center"><span className="block text-[#555a62]">Pages</span><span className="mt-1 block font-mono text-[#92969e]">{progress.pagesProcessed} / {Math.max(progress.pagesTotal, scan.pagesDiscovered)}</span></div><div className="text-right"><span className="block text-[#555a62]">Updated</span><span className="mt-1 block font-mono text-[#92969e]">{formatUpdated(progress.updatedAt)}</span></div></div>
+      <div className="mt-3 grid grid-cols-4 gap-3 text-[9px]"><div><span className="block text-[#555a62]">Elapsed</span><span className="mt-1 block font-mono text-[#92969e]">{elapsed}</span></div><div className="text-center"><span className="block text-[#555a62]">Pages</span><span className="mt-1 block font-mono text-[#92969e]">{progress.pagesProcessed} / {Math.max(progress.pagesTotal, scan.pagesDiscovered)}</span></div><div className="text-center"><span className="block text-[#555a62]">Attempt</span><span className="mt-1 block font-mono text-[#92969e]">{progress.attempt ?? 1}{progress.recoveredPages ? ` · ${progress.recoveredPages} recovered` : ""}</span></div><div className="text-right"><span className="block text-[#555a62]">Updated</span><span className="mt-1 block font-mono text-[#92969e]">{formatUpdated(progress.updatedAt)}</span></div></div>
       <p className="mt-3 border-t border-white/[.055] pt-3 text-[9px] leading-4 text-[#555a62]">Progress is calculated from completed pipeline stages and observed page processing. Scan time varies with website size and response speed.</p>
     </section>
     {scan.error && <div className="mt-5 border border-[#d77979]/20 bg-[#d77979]/5 p-4 text-xs text-[#d99494]">{scan.error}</div>}
@@ -38,11 +38,18 @@ function safeHost(value: string) { try { return new URL(value).hostname; } catch
 
 function scanProgressPercent(scan: Scan, progress: Progress) {
   if (scan.status === "COMPLETED" || progress.stage === "completed") return 100;
-  const stageProgress: Record<string, number> = { queued: 2, discovering: 7, classifying: 64, analyzing: 76, evidence: 88, scoring: 96, failed: 0 };
-  if (progress.stage !== "crawling") return stageProgress[progress.stage] ?? 0;
-  const total = Math.max(progress.pagesTotal, scan.pagesDiscovered);
-  const pageRatio = total > 0 ? Math.min(1, progress.pagesProcessed / total) : 0;
-  return Math.round(12 + pageRatio * 46);
+  const stageProgress: Record<string, number> = { queued: 2, discovering: 7, classifying: 68, evidence: 94, scoring: 97, failed: 0 };
+  if (progress.stage === "crawling") {
+    const total = Math.max(progress.stageTotal ?? 0, progress.pagesTotal, scan.pagesDiscovered);
+    const processed = Math.max(progress.stageProcessed ?? 0, progress.pagesProcessed);
+    return Math.round(12 + (total > 0 ? Math.min(1, processed / total) : 0) * 50);
+  }
+  if (progress.stage === "analyzing") {
+    const total = progress.stageTotal ?? 0;
+    const ratio = total > 0 ? Math.min(1, (progress.stageProcessed ?? 0) / total) : 0;
+    return Math.round(72 + ratio * 20);
+  }
+  return stageProgress[progress.stage] ?? 0;
 }
 
 function formatElapsed(start: string, end?: string) {

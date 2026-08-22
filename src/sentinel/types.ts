@@ -74,6 +74,10 @@ export interface ScanProgress {
   policiesDetected: number;
   claimsInspected: number;
   findings: number;
+  attempt: number;
+  recoveredPages: number;
+  stageProcessed: number;
+  stageTotal: number;
   currentUrl?: string;
   updatedAt: string;
 }

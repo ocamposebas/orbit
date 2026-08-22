@@ -8,7 +8,7 @@ import { findingsToResolve } from "@/sentinel/analysis/lifecycle";
 import { calculateHealthScore } from "@/sentinel/analysis/score";
 import { getDatabase } from "@/sentinel/db";
 import { queues } from "@/sentinel/queue";
-import { updateProgress } from "@/sentinel/services/progress";
+import { advanceScanStatus, updateProgress } from "@/sentinel/services/progress";
 
 const policyTypes: Partial<Record<SentinelPageType, "PRIVACY" | "TERMS" | "REFUND" | "SHIPPING" | "CONTACT">> = { PRIVACY: "PRIVACY", TERMS: "TERMS", REFUND: "REFUND", SHIPPING: "SHIPPING", CONTACT: "CONTACT" };
 
@@ -27,16 +27,24 @@ function inferredPolicyType(page: { pageType: SentinelPageType; content: { visib
 export async function runAnalysisStage(scanId: string) {
   const db = getDatabase();
   const scan = await db.scan.findUniqueOrThrow({ where: { id: scanId }, include: { merchant: true, pages: { include: { snapshots: { orderBy: { capturedAt: "desc" }, take: 1 }, changes: { select: { id: true } } } } } });
-  await db.scan.update({ where: { id: scanId }, data: { status: "ANALYZING" } });
-  await updateProgress(scanId, { stage: "analyzing", message: "Evaluating page context and site coverage" });
+  await advanceScanStatus(scanId, "ANALYZING");
+  await updateProgress(scanId, { stage: "analyzing", message: "Evaluating page context and site coverage", stageProcessed: 0, stageTotal: scan.pages.length });
   const pages = scan.pages.flatMap((page) => {
     const parsed = normalizedContentSchema.safeParse(page.normalizedContent);
     return parsed.success ? [{ id: page.id, snapshotId: page.snapshots[0]?.id, url: page.url, pageType: page.pageType as SentinelPageType, content: parsed.data }] : [];
   });
+  if (!pages.length) throw new Error("The crawl completed without any valid normalized pages to analyze.");
   const analyzer = new CachedSemanticAnalyzer(new LocalSemanticAnalyzer());
   const changedPageIds = new Set(scan.pages.filter((page) => page.changes.length > 0).map((page) => page.id));
   const pagesForDeepAnalysis = scan.mode === "INCREMENTAL" ? pages.filter((page) => changedPageIds.has(page.id)) : pages;
-  const pageFindingGroups = await Promise.all(pagesForDeepAnalysis.map((page) => evaluatePage(page, analyzer)));
+  const pageFindingGroups: Awaited<ReturnType<typeof evaluatePage>>[] = [];
+  const analysisConcurrency = 8;
+  for (let offset = 0; offset < pagesForDeepAnalysis.length; offset += analysisConcurrency) {
+    const batch = pagesForDeepAnalysis.slice(offset, offset + analysisConcurrency);
+    pageFindingGroups.push(...await Promise.all(batch.map((page) => evaluatePage(page, analyzer))));
+    const processed = Math.min(offset + batch.length, pagesForDeepAnalysis.length);
+    await updateProgress(scanId, { stage: "analyzing", message: `Evaluating page context (${processed}/${pagesForDeepAnalysis.length})`, stageProcessed: processed, stageTotal: pagesForDeepAnalysis.length });
+  }
   const candidates = [...pageFindingGroups.flat(), ...evaluateSiteCoverage(pages), ...evaluateContradictions(pages)];
   const storedRuleVersions = await db.ruleVersion.findMany({ where: { version: 1, rule: { key: { in: [...new Set(candidates.map((candidate) => candidate.ruleKey))] } } }, include: { rule: { select: { key: true } } } });
   const ruleVersionByKey = new Map(storedRuleVersions.map((version) => [version.rule.key, version]));
@@ -107,18 +115,18 @@ export async function runAnalysisStage(scanId: string) {
     if (toResolve.length) { const result = await db.finding.updateMany({ where: { id: { in: toResolve.map((item) => item.id) } }, data: { status: "RESOLVED", resolvedAt: new Date(), resolvedByScanId: scanId } }); findingsResolved = result.count; }
   }
 
-  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length });
-  await db.scan.update({ where: { id: scanId }, data: { status: "SCORING" } });
+  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
+  await advanceScanStatus(scanId, "SCORING");
   const score = calculateHealthScore([...candidates, ...retainedForScore]);
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
   const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));
   await db.healthScore.upsert({ where: { merchantId_scanId: { merchantId: scan.merchantId, scanId } }, update: { total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { deleteMany: {}, create: scoreComponents } }, create: { merchantId: scan.merchantId, scanId, total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { create: scoreComponents } } });
-  await db.scan.update({ where: { id: scanId }, data: { status: "COMPLETED", productsDetected, policiesDetected, findingsCreated, findingsResolved, scoreBefore: previousScore?.total, scoreAfter: score.total, completedAt: new Date() } });
+  await advanceScanStatus(scanId, "COMPLETED", { productsDetected, policiesDetected, findingsCreated, findingsResolved, scoreBefore: previousScore?.total, scoreAfter: score.total, completedAt: new Date() });
   await db.merchant.update({ where: { id: scan.merchantId }, data: { status: candidates.some((finding) => finding.severity === "CRITICAL" || finding.severity === "HIGH") ? "REVIEW_REQUIRED" : "MONITORED" } });
   await db.merchantSite.update({ where: { id: scan.siteId }, data: { nextScanAt: new Date(Date.now() + (await db.merchantSite.findUniqueOrThrow({ where: { id: scan.siteId }, select: { monitoringCadenceMinutes: true } })).monitoringCadenceMinutes * 60_000) } });
   const completionAudit = await db.auditLog.findFirst({ where: { scanId, action: "scan.completed", targetType: "Scan", targetId: scanId }, select: { id: true } });
   if (!completionAudit) await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: { score: score.total, findings: candidates.length, pages: pages.length } } });
-  await updateProgress(scanId, { stage: "completed", message: "Scan completed", pagesProcessed: pages.length, pagesTotal: pages.length });
+  await updateProgress(scanId, { stage: "completed", message: "Scan completed", pagesProcessed: pages.length, pagesTotal: pages.length, stageProcessed: 1, stageTotal: 1 });
   await Promise.all(evidenceJobs.map((findingId) => queues().evidence.add("capture", { findingId }, { jobId: `evidence-${findingId}-${scanId}` })));
   return { score: score.total, findings: candidates.length, findingsCreated, productsDetected, policiesDetected };
 }

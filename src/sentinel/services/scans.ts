@@ -11,6 +11,8 @@ export async function createScan(input: z.infer<typeof createScanSchema>) {
   const db = getDatabase();
   const site = data.siteId ? await db.merchantSite.findFirst({ where: { id: data.siteId, merchantId: data.merchantId } }) : await db.merchantSite.findFirst({ where: { merchantId: data.merchantId, active: true }, orderBy: { createdAt: "asc" } });
   if (!site) throw new Error("No active site was found for this merchant");
+  const activeScan = await db.scan.findFirst({ where: { siteId: site.id, status: { in: ["QUEUED", "DISCOVERING", "CRAWLING", "CLASSIFYING", "ANALYZING", "EVIDENCE", "SCORING"] } }, orderBy: { createdAt: "desc" } });
+  if (activeScan) return activeScan;
   if (data.targetUrls?.length) {
     const registeredSites = await db.merchantSite.findMany({ where: { merchantId: data.merchantId, active: true }, select: { hostname: true } });
     const allowedHosts = new Set(registeredSites.map((item) => item.hostname));

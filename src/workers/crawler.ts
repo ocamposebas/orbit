@@ -5,6 +5,6 @@ import { queues } from "@/sentinel/queue";
 
 createSentinelWorker("crawler", async (job) => {
   const scanId = String(job.data.scanId);
-  await runCrawlStage(scanId);
+  await runCrawlStage(scanId, { attempt: job.attemptsMade + 1 });
   await queues().analysis.add("analyze", { scanId }, { jobId: `analysis-${scanId}` });
 });
