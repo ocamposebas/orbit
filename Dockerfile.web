@@ -1,4 +1,7 @@
-FROM node:24-bookworm-slim
+# The authenticated PDF route renders reports with Playwright. Keep this image
+# version aligned with the `playwright` package in package.json so Chromium and
+# its Linux dependencies are present in the web container after every deploy.
+FROM mcr.microsoft.com/playwright:v1.62.1-noble
 
 WORKDIR /app
 
