@@ -175,21 +175,42 @@ model WooCommerceRelayIntegration {
 }
 
 model PaymentTransaction {
-  id               String                   @id
-  merchantId       String
-  wooOrderId       String
-  stripeAccountId  String
-  amountMinor      Int
-  currency         String
-  platformFeeBps   Int
-  platformFeeMinor Int
+  id                    String                   @id
+  merchantId            String
+  wooOrderId            String
+  stripeAccountId       String
+  amountMinor           Int
+  currency              String
+  platformFeeBps        Int
+  platformFeeMinor      Int
   stripePaymentIntentId String?                  @unique
-  status           PaymentTransactionStatus @default(CREATED)
-  createdAt        DateTime                 @default(now())
-  updatedAt        DateTime                 @updatedAt
-  merchant         Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  wooCompletedAt        DateTime?
+  status                PaymentTransactionStatus @default(CREATED)
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  merchant              Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  paymentEvents         StripePaymentEvent[]
 
   @@unique([merchantId, wooOrderId])
+  @@index([stripeAccountId, status])
+}
+
+model StripePaymentEvent {
+  id                    String                   @id @default(cuid())
+  stripeEventId         String                   @unique
+  transactionId         String?
+  stripePaymentIntentId String?
+  stripeAccountId       String?
+  type                  String
+  livemode              Boolean
+  status                StripePaymentEventStatus @default(PROCESSING)
+  errorCode             String?
+  processedAt           DateTime?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  transaction           PaymentTransaction?      @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([transactionId, createdAt])
   @@index([stripeAccountId, status])
 }
 
@@ -836,6 +857,13 @@ enum PaymentTransactionStatus {
   SUCCEEDED
   FAILED
   CANCELED
+}
+
+enum StripePaymentEventStatus {
+  PROCESSING
+  PROCESSED
+  IGNORED
+  FAILED
 }
 
 enum WooCommerceRelayEnvironment {

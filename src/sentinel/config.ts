@@ -23,9 +23,11 @@ const serverEnvSchema = z.object({
   SEED_ADMIN_EMAIL: z.string().email().default("admin@orbit.local"),
   SEED_ADMIN_PASSWORD: z.string().min(12).optional(),
   STRIPE_SECRET_KEY: optionalNonEmpty,
+  STRIPE_PUBLISHABLE_KEY: optionalNonEmpty,
   STRIPE_MODE: z.enum(["test", "live"]).default("test"),
   STRIPE_CONNECT_ACCOUNT_API: z.enum(["v1", "v2"]).default("v2"),
   STRIPE_CONNECT_WEBHOOK_SECRET: optionalNonEmpty,
+  STRIPE_PAYMENTS_WEBHOOK_SECRET: optionalNonEmpty,
   STRIPE_API_VERSION: optionalNonEmpty,
 });
 

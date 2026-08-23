@@ -22,6 +22,13 @@ const orderSchema = z.object({
 });
 
 const wordpressErrorSchema = z.object({ code: z.string().trim().min(1).max(128) });
+const paymentCompletionSchema = z.object({
+  ok: z.literal(true),
+  already_processed: z.boolean(),
+  order_id: z.number().int().positive(),
+  status: z.string().trim().min(1).max(64),
+  transaction_id: z.string().trim().min(1).max(160),
+});
 
 type RelayRecord = {
   id: string;
@@ -88,6 +95,9 @@ function remoteOrderError(status: number, responseText: string): RelayError {
 
   if (remoteCode === "orbit_merchant_mismatch") return new RelayError(403, "MERCHANT_MISMATCH", "The Relay merchant configuration does not match this ORBIT merchant");
   if (remoteCode === "orbit_order_not_found") return new RelayError(404, "ORDER_NOT_FOUND", "WooCommerce order not found");
+  if (remoteCode === "orbit_conflicting_payment") return new RelayError(409, "ORDER_ALREADY_PAID", "WooCommerce reports a different payment for this order");
+  if (remoteCode === "orbit_order_not_payable") return new RelayError(409, "ORDER_ALREADY_PAID", "WooCommerce order is no longer payable");
+  if (remoteCode === "orbit_test_mode_disabled" || remoteCode === "orbit_test_transaction_invalid") return new RelayError(409, "RELAY_UNAVAILABLE", "The installed Relay plugin does not support production payment completion");
   if (remoteCode === "orbit_woocommerce_unavailable") return new RelayError(503, "WOOCOMMERCE_UNAVAILABLE", "WooCommerce is unavailable");
   if (["orbit_auth_missing", "orbit_timestamp_invalid", "orbit_timestamp_expired", "orbit_nonce_invalid", "orbit_replay_rejected", "orbit_signature_invalid"].includes(remoteCode) || status === 401) {
     return new RelayError(401, "INVALID_HMAC", "Private Relay authentication failed");
@@ -215,6 +225,47 @@ export async function verifyWooCommerceOrder(merchantId: string, orderId: number
       paymentRequired: parsed.data.payment_required,
       privateAuthentication: "VERIFIED",
     };
+  } catch (error) {
+    throw privateRequestFailure(error);
+  }
+}
+
+export async function completeWooCommerceOrderPayment(merchantId: string, orderId: number, transactionId: string) {
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) throw new RelayError(400, "ORDER_NOT_FOUND", "Invalid WooCommerce order ID");
+  if (!/^orb_tx_[A-Za-z0-9_-]{16,128}$/.test(transactionId)) throw new RelayError(400, "INVALID_RELAY_RESPONSE", "Invalid ORBIT transaction ID");
+
+  const db = getDatabase();
+  const integration = await db.wooCommerceRelayIntegration.findUnique({ where: { merchantId } });
+  if (!integration) throw new RelayError(409, "RELAY_NOT_CONFIGURED", "Configure ORBIT Relay before completing an order");
+  if (!integration.connectionEnabled) throw new RelayError(409, "RELAY_DISABLED", "Enable ORBIT Relay before completing an order");
+
+  const path = `/wp-json/orbit/v1/orders/${orderId}/payment`;
+  const rawBody = JSON.stringify({ status: "succeeded", transaction_id: transactionId });
+  const secret = decryptRelaySecret(integration.encryptedSigningSecret, merchantId);
+  const headers = createOrbitRelayAuthHeaders({ merchantId, method: "POST", path, rawBody, secret });
+
+  try {
+    const response = await safeFetchText(`${integration.baseUrl}${path}`, {
+      method: "POST",
+      body: rawBody,
+      timeoutMs: 8_000,
+      maxBytes: 32_768,
+      maxRedirects: 0,
+      accept: "application/json",
+      headers: { ...headers, "Content-Type": "application/json" },
+    });
+    if (response.status < 200 || response.status >= 300) throw remoteOrderError(response.status, response.text);
+
+    let json: unknown;
+    try { json = JSON.parse(response.text); }
+    catch { throw new RelayError(502, "INVALID_RELAY_RESPONSE", "The Relay returned an invalid payment completion response"); }
+    const parsed = paymentCompletionSchema.safeParse(json);
+    if (!parsed.success || parsed.data.order_id !== orderId || parsed.data.transaction_id !== transactionId) {
+      throw new RelayError(502, "INVALID_RELAY_RESPONSE", "The Relay returned an invalid payment completion response");
+    }
+
+    await db.wooCommerceRelayIntegration.update({ where: { id: integration.id }, data: { connectionStatus: "CONNECTED", lastSuccessfulRequestAt: new Date(), lastErrorCode: null } });
+    return { orderId, status: parsed.data.status, alreadyProcessed: parsed.data.already_processed };
   } catch (error) {
     throw privateRequestFailure(error);
   }
