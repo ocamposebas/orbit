@@ -183,6 +183,7 @@ model PaymentTransaction {
   currency         String
   platformFeeBps   Int
   platformFeeMinor Int
+  stripePaymentIntentId String?                  @unique
   status           PaymentTransactionStatus @default(CREATED)
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt

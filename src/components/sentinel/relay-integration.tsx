@@ -39,10 +39,24 @@ type PreparedPaymentTransaction = {
   currency: string;
   platformFeeBps: number;
   platformFeeMinor: number;
+  stripePaymentIntentId?: string | null;
   status: string;
   stripeAccountStatus: string;
   cardPaymentsStatus: string;
   stripeReadiness: "READY" | "STRIPE_NOT_READY";
+};
+
+type StripePaymentDiagnostic = {
+  orbitTransactionId: string;
+  wooOrderId: string;
+  stripePaymentIntentId: string;
+  amountMinor: number;
+  currency: string;
+  platformFeeBps: number;
+  platformFeeMinor: number;
+  connectedAccount: string;
+  stripeStatus: string;
+  transactionStatus: string;
 };
 
 const statusCopy: Record<string, { title: string; detail: string; tone: string }> = {
@@ -176,14 +190,17 @@ function RelayDiagnostics({ merchantId, enabled }: { merchantId: string; enabled
 function PaymentPreparation({ merchantId, enabled, platformFeeBps }: { merchantId: string; enabled: boolean; platformFeeBps?: number | null }) {
   const [wooOrderId, setWooOrderId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [creatingStripePayment, setCreatingStripePayment] = useState(false);
   const [error, setError] = useState("");
   const [transaction, setTransaction] = useState<PreparedPaymentTransaction>();
+  const [stripePayment, setStripePayment] = useState<StripePaymentDiagnostic>();
 
   async function prepare(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setError("");
     setTransaction(undefined);
+    setStripePayment(undefined);
     try {
       const result = await sentinelFetch<{ transaction: PreparedPaymentTransaction }>(`/api/sentinel/merchants/${merchantId}/payments/prepare`, {
         method: "POST",
@@ -197,10 +214,25 @@ function PaymentPreparation({ merchantId, enabled, platformFeeBps }: { merchantI
     }
   }
 
+  async function createPayment() {
+    if (!transaction) return;
+    setCreatingStripePayment(true);
+    setError("");
+    setStripePayment(undefined);
+    try {
+      const result = await sentinelFetch<{ payment: StripePaymentDiagnostic }>(`/api/sentinel/merchants/${merchantId}/payments/${transaction.id}/intent`, { method: "POST" });
+      setStripePayment(result.payment);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to create the Stripe PaymentIntent");
+    } finally {
+      setCreatingStripePayment(false);
+    }
+  }
+
   return <section aria-labelledby="payment-preparation-title" className="mt-6 border-t border-white/[.07] pt-5">
     <p className="text-[9px] font-semibold uppercase tracking-[.14em] text-[#777b84]">Prepare payment</p>
     <h3 id="payment-preparation-title" className="mt-2 text-sm font-medium text-[#d8d9d4]">ORBIT Payments Core</h3>
-    <p className="mt-1.5 max-w-2xl text-[10px] leading-5 text-[#62666e]">Creates or reuses an ORBIT transaction from the authoritative WooCommerce order. No Stripe payment is created.</p>
+    <p className="mt-1.5 max-w-2xl text-[10px] leading-5 text-[#62666e]">Prepare creates or reuses an ORBIT transaction from the authoritative WooCommerce order. Stripe PaymentIntent creation is a separate unconfirmed diagnostic action below.</p>
     <form onSubmit={prepare} className="mt-4 flex max-w-md flex-col gap-2 sm:flex-row sm:items-end">
       <label className="flex-1 text-[10px] text-[#81858d]">Woo Order ID<input required inputMode="numeric" pattern="[1-9][0-9]{0,15}" value={wooOrderId} onChange={(event) => setWooOrderId(event.target.value)} placeholder="1234" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 font-mono text-xs text-white outline-none focus:border-[#7779ea]" /></label>
       <button type="submit" disabled={!enabled || platformFeeBps == null || busy} className="h-10 rounded-md bg-[#ecece8] px-4 text-[10px] font-medium text-black disabled:opacity-50">{busy ? "Preparing..." : "Prepare transaction"}</button>
@@ -220,6 +252,18 @@ function PaymentPreparation({ merchantId, enabled, platformFeeBps }: { merchantI
         <RelayResult label="ORBIT fee amount" value={formatMinorAmount(transaction.platformFeeMinor, transaction.currency)} />
         <RelayResult label="Transaction status" value={transaction.status} />
         <RelayResult label="Stripe readiness" value={transaction.stripeReadiness} />
+      </dl>
+      <button type="button" onClick={() => void createPayment()} disabled={creatingStripePayment || transaction.stripeReadiness !== "READY"} className="mt-4 h-10 rounded-md bg-[#ecece8] px-4 text-[10px] font-medium text-black disabled:opacity-50">{creatingStripePayment ? "Creating..." : "Create Stripe payment"}</button>
+    </div>}
+    {stripePayment && <div aria-live="polite" className="mt-4 max-w-2xl border border-[#6fc39d]/20 bg-[#6fc39d]/[.025] p-4">
+      <p className="mb-3 text-[9px] font-semibold uppercase tracking-[.14em] text-[#6fc39d]">Stripe PaymentIntent created / reused</p>
+      <dl className="grid gap-px overflow-hidden border border-white/[.06] bg-white/[.06] sm:grid-cols-2">
+        <RelayResult label="PaymentIntent ID" value={stripePayment.stripePaymentIntentId} />
+        <RelayResult label="Amount" value={formatMinorAmount(stripePayment.amountMinor, stripePayment.currency)} />
+        <RelayResult label="ORBIT fee %" value={`${(stripePayment.platformFeeBps / 100).toFixed(2)}%`} />
+        <RelayResult label="Fee amount" value={formatMinorAmount(stripePayment.platformFeeMinor, stripePayment.currency)} />
+        <RelayResult label="Connected account" value={stripePayment.connectedAccount} />
+        <RelayResult label="Stripe status" value={stripePayment.stripeStatus} />
       </dl>
     </div>}
   </section>;
