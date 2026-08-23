@@ -19,8 +19,12 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     await enforceRateLimit(request, "merchant-create", 10);
+    const session = await requestSession(request);
     const organization = await requireRole(request, ["OWNER", "ADMIN", "ANALYST"]);
     const input = createMerchantSchema.omit({ organizationId: true }).parse(await request.json());
+    if (input.legalCountry && !["OWNER", "ADMIN"].includes(session?.role ?? "")) {
+      return NextResponse.json({ error: "Only an organization owner or admin can set the legal business country" }, { status: 403 });
+    }
     const merchant = await createMerchant({ ...input, organizationId: organization.id });
     return NextResponse.json({ merchant }, { status: 201 });
   } catch (error) { return apiError(error); }

@@ -1,8 +1,10 @@
+import type Stripe from "stripe";
 import { getDatabase } from "@/sentinel/db";
 import { getServerEnv } from "@/sentinel/config";
 import { HttpError } from "@/sentinel/http";
 import { childLogger } from "@/sentinel/logger";
 import { assertStripeEnvironment, getStripeClient, getStripeConfiguration, stripeApiUnavailable, stripeEnvironment, type StripeAccountApi } from "./client";
+import { isStripeConnectCountry, type StripeConnectCountryCode } from "./countries";
 import { normalizeV1Account, normalizeV2Account, type NormalizedStripeState } from "./normalize";
 
 const stripeLogger = childLogger({ component: "stripe-connect" });
@@ -10,6 +12,37 @@ const ownerAdminRoles = new Set(["OWNER", "ADMIN"]);
 
 export function canManageStripeConnect(role: string) { return ownerAdminRoles.has(role); }
 export function stripeConnectIdempotencyKey(merchantId: string, api: StripeAccountApi, mode: "test" | "live") { return `orbit-connect-${api}-${mode}-${merchantId}`; }
+
+export function requireStripeLegalCountry(value: string | null | undefined): StripeConnectCountryCode {
+  if (!value) throw new HttpError(422, "Set the merchant's legal business country before connecting Stripe.");
+  if (!isStripeConnectCountry(value)) throw new HttpError(422, "The merchant's legal business country must be a supported uppercase ISO 3166-1 alpha-2 code.");
+  return value;
+}
+
+type StripeAccountCreationInput = {
+  merchantId: string;
+  organizationId: string;
+  businessName: string;
+  businessDescription: string;
+  website?: string;
+  legalCountry: StripeConnectCountryCode;
+  api: StripeAccountApi;
+};
+
+export function buildStripeV2AccountCreateParams(input: Omit<StripeAccountCreationInput, "api">): Stripe.V2.Core.AccountCreateParams {
+  return {
+    display_name: input.businessName,
+    identity: { country: input.legalCountry },
+    metadata: { orbit_merchant_id: input.merchantId, orbit_organization_id: input.organizationId },
+    dashboard: "full",
+    configuration: { merchant: { capabilities: { card_payments: { requested: true } } } },
+    defaults: {
+      responsibilities: { fees_collector: "stripe", losses_collector: "stripe" },
+      profile: { product_description: input.businessDescription.slice(0, 500), ...(input.website ? { business_url: input.website } : {}) },
+    },
+    include: ["configuration.merchant", "defaults", "future_requirements", "requirements"],
+  };
+}
 
 function safeErrorCode(error: unknown) {
   const value = error as { type?: string; code?: string; statusCode?: number };
@@ -55,24 +88,15 @@ function mapStripeFailure(error: unknown, api: StripeAccountApi): never {
   throw new HttpError(502, "Stripe Connect is temporarily unavailable");
 }
 
-async function createAccountOnStripe(input: { merchantId: string; organizationId: string; businessName: string; businessDescription: string; website?: string; api: StripeAccountApi }) {
+async function createAccountOnStripe(input: StripeAccountCreationInput) {
   const stripe = getStripeClient();
   const idempotencyKey = stripeConnectIdempotencyKey(input.merchantId, input.api, getStripeConfiguration().mode);
   try {
     if (input.api === "v2") {
-      return await stripe.v2.core.accounts.create({
-        display_name: input.businessName,
-        metadata: { orbit_merchant_id: input.merchantId, orbit_organization_id: input.organizationId },
-        dashboard: "full",
-        configuration: { merchant: { capabilities: { card_payments: { requested: true } } } },
-        defaults: {
-          responsibilities: { fees_collector: "stripe", losses_collector: "stripe" },
-          profile: { product_description: input.businessDescription.slice(0, 500), ...(input.website ? { business_url: input.website } : {}) },
-        },
-        include: ["configuration.merchant", "defaults", "future_requirements", "requirements"],
-      }, { idempotencyKey });
+      return await stripe.v2.core.accounts.create(buildStripeV2AccountCreateParams(input), { idempotencyKey });
     }
     return await stripe.accounts.create({
+      country: input.legalCountry,
       business_profile: { name: input.businessName.slice(0, 120), product_description: input.businessDescription.slice(0, 500), ...(input.website ? { url: input.website } : {}) },
       capabilities: { card_payments: { requested: true } },
       controller: { fees: { payer: "stripe" }, losses: { payments: "stripe" }, stripe_dashboard: { type: "full" } },
@@ -91,12 +115,14 @@ export async function connectStripeAccount(merchantId: string, actorId: string) 
     if (merchant.stripeConnect.stripeEnvironment !== stripeEnvironment(config.mode)) throw new HttpError(409, `This merchant is connected to Stripe ${merchant.stripeConnect.stripeEnvironment.toLowerCase()}, but ORBIT is configured for ${config.mode}`);
     return syncStripeConnectAccount(merchantId, { actorId });
   }
+  const legalCountry = requireStripeLegalCountry(merchant.legalCountry);
   const account = await createAccountOnStripe({
     merchantId,
     organizationId: merchant.organizationId,
     businessName: merchant.businessName,
     businessDescription: merchant.businessDescription,
     website: merchant.sites[0]?.normalizedUrl,
+    legalCountry,
     api: config.accountApi,
   });
   const stripeAccountId = accountId(account);

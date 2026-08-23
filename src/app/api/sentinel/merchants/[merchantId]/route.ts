@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getDatabase } from "@/sentinel/db";
 import { apiError, HttpError, requireMerchantAccess } from "@/sentinel/http";
 import { childLogger } from "@/sentinel/logger";
+import { enforceRateLimit } from "@/sentinel/rate-limit";
+import { updateMerchantLegalCountrySchema } from "@/sentinel/services/merchants";
 
 export const runtime = "nodejs";
 const log = childLogger({ component: "merchant-api" });
@@ -27,5 +29,30 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "Stripe Connect schema is not deployed; serving merchant without the optional integration");
     }
     return NextResponse.json({ merchant: { ...merchant, stripeConnect, stripeConnectAvailable } });
+  } catch (error) { return apiError(error); }
+}
+
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ merchantId: string }> }) {
+  try {
+    await enforceRateLimit(request, "merchant-update", 30);
+    const { merchantId } = await params;
+    const { session, organization, merchant } = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN"], mutation: true });
+    const input = updateMerchantLegalCountrySchema.parse(await request.json());
+    const db = getDatabase();
+    const integration = await db.stripeConnectIntegration.findUnique({ where: { merchantId }, select: { id: true } });
+    if (integration && merchant.legalCountry && input.legalCountry !== merchant.legalCountry) {
+      throw new HttpError(409, "The legal business country cannot be changed after Stripe is connected");
+    }
+    const updated = await db.merchant.update({ where: { id: merchantId }, data: { legalCountry: input.legalCountry }, select: { id: true, legalCountry: true } });
+    await db.auditLog.create({ data: {
+      organizationId: organization.id,
+      merchantId,
+      actorId: session.user.id,
+      action: "MERCHANT_LEGAL_COUNTRY_UPDATED",
+      targetType: "Merchant",
+      targetId: merchantId,
+      metadata: { previousLegalCountry: merchant.legalCountry, legalCountry: input.legalCountry },
+    } });
+    return NextResponse.json({ merchant: updated });
   } catch (error) { return apiError(error); }
 }

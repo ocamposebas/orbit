@@ -29,15 +29,15 @@ model Organization {
 }
 
 model User {
-  id                String          @id @default(cuid())
-  email             String          @unique
+  id                String           @id @default(cuid())
+  email             String           @unique
   name              String?
   passwordHash      String?
-  active            Boolean         @default(true)
+  active            Boolean          @default(true)
   lastLoginAt       DateTime?
   passwordUpdatedAt DateTime?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
   auditLogs         AuditLog[]
   reviews           FindingReview[]
   memberships       Membership[]
@@ -76,24 +76,25 @@ model Membership {
 }
 
 model Merchant {
-  id                    String         @id @default(cuid())
+  id                    String                    @id @default(cuid())
   organizationId        String
   businessName          String
   slug                  String
   industry              String
   country               String
+  legalCountry          String?
   businessDescription   String
   expectedMonthlyVolume String?
-  status                MerchantStatus @default(ONBOARDING)
-  isDemo                Boolean        @default(false)
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+  status                MerchantStatus            @default(ONBOARDING)
+  isDemo                Boolean                   @default(false)
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
   alerts                Alert[]
   auditLogs             AuditLog[]
   findings              Finding[]
   healthScores          HealthScore[]
   accessGrants          MerchantAccess[]
-  organization          Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization          Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sites                 MerchantSite[]
   policies              Policy[]
   products              Product[]
@@ -133,17 +134,17 @@ model StripeConnectIntegration {
 }
 
 model StripeConnectEvent {
-  id             String                          @id @default(cuid())
-  stripeEventId  String                          @unique
+  id              String                    @id @default(cuid())
+  stripeEventId   String                    @unique
   stripeAccountId String?
-  integrationId  String?
+  integrationId   String?
   type            String
   livemode        Boolean
-  status          StripeConnectEventStatus       @default(PROCESSING)
+  status          StripeConnectEventStatus  @default(PROCESSING)
   processedAt     DateTime?
   errorCode       String?
-  createdAt       DateTime                       @default(now())
-  integration     StripeConnectIntegration?      @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  createdAt       DateTime                  @default(now())
+  integration     StripeConnectIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
 
   @@index([stripeAccountId, createdAt])
   @@index([status, createdAt])

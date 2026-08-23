@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "@/sentinel/http";
 import { inspectStripeKey } from "@/stripe/client";
 import { normalizeV1Account, normalizeV2Account, stripeRequirementLabel } from "@/stripe/normalize";
-import { canManageStripeConnect, stripeConnectIdempotencyKey } from "@/stripe/service";
+import { buildStripeV2AccountCreateParams, canManageStripeConnect, requireStripeLegalCountry, stripeConnectIdempotencyKey } from "@/stripe/service";
 
 function v2Account(overrides: Record<string, unknown> = {}) {
   return {
@@ -39,6 +39,30 @@ describe("Stripe Connect configuration and authorization", () => {
     expect(stripeConnectIdempotencyKey("merchant_1", "v2", "test")).toBe(first);
     expect(stripeConnectIdempotencyKey("merchant_2", "v2", "test")).not.toBe(first);
     expect(stripeConnectIdempotencyKey("merchant_1", "v2", "live")).not.toBe(first);
+  });
+
+  it.each(["us", "USA", "ZZ", "U1"])('rejects malformed or unsupported legal country "%s"', (country) => {
+    expect(() => requireStripeLegalCountry(country)).toThrow(/supported uppercase ISO 3166-1 alpha-2/);
+  });
+
+  it.each(["US", "CO"] as const)("sends identity.country = %s without changing the Accounts v2 configuration", (legalCountry) => {
+    const payload = buildStripeV2AccountCreateParams({
+      merchantId: "merchant_1",
+      organizationId: "org_1",
+      businessName: "RGVPRIME LLC",
+      businessDescription: "Merchant product description",
+      website: "https://example.com/",
+      legalCountry,
+    });
+    expect(payload.identity).toEqual({ country: legalCountry });
+    expect(payload.configuration).toMatchObject({ merchant: { capabilities: { card_payments: { requested: true } } } });
+    expect(payload.dashboard).toBe("full");
+    expect(payload.defaults).toMatchObject({
+      responsibilities: { fees_collector: "stripe", losses_collector: "stripe" },
+      profile: { business_url: "https://example.com/", product_description: "Merchant product description" },
+    });
+    expect(payload.metadata).toEqual({ orbit_merchant_id: "merchant_1", orbit_organization_id: "org_1" });
+    expect(payload.include).toEqual(["configuration.merchant", "defaults", "future_requirements", "requirements"]);
   });
 });
 
