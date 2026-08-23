@@ -17,6 +17,7 @@ const serverEnvSchema = z.object({
   CRAWLER_RESPONSE_LIMIT_BYTES: int(5_000_000),
   CRAWLER_NAVIGATION_TIMEOUT_MS: int(20_000),
   INTERNAL_JOB_SECRET: z.string().default("development-only"),
+  ORBIT_SECRET_ENCRYPTION_KEY: optionalNonEmpty,
   ORBIT_DEMO_MODE: z.enum(["true", "false"]).default(process.env.NODE_ENV === "production" ? "false" : "true").transform((value) => value === "true"),
   SESSION_TTL_DAYS: int(14),
   SEED_ADMIN_EMAIL: z.string().email().default("admin@orbit.local"),

@@ -4,11 +4,12 @@ import { apiError, HttpError, requireMerchantAccess } from "@/sentinel/http";
 import { childLogger } from "@/sentinel/logger";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { updateMerchantLegalCountrySchema } from "@/sentinel/services/merchants";
+import { safeRelayIntegration } from "@/commerce/woocommerce/service";
 
 export const runtime = "nodejs";
 const log = childLogger({ component: "merchant-api" });
 
-function isMissingOptionalStripeSchema(error: unknown) {
+function isMissingOptionalIntegrationSchema(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && ["P2021", "P2022"].includes(String(error.code));
 }
 
@@ -24,11 +25,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     try {
       stripeConnect = await db.stripeConnectIntegration.findUnique({ where: { merchantId }, select: { id: true, stripeAccountId: true, stripeEnvironment: true, accountApiVersion: true, displayStatus: true, cardPaymentsStatus: true, payoutsStatus: true, requirementsCurrentlyDue: true, requirementsEventuallyDue: true, requirementsPastDue: true, requirementsPendingVerification: true, futureRequirements: true, statusDetails: true, disabledReason: true, onboardingStartedAt: true, onboardingCompletedAt: true, lastSyncedAt: true, createdAt: true, updatedAt: true } });
     } catch (error) {
-      if (!isMissingOptionalStripeSchema(error)) throw error;
+      if (!isMissingOptionalIntegrationSchema(error)) throw error;
       stripeConnectAvailable = false;
       log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "Stripe Connect schema is not deployed; serving merchant without the optional integration");
     }
-    return NextResponse.json({ merchant: { ...merchant, stripeConnect, stripeConnectAvailable } });
+    let wooCommerceRelay = null;
+    let wooCommerceRelayAvailable = true;
+    try {
+      const relay = await db.wooCommerceRelayIntegration.findUnique({ where: { merchantId } });
+      wooCommerceRelay = relay ? safeRelayIntegration(relay) : null;
+    } catch (error) {
+      if (!isMissingOptionalIntegrationSchema(error)) throw error;
+      wooCommerceRelayAvailable = false;
+      log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "WooCommerce Relay schema is not deployed; serving merchant without the optional integration");
+    }
+    return NextResponse.json({ merchant: { ...merchant, stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
   } catch (error) { return apiError(error); }
 }
 

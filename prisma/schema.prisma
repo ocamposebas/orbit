@@ -76,7 +76,7 @@ model Membership {
 }
 
 model Merchant {
-  id                    String                    @id @default(cuid())
+  id                    String                       @id @default(cuid())
   organizationId        String
   businessName          String
   slug                  String
@@ -85,21 +85,22 @@ model Merchant {
   legalCountry          String?
   businessDescription   String
   expectedMonthlyVolume String?
-  status                MerchantStatus            @default(ONBOARDING)
-  isDemo                Boolean                   @default(false)
-  createdAt             DateTime                  @default(now())
-  updatedAt             DateTime                  @updatedAt
+  status                MerchantStatus               @default(ONBOARDING)
+  isDemo                Boolean                      @default(false)
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
   alerts                Alert[]
   auditLogs             AuditLog[]
   findings              Finding[]
   healthScores          HealthScore[]
   accessGrants          MerchantAccess[]
-  organization          Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sites                 MerchantSite[]
   policies              Policy[]
   products              Product[]
   scans                 Scan[]
   stripeConnect         StripeConnectIntegration?
+  wooCommerceRelay      WooCommerceRelayIntegration?
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
@@ -148,6 +149,27 @@ model StripeConnectEvent {
 
   @@index([stripeAccountId, createdAt])
   @@index([status, createdAt])
+}
+
+model WooCommerceRelayIntegration {
+  id                      String                      @id @default(cuid())
+  merchantId              String                      @unique
+  baseUrl                 String
+  environment             WooCommerceRelayEnvironment
+  connectionEnabled       Boolean                     @default(true)
+  encryptedSigningSecret  String
+  connectionStatus        WooCommerceRelayStatus      @default(CONFIGURED)
+  relayVersion            String?
+  woocommerceAvailable    Boolean?
+  lastHealthCheckAt       DateTime?
+  lastSuccessfulRequestAt DateTime?
+  lastLatencyMs           Int?
+  lastErrorCode           String?
+  createdAt               DateTime                    @default(now())
+  updatedAt               DateTime                    @updatedAt
+  merchant                Merchant                    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([environment, connectionStatus])
 }
 
 model MerchantAccess {
@@ -784,6 +806,22 @@ enum StripeConnectEventStatus {
   PROCESSED
   IGNORED
   FAILED
+}
+
+enum WooCommerceRelayEnvironment {
+  PRODUCTION
+  STAGING
+}
+
+enum WooCommerceRelayStatus {
+  NOT_CONFIGURED
+  CONFIGURED
+  CONNECTED
+  UNREACHABLE
+  WOO_UNAVAILABLE
+  RELAY_UNAVAILABLE
+  AUTH_NOT_TESTED
+  ERROR
 }
 
 enum WorkerType {

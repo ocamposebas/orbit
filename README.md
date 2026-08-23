@@ -97,6 +97,7 @@ docker compose --profile workers up -d --build
 | `CRAWLER_RESPONSE_LIMIT_BYTES` | Maximum rendered document size |
 | `CRAWLER_NAVIGATION_TIMEOUT_MS` | Per-navigation timeout |
 | `INTERNAL_JOB_SECRET` | Credential for internal scheduling and initial organization setup |
+| `ORBIT_SECRET_ENCRYPTION_KEY` | Base64-encoded 32-byte server key used to encrypt merchant integration secrets at rest |
 | `ORBIT_DEMO_MODE` | Marks the local seeded workspace as demonstration data |
 | `SESSION_TTL_DAYS` | Lifetime of revocable login sessions |
 | `SEED_ADMIN_EMAIL` | Initial owner email used by the seed |
