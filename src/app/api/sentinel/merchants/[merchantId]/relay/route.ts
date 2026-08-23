@@ -13,7 +13,7 @@ export const runtime = "nodejs";
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ merchantId: string }> }) {
   try {
     const { merchantId } = await params;
-    const { session, organization } = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN"], mutation: true });
+    const { session, organization, merchant } = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN"], mutation: true });
     await enforceRateLimit(request, `woo-relay-config:${merchantId}:${session.user.id}`, 10);
     const input = relayConfigurationSchema.parse(await request.json());
     const baseUrl = await validateWooCommerceBaseUrl(input.baseUrl, input.environment);
@@ -45,8 +45,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       const metadata = { merchantId, baseUrl, environment: input.environment, connectionEnabled: input.connectionEnabled, signingSecretUpdated: Boolean(input.signingSecret) };
       await tx.auditLog.create({ data: { organizationId: organization.id, merchantId, actorId: session.user.id, action, targetType: "WooCommerceRelayIntegration", targetId: saved.id, metadata } });
       if (toggleAction) await tx.auditLog.create({ data: { organizationId: organization.id, merchantId, actorId: session.user.id, action: toggleAction, targetType: "WooCommerceRelayIntegration", targetId: saved.id, metadata: { merchantId, baseUrl, environment: input.environment } } });
+      if (input.platformFeeBps !== undefined && input.platformFeeBps !== merchant.platformFeeBps) {
+        await tx.merchant.update({ where: { id: merchantId }, data: { platformFeeBps: input.platformFeeBps } });
+        await tx.auditLog.create({ data: { organizationId: organization.id, merchantId, actorId: session.user.id, action: "MERCHANT_PLATFORM_FEE_UPDATED", targetType: "Merchant", targetId: merchantId, metadata: { previousPlatformFeeBps: merchant.platformFeeBps, platformFeeBps: input.platformFeeBps } } });
+      }
       return saved;
     });
-    return NextResponse.json({ integration: safeRelayIntegration(integration) }, { headers: { "Cache-Control": "no-store, private" } });
+    return NextResponse.json({ integration: safeRelayIntegration(integration), platformFeeBps: input.platformFeeBps ?? merchant.platformFeeBps ?? null }, { headers: { "Cache-Control": "no-store, private" } });
   } catch (error) { return relayApiError(error); }
 }

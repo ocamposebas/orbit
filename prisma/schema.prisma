@@ -83,6 +83,7 @@ model Merchant {
   industry              String
   country               String
   legalCountry          String?
+  platformFeeBps        Int?
   businessDescription   String
   expectedMonthlyVolume String?
   status                MerchantStatus               @default(ONBOARDING)
@@ -97,6 +98,7 @@ model Merchant {
   organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sites                 MerchantSite[]
   policies              Policy[]
+  paymentTransactions   PaymentTransaction[]
   products              Product[]
   scans                 Scan[]
   stripeConnect         StripeConnectIntegration?
@@ -170,6 +172,24 @@ model WooCommerceRelayIntegration {
   merchant                Merchant                    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   @@index([environment, connectionStatus])
+}
+
+model PaymentTransaction {
+  id               String                   @id
+  merchantId       String
+  wooOrderId       String
+  stripeAccountId  String
+  amountMinor      Int
+  currency         String
+  platformFeeBps   Int
+  platformFeeMinor Int
+  status           PaymentTransactionStatus @default(CREATED)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  merchant         Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, wooOrderId])
+  @@index([stripeAccountId, status])
 }
 
 model MerchantAccess {
@@ -806,6 +826,15 @@ enum StripeConnectEventStatus {
   PROCESSED
   IGNORED
   FAILED
+}
+
+enum PaymentTransactionStatus {
+  CREATED
+  REQUIRES_PAYMENT
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELED
 }
 
 enum WooCommerceRelayEnvironment {

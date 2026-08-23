@@ -12,6 +12,7 @@ export const relayConfigurationSchema = z.object({
   environment: z.enum(["PRODUCTION", "STAGING"]),
   signingSecret: optionalSigningSecret,
   connectionEnabled: z.boolean(),
+  platformFeeBps: z.number().int().min(0).max(10_000).optional(),
 });
 
 export function normalizeWooCommerceBaseUrl(input: string, environment: RelayEnvironment) {

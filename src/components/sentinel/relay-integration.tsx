@@ -32,6 +32,19 @@ type VerifiedRelayOrder = {
   privateAuthentication: "VERIFIED";
 };
 
+type PreparedPaymentTransaction = {
+  id: string;
+  wooOrderId: string;
+  amountMinor: number;
+  currency: string;
+  platformFeeBps: number;
+  platformFeeMinor: number;
+  status: string;
+  stripeAccountStatus: string;
+  cardPaymentsStatus: string;
+  stripeReadiness: "READY" | "STRIPE_NOT_READY";
+};
+
 const statusCopy: Record<string, { title: string; detail: string; tone: string }> = {
   NOT_CONFIGURED: { title: "Not configured", detail: "Connect this merchant's WooCommerce backend to ORBIT.", tone: "text-[#8b8f98]" },
   CONFIGURED: { title: "Configured", detail: "Configuration is saved. Test the connection to verify Relay and WooCommerce availability.", tone: "text-[#8f91ef]" },
@@ -43,7 +56,7 @@ const statusCopy: Record<string, { title: string; detail: string; tone: string }
   ERROR: { title: "Connection error", detail: "The Relay returned an invalid or unexpected health response.", tone: "text-[#d17777]" },
 };
 
-export function RelayIntegrationCard({ merchantId, merchantName, integration, available, canManage, reload }: { merchantId: string; merchantName: string; integration?: RelayIntegration; available: boolean; canManage: boolean; reload: () => Promise<void> }) {
+export function RelayIntegrationCard({ merchantId, merchantName, platformFeeBps, integration, available, canManage, reload }: { merchantId: string; merchantName: string; platformFeeBps?: number | null; integration?: RelayIntegration; available: boolean; canManage: boolean; reload: () => Promise<void> }) {
   const [showConfig, setShowConfig] = useState(false);
   const [working, setWorking] = useState<"test" | "">("");
   const [notice, setNotice] = useState("");
@@ -104,12 +117,12 @@ export function RelayIntegrationCard({ merchantId, merchantName, integration, av
             </div>
           </> : <div><p className="text-[11px] leading-5 text-[#777b84]">Connect {merchantName}&apos;s WooCommerce backend to ORBIT. Health checks verify Relay and WooCommerce availability; order diagnostics verify the private HMAC connection.</p>{canManage ? <button type="button" onClick={openConfiguration} className="mt-5 h-9 rounded-md bg-[#ecece8] px-4 text-[10px] font-medium text-black">Configure Relay</button> : <p className="mt-4 text-[10px] text-[#62666e]">An organization owner or admin can configure Relay.</p>}</div>}
           {notice && <p aria-live="polite" className={cn("mt-4 text-[10px]", integration?.connectionStatus === "CONNECTED" ? "text-[#6fc39d]" : "text-[#d39a72]")}>{notice}</p>}
-          {integration && canManage && <RelayDiagnostics merchantId={merchantId} enabled={integration.connectionEnabled} />}
+          {integration && canManage && <><RelayDiagnostics merchantId={merchantId} enabled={integration.connectionEnabled} /><PaymentPreparation merchantId={merchantId} enabled={integration.connectionEnabled} platformFeeBps={platformFeeBps} /></>}
         </div>
       </div>
       <p className="mt-3 text-[9px] leading-4 text-[#555a62]">Relay health is independent from Stripe verification. Signing secrets remain server-side and are used only for private Relay requests.</p>
     </section>
-    {showConfig && <RelayConfigurationDialog merchantId={merchantId} integration={integration} onClose={() => setShowConfig(false)} onSaved={async () => { setShowConfig(false); setNotice("Relay configuration saved."); await reload(); }} />}
+    {showConfig && <RelayConfigurationDialog merchantId={merchantId} platformFeeBps={platformFeeBps} integration={integration} onClose={() => setShowConfig(false)} onSaved={async () => { setShowConfig(false); setNotice("Relay configuration saved."); await reload(); }} />}
   </>;
 }
 
@@ -160,6 +173,58 @@ function RelayDiagnostics({ merchantId, enabled }: { merchantId: string; enabled
   </section>;
 }
 
+function PaymentPreparation({ merchantId, enabled, platformFeeBps }: { merchantId: string; enabled: boolean; platformFeeBps?: number | null }) {
+  const [wooOrderId, setWooOrderId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [transaction, setTransaction] = useState<PreparedPaymentTransaction>();
+
+  async function prepare(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setTransaction(undefined);
+    try {
+      const result = await sentinelFetch<{ transaction: PreparedPaymentTransaction }>(`/api/sentinel/merchants/${merchantId}/payments/prepare`, {
+        method: "POST",
+        body: JSON.stringify({ wooOrderId: wooOrderId.trim() }),
+      });
+      setTransaction(result.transaction);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to prepare the ORBIT transaction");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section aria-labelledby="payment-preparation-title" className="mt-6 border-t border-white/[.07] pt-5">
+    <p className="text-[9px] font-semibold uppercase tracking-[.14em] text-[#777b84]">Prepare payment</p>
+    <h3 id="payment-preparation-title" className="mt-2 text-sm font-medium text-[#d8d9d4]">ORBIT Payments Core</h3>
+    <p className="mt-1.5 max-w-2xl text-[10px] leading-5 text-[#62666e]">Creates or reuses an ORBIT transaction from the authoritative WooCommerce order. No Stripe payment is created.</p>
+    <form onSubmit={prepare} className="mt-4 flex max-w-md flex-col gap-2 sm:flex-row sm:items-end">
+      <label className="flex-1 text-[10px] text-[#81858d]">Woo Order ID<input required inputMode="numeric" pattern="[1-9][0-9]{0,15}" value={wooOrderId} onChange={(event) => setWooOrderId(event.target.value)} placeholder="1234" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 font-mono text-xs text-white outline-none focus:border-[#7779ea]" /></label>
+      <button type="submit" disabled={!enabled || platformFeeBps == null || busy} className="h-10 rounded-md bg-[#ecece8] px-4 text-[10px] font-medium text-black disabled:opacity-50">{busy ? "Preparing..." : "Prepare transaction"}</button>
+    </form>
+    {platformFeeBps == null && <p className="mt-2 text-[10px] text-[#d39a72]">Configure platformFeeBps in Edit configuration before preparing a transaction.</p>}
+    {error && <p role="alert" className="mt-3 text-[10px] text-[#d17777]">{error}</p>}
+    {transaction && <div aria-live="polite" className="mt-4 max-w-2xl border border-[#8588ef]/20 bg-[#8588ef]/[.025] p-4">
+      {transaction.stripeReadiness === "STRIPE_NOT_READY" && <p className="mb-3 border border-[#d39a72]/20 bg-[#d39a72]/[.04] px-3 py-2 font-mono text-[10px] text-[#d39a72]">STRIPE_NOT_READY</p>}
+      <dl className="grid gap-px overflow-hidden border border-white/[.06] bg-white/[.06] sm:grid-cols-2">
+        <RelayResult label="ORBIT Transaction" value={transaction.id} />
+        <RelayResult label="Woo Order" value={`#${transaction.wooOrderId}`} />
+        <RelayResult label="Total" value={formatMinorAmount(transaction.amountMinor, transaction.currency)} />
+        <RelayResult label="Currency" value={transaction.currency} />
+        <RelayResult label="Stripe account status" value={transaction.stripeAccountStatus} />
+        <RelayResult label="Card payments status" value={transaction.cardPaymentsStatus} />
+        <RelayResult label="ORBIT fee %" value={`${(transaction.platformFeeBps / 100).toFixed(2)}%`} />
+        <RelayResult label="ORBIT fee amount" value={formatMinorAmount(transaction.platformFeeMinor, transaction.currency)} />
+        <RelayResult label="Transaction status" value={transaction.status} />
+        <RelayResult label="Stripe readiness" value={transaction.stripeReadiness} />
+      </dl>
+    </div>}
+  </section>;
+}
+
 function formatMinorAmount(totalMinor: number, currency: string) {
   try {
     const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency });
@@ -174,7 +239,7 @@ function RelayResult({ label, value }: { label: string; value: string }) {
   return <div className="bg-[#0c0e12] p-3"><dt className="text-[8px] uppercase tracking-[.12em] text-[#555a62]">{label}</dt><dd className="mt-1.5 text-[10px] text-[#b8bab5]">{value}</dd></div>;
 }
 
-function RelayConfigurationDialog({ merchantId, integration, onClose, onSaved }: { merchantId: string; integration?: RelayIntegration; onClose: () => void; onSaved: () => Promise<void> }) {
+function RelayConfigurationDialog({ merchantId, platformFeeBps, integration, onClose, onSaved }: { merchantId: string; platformFeeBps?: number | null; integration?: RelayIntegration; onClose: () => void; onSaved: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [replaceSecret, setReplaceSecret] = useState(!integration?.signingConfigured);
@@ -185,7 +250,7 @@ function RelayConfigurationDialog({ merchantId, integration, onClose, onSaved }:
     setError("");
     const form = new FormData(event.currentTarget);
     const signingSecret = String(form.get("signingSecret") ?? "");
-    const body = { baseUrl: form.get("baseUrl"), environment: form.get("environment"), connectionEnabled: form.get("connectionEnabled") === "on", ...(signingSecret ? { signingSecret } : {}) };
+    const body = { baseUrl: form.get("baseUrl"), environment: form.get("environment"), connectionEnabled: form.get("connectionEnabled") === "on", platformFeeBps: Number(form.get("platformFeeBps")), ...(signingSecret ? { signingSecret } : {}) };
     try {
       await sentinelFetch(`/api/sentinel/merchants/${merchantId}/relay`, { method: "PUT", body: JSON.stringify(body) });
       await onSaved();
@@ -202,6 +267,7 @@ function RelayConfigurationDialog({ merchantId, integration, onClose, onSaved }:
       <form onSubmit={submit} className="space-y-4 p-5">
         <label className="block text-[10px] text-[#81858d]">WooCommerce URL<input required name="baseUrl" type="url" defaultValue={integration?.baseUrl ?? ""} placeholder="https://wp.example.com" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /><span className="mt-1.5 block leading-4 text-[#5f646d]">Canonical WooCommerce origin only. Production requires HTTPS.</span></label>
         <label className="block text-[10px] text-[#81858d]">Environment<select name="environment" defaultValue={integration?.environment ?? "PRODUCTION"} className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-[#111319] px-3 text-xs text-white outline-none focus:border-[#7779ea]"><option value="PRODUCTION">Production</option><option value="STAGING">Staging</option></select></label>
+        <label className="block text-[10px] text-[#81858d]">Platform fee (basis points)<input required name="platformFeeBps" type="number" min="0" max="10000" step="1" defaultValue={platformFeeBps ?? ""} placeholder="190" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /><span className="mt-1.5 block leading-4 text-[#5f646d]">190 basis points equals 1.90%. This setting is stored per merchant.</span></label>
         <div className="text-[10px] text-[#81858d]"><div className="flex items-center justify-between"><span>Signing secret</span>{integration?.signingConfigured && !replaceSecret && <button type="button" onClick={() => setReplaceSecret(true)} className="text-[#9b9df1] hover:text-white">Replace signing secret</button>}</div>{replaceSecret ? <input required name="signingSecret" type="password" minLength={16} maxLength={1024} autoComplete="new-password" placeholder="Paste the WordPress Relay signing secret" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /> : <div className="mt-1.5 flex h-10 items-center rounded-md border border-white/[.08] bg-white/[.02] px-3 text-xs text-[#6fc39d]">Configured</div>}<span className="mt-1.5 block leading-4 text-[#5f646d]">The saved secret is encrypted and is never returned to this browser.</span></div>
         <label className="flex items-center gap-3 border border-white/[.07] p-3 text-[10px] text-[#a5a8a1]"><input name="connectionEnabled" type="checkbox" defaultChecked={integration?.connectionEnabled ?? true} className="size-4 accent-[#7779ea]" />Enable Relay</label>
         {error && <p className="text-xs text-[#dd8b8b]">{error}</p>}
