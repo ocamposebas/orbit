@@ -1,11 +1,11 @@
 import type Stripe from "stripe";
 import { getDatabase } from "@/sentinel/db";
-import { getServerEnv } from "@/sentinel/config";
 import { HttpError } from "@/sentinel/http";
 import { childLogger } from "@/sentinel/logger";
 import { assertStripeEnvironment, getStripeClient, getStripeConfiguration, stripeApiUnavailable, stripeEnvironment, type StripeAccountApi } from "./client";
 import { isStripeConnectCountry, type StripeConnectCountryCode } from "./countries";
 import { normalizeV1Account, normalizeV2Account, type NormalizedStripeState } from "./normalize";
+import { stripeOnboardingUrls } from "./onboarding-navigation";
 
 const stripeLogger = childLogger({ component: "stripe-connect" });
 const ownerAdminRoles = new Set(["OWNER", "ADMIN"]);
@@ -198,9 +198,7 @@ export async function createStripeOnboardingLink(merchantId: string, actorId?: s
   const integration = await db.stripeConnectIntegration.findUnique({ where: { merchantId }, include: { merchant: { select: { organizationId: true } } } });
   if (!integration) throw new HttpError(409, "Connect Stripe before starting verification");
   if (integration.stripeEnvironment !== stripeEnvironment(config.mode)) throw new HttpError(409, "Stripe environment mismatch");
-  const appUrl = getServerEnvUrl();
-  const returnUrl = `${appUrl}/merchants/${encodeURIComponent(merchantId)}/integrations/stripe/return`;
-  const refreshUrl = `${appUrl}/merchants/${encodeURIComponent(merchantId)}/integrations/stripe/refresh`;
+  const { returnUrl, refreshUrl } = stripeOnboardingUrls(merchantId);
   const stripe = getStripeClient();
   const api = integration.accountApiVersion === "V2" ? "v2" : "v1";
   try {
@@ -212,11 +210,6 @@ export async function createStripeOnboardingLink(merchantId: string, actorId?: s
     await audit({ organizationId: integration.merchant.organizationId, merchantId, actorId, action: "STRIPE_ONBOARDING_STARTED", targetId: integration.id, metadata: { accountApi: api } });
     return { url: link.url };
   } catch (error) { return mapStripeFailure(error, api); }
-}
-
-function getServerEnvUrl() {
-  const { APP_URL } = getServerEnv();
-  return APP_URL.replace(/\/$/, "");
 }
 
 export function safeStripeIntegration<T extends {

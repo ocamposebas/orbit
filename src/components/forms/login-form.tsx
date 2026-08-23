@@ -4,11 +4,11 @@ import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
 
-export function LoginForm() {
+export function LoginForm({ nextPath = "/sentinel" }: { nextPath?: string }) {
   const [show, setShow] = useState(false);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); setNotice(""); const form = new FormData(event.currentTarget); try { const response = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: form.get("email"), password: form.get("password") }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "Unable to sign in"); const next = new URLSearchParams(window.location.search).get("next"); window.location.assign(next?.startsWith("/sentinel") ? next : "/sentinel"); } catch (error) { setNotice(error instanceof Error ? error.message : "Unable to sign in"); setBusy(false); } }
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); setNotice(""); const form = new FormData(event.currentTarget); try { const response = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: form.get("email"), password: form.get("password") }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "Unable to sign in"); window.location.assign(nextPath); } catch (error) { setNotice(error instanceof Error ? error.message : "Unable to sign in"); setBusy(false); } }
   return <form onSubmit={submit}>
     <label className="block"><span className="mb-2 block text-xs text-[#a6a8af]">Work email</span><input required name="email" type="email" autoComplete="email" className="form-field" placeholder="you@company.com"/></label>
     <label className="mt-5 block"><span className="mb-2 block text-xs text-[#a6a8af]">Password</span><span className="relative block"><input required minLength={12} maxLength={128} name="password" type={show ? "text" : "password"} autoComplete="current-password" className="form-field pr-12" placeholder="Your password"/><button type="button" onClick={() => setShow(!show)} aria-label={show ? "Hide password" : "Show password"} className="absolute right-1 top-1 grid size-10 place-items-center text-[#696c75] hover:text-white">{show ? <EyeOff className="size-4"/> : <Eye className="size-4"/>}</button></span></label>
