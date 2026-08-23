@@ -53,7 +53,7 @@ export async function validatePublicUrl(input: string | URL): Promise<URL> {
   return url;
 }
 
-export interface SafeFetchOptions { timeoutMs?: number; maxBytes?: number; maxRedirects?: number; accept?: string; }
+export interface SafeFetchOptions { timeoutMs?: number; maxBytes?: number; maxRedirects?: number; accept?: string; headers?: Record<string, string>; }
 
 export async function safeFetchText(input: string | URL, options: SafeFetchOptions = {}): Promise<{ url: URL; status: number; contentType: string; text: string; headers: Headers }> {
   let current = await validatePublicUrl(input);
@@ -64,7 +64,10 @@ export async function safeFetchText(input: string | URL, options: SafeFetchOptio
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(current, { redirect: "manual", signal: controller.signal, headers: { "user-agent": "ORBIT-Sentinel/1.0 (+compliance-monitoring)", accept: options.accept ?? "text/html,application/xml,text/plain;q=0.9" } });
+      const headers = new Headers(options.headers);
+      headers.set("user-agent", "ORBIT-Sentinel/1.0 (+compliance-monitoring)");
+      headers.set("accept", options.accept ?? "text/html,application/xml,text/plain;q=0.9");
+      const response = await fetch(current, { redirect: "manual", signal: controller.signal, headers });
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         if (!location || redirect === maxRedirects) throw new UnsafeTargetError("Redirect limit exceeded");
