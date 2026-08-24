@@ -19,8 +19,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { merchantId } = await params;
     const { organization } = await requireMerchantAccess(request, merchantId);
     const db = getDatabase();
-    const merchant = await db.merchant.findFirst({ where: { id: merchantId, organizationId: organization.id }, include: { agreement: { select: { status: true, invitationExpiresAt: true, invitationIssuedAt: true, informationCertifiedAt: true, contractIssuedAt: true, signedUploadedAt: true, signedOriginalName: true, signedSizeBytes: true, lockedAt: true, termsVersion: true } }, sites: true, scans: { orderBy: { createdAt: "desc" }, take: 20 }, healthScores: { orderBy: { createdAt: "desc" }, take: 12, include: { components: true } }, findings: { orderBy: [{ severity: "asc" }, { lastDetectedAt: "desc" }], take: 100, include: { evidence: { orderBy: { createdAt: "desc" }, take: 8 } } }, products: { orderBy: { lastSeenAt: "desc" }, take: 100, include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } } }, policies: true, auditLogs: { orderBy: { createdAt: "desc" }, take: 100 } } });
-    if (!merchant) throw new HttpError(404, "Merchant not found");
+    const merchant = await (async () => {
+      try {
+        const current = await db.merchant.findFirst({ where: { id: merchantId, organizationId: organization.id }, include: { agreement: { select: { status: true, invitationExpiresAt: true, invitationIssuedAt: true, informationCertifiedAt: true, contractIssuedAt: true, signedUploadedAt: true, signedOriginalName: true, signedSizeBytes: true, lockedAt: true, termsVersion: true } }, sites: true, scans: { orderBy: { createdAt: "desc" }, take: 20 }, healthScores: { orderBy: { createdAt: "desc" }, take: 12, include: { components: true } }, findings: { orderBy: [{ severity: "asc" }, { lastDetectedAt: "desc" }], take: 100, include: { evidence: { orderBy: { createdAt: "desc" }, take: 8 } } }, products: { orderBy: { lastSeenAt: "desc" }, take: 100, include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } } }, policies: true, auditLogs: { orderBy: { createdAt: "desc" }, take: 100 } } });
+        if (!current) throw new HttpError(404, "Merchant not found");
+        return { ...current, agreement: agreementAdminState(current.agreement) };
+      } catch (error) {
+        if (!isMissingOptionalIntegrationSchema(error)) throw error;
+        log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "Agreement invitation timestamp is not deployed; serving the merchant in compatibility mode");
+        const legacy = await db.merchant.findFirst({ where: { id: merchantId, organizationId: organization.id }, include: { agreement: { select: { status: true, invitationExpiresAt: true, informationCertifiedAt: true, contractIssuedAt: true, signedUploadedAt: true, signedOriginalName: true, signedSizeBytes: true, lockedAt: true, termsVersion: true } }, sites: true, scans: { orderBy: { createdAt: "desc" }, take: 20 }, healthScores: { orderBy: { createdAt: "desc" }, take: 12, include: { components: true } }, findings: { orderBy: [{ severity: "asc" }, { lastDetectedAt: "desc" }], take: 100, include: { evidence: { orderBy: { createdAt: "desc" }, take: 8 } } }, products: { orderBy: { lastSeenAt: "desc" }, take: 100, include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } } }, policies: true, auditLogs: { orderBy: { createdAt: "desc" }, take: 100 } } });
+        if (!legacy) throw new HttpError(404, "Merchant not found");
+        return { ...legacy, agreement: agreementAdminState(legacy.agreement ? { ...legacy.agreement, invitationIssuedAt: null } : null) };
+      }
+    })();
     let stripeConnect = null;
     let stripeConnectAvailable = true;
     try {
@@ -40,7 +51,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       wooCommerceRelayAvailable = false;
       log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "WooCommerce Relay schema is not deployed; serving merchant without the optional integration");
     }
-    return NextResponse.json({ merchant: { ...merchant, agreement: agreementAdminState(merchant.agreement), stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
+    return NextResponse.json({ merchant: { ...merchant, stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
   } catch (error) { return apiError(error); }
 }
 

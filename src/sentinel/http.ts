@@ -51,9 +51,21 @@ export class HttpError extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "HttpError"; }
 }
 
+function prismaErrorCode(error: unknown) {
+  if (typeof error !== "object" || error === null || !("code" in error)) return null;
+  return String(error.code);
+}
+
 export function apiError(error: unknown) {
   if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status });
   if (error instanceof ZodError) return NextResponse.json({ error: "Invalid request", fields: error.flatten().fieldErrors }, { status: 400 });
   console.error(error);
+  const databaseCode = prismaErrorCode(error);
+  if (databaseCode && ["P2021", "P2022"].includes(databaseCode)) {
+    return NextResponse.json({ error: "A database update is still being applied. Please retry shortly." }, { status: 503 });
+  }
+  if (databaseCode && ["P1001", "P1002", "P1017"].includes(databaseCode)) {
+    return NextResponse.json({ error: "The database is temporarily unavailable. Please retry shortly." }, { status: 503 });
+  }
   return NextResponse.json({ error: "Unexpected server error" }, { status: 500 });
 }
