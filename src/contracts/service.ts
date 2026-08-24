@@ -27,7 +27,7 @@ export function invitationUrl(token: string) {
 export async function agreementFromInvitation(token: string) {
   const agreement = await getDatabase().merchantAgreement.findUnique({
     where: { invitationTokenHash: hashInvitationToken(token) },
-    include: { merchant: { select: { id: true, organizationId: true, businessName: true, industry: true, country: true, businessDescription: true, expectedMonthlyVolume: true, sites: { where: { active: true }, take: 1, select: { normalizedUrl: true, hostname: true } } } } },
+    include: { merchant: { select: { id: true, organizationId: true, businessName: true, industry: true, country: true, legalCountry: true, businessDescription: true, expectedMonthlyVolume: true, sites: { where: { active: true }, take: 1, select: { normalizedUrl: true, hostname: true } } } } },
   });
   if (!agreement) throw new HttpError(404, "This invitation is invalid or is no longer available");
   if (agreement.status !== "SIGNED_LOCKED" && agreement.invitationExpiresAt <= new Date()) throw new HttpError(410, "This invitation has expired. Ask ORBIT for a new link.");
@@ -35,18 +35,47 @@ export async function agreementFromInvitation(token: string) {
 }
 
 export function publicAgreementState(agreement: Awaited<ReturnType<typeof agreementFromInvitation>>) {
+  const isBlankSelfServeInvitation = agreement.selfServe && agreement.status === "INVITED";
+  const website = isBlankSelfServeInvitation ? "" : agreement.merchant.sites[0]?.normalizedUrl ?? "";
   return {
     status: agreement.status,
     locked: agreement.status === "SIGNED_LOCKED",
     expiresAt: agreement.invitationExpiresAt,
     termsVersion: agreement.termsVersion,
     merchant: {
-      businessName: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.businessName,
-      industry: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.industry,
-      website: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.sites[0]?.normalizedUrl ?? "",
-      operatingCountry: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.country,
-      businessDescription: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.businessDescription,
+      businessName: isBlankSelfServeInvitation ? "" : agreement.merchant.businessName,
+      industry: isBlankSelfServeInvitation ? "" : agreement.merchant.industry,
+      website,
+      operatingCountry: isBlankSelfServeInvitation ? "" : agreement.merchant.country,
+      businessDescription: isBlankSelfServeInvitation ? "" : agreement.merchant.businessDescription,
     },
+    intake: agreement.status === "INVITED" ? {
+      businessName: isBlankSelfServeInvitation ? "" : agreement.merchant.businessName,
+      publicWebsite: website,
+      industry: isBlankSelfServeInvitation ? "" : agreement.merchant.industry,
+      operatingCountry: isBlankSelfServeInvitation ? "" : agreement.merchant.country,
+      businessDescription: isBlankSelfServeInvitation ? "" : agreement.merchant.businessDescription,
+      legalName: agreement.legalName ?? (isBlankSelfServeInvitation ? "" : agreement.merchant.businessName),
+      tradeName: agreement.tradeName ?? "",
+      entityType: agreement.entityType ?? "",
+      taxId: agreement.taxId ?? "",
+      registrationNumber: agreement.registrationNumber ?? "",
+      businessAddress: agreement.businessAddress ?? "",
+      city: agreement.city ?? "",
+      region: agreement.region ?? "",
+      postalCode: agreement.postalCode ?? "",
+      countryCode: agreement.countryCode ?? (isBlankSelfServeInvitation ? "" : agreement.merchant.legalCountry ?? ""),
+      coveredDomains: agreement.coveredDomains ?? website,
+      primaryContactName: agreement.primaryContactName ?? "",
+      primaryContactRole: agreement.primaryContactRole ?? "",
+      primaryContactEmail: agreement.primaryContactEmail ?? "",
+      primaryContactPhone: agreement.primaryContactPhone ?? "",
+      billingDescriptor: agreement.billingDescriptor ?? "",
+      estimatedMonthlyVolume: agreement.estimatedMonthlyVolume ?? (isBlankSelfServeInvitation ? "" : agreement.merchant.expectedMonthlyVolume ?? ""),
+      averageTransactionAmount: agreement.averageTransactionAmount ?? "",
+      highestTransactionAmount: agreement.highestTransactionAmount ?? "",
+      productsAndServices: agreement.productsAndServices ?? (isBlankSelfServeInvitation ? "" : agreement.merchant.businessDescription),
+    } : undefined,
     selfServe: agreement.selfServe,
     completed: agreement.status !== "INVITED",
     contractReady: ["DATA_COMPLETED", "CONTRACT_ISSUED"].includes(agreement.status),

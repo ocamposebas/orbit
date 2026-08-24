@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agreementDocumentHtml, safeContractFilename, sha256 } from "@/contracts/document";
-import { agreementAdminState, createInvitationCredentials, hashInvitationToken } from "@/contracts/service";
+import { agreementAdminState, createInvitationCredentials, hashInvitationToken, publicAgreementState } from "@/contracts/service";
 import { merchantAgreementIntakeSchema, SIGNED_CONTRACT_MAX_BYTES } from "@/contracts/schema";
 
 const intake = {
@@ -48,6 +48,55 @@ describe("contractual onboarding", () => {
     const base = { status: "INVITED", invitationExpiresAt: new Date("2026-09-23T00:00:00Z"), informationCertifiedAt: null, contractIssuedAt: null, signedUploadedAt: null, signedOriginalName: null, signedSizeBytes: null, lockedAt: null, termsVersion: "orbit-msa-en-1.0" };
     expect(agreementAdminState({ ...base, invitationIssuedAt: null })).toMatchObject({ status: "INVITED", workflow: "OPTIONAL", invitationIssuedAt: null });
     expect(agreementAdminState({ ...base, invitationIssuedAt: new Date("2026-08-24T00:00:00Z") })).toMatchObject({ workflow: "AWAITING_CUSTOMER", invitationIssuedAt: new Date("2026-08-24T00:00:00Z") });
+  });
+
+  it("prefills existing merchants without inventing signer or tax details", () => {
+    const state = publicAgreementState({
+      status: "INVITED",
+      selfServe: false,
+      invitationExpiresAt: new Date("2026-09-23T00:00:00Z"),
+      termsVersion: "orbit-msa-en-1.0",
+      legalName: null,
+      tradeName: null,
+      entityType: null,
+      taxId: null,
+      registrationNumber: null,
+      businessAddress: null,
+      city: null,
+      region: null,
+      postalCode: null,
+      countryCode: null,
+      coveredDomains: null,
+      primaryContactName: null,
+      primaryContactRole: null,
+      primaryContactEmail: null,
+      primaryContactPhone: null,
+      billingDescriptor: null,
+      estimatedMonthlyVolume: null,
+      averageTransactionAmount: null,
+      highestTransactionAmount: null,
+      productsAndServices: null,
+      signedUploadedAt: null,
+      signedOriginalName: null,
+      merchant: {
+        businessName: "RGVPRIME LLC",
+        industry: "Research products",
+        country: "US",
+        legalCountry: "US",
+        businessDescription: "Research products sold through the merchant website.",
+        expectedMonthlyVolume: "USD 50,000",
+        sites: [{ normalizedUrl: "https://rgvprimellc.com", hostname: "rgvprimellc.com" }],
+      },
+    } as never);
+    expect(state.intake).toMatchObject({
+      businessName: "RGVPRIME LLC",
+      legalName: "RGVPRIME LLC",
+      publicWebsite: "https://rgvprimellc.com",
+      countryCode: "US",
+      estimatedMonthlyVolume: "USD 50,000",
+    });
+    expect(state.intake?.primaryContactName).toBe("");
+    expect(state.intake?.taxId).toBe("");
   });
 
   it("normalizes certified intake and requires every irreversible consent", () => {
