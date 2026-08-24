@@ -4,10 +4,22 @@ import { verifyCheckoutConfigToken, verifyCheckoutToken } from "@/payments/check
 import { getServerEnv } from "@/sentinel/config";
 import { getDatabase } from "@/sentinel/db";
 import { HttpError } from "@/sentinel/http";
+import { childLogger } from "@/sentinel/logger";
 import { getStripeClient, getStripeConfiguration, stripeEnvironment } from "@/stripe/client";
 import { canonicalOrbitOrigin } from "@/stripe/onboarding-navigation";
 
 const mutablePreparationStatuses = new Set(["CREATED", "REQUIRES_PAYMENT"]);
+const paymentLog = childLogger({ component: "stripe-payment-create" });
+
+export class StripePaymentIntentParameterError extends HttpError {
+  constructor(
+    readonly stripeCode: string,
+    readonly stripeParam: string,
+    readonly stripeMessage: string,
+  ) {
+    super(422, "Stripe rejected the PaymentIntent parameters");
+  }
+}
 
 function transactionId() {
   return `orb_tx_${randomBytes(18).toString("base64url")}`;
@@ -84,15 +96,31 @@ export function stripePaymentIntentIdempotencyKey(orbitTransactionId: string) {
 
 function mapPaymentIntentFailure(error: unknown): never {
   if (error instanceof HttpError) throw error;
-  const value = error as { type?: string; statusCode?: number };
+  const value = error as { type?: string; code?: string; param?: string; statusCode?: number; message?: string };
+  const safeCode = String(value.code ?? "unknown").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 80) || "unknown";
+  const safeParam = String(value.param ?? "unknown").replace(/[^A-Za-z0-9_.\[\]-]/g, "").slice(0, 120) || "unknown";
+  const safeMessage = String(value.message ?? "Stripe request failed")
+    .replace(/(?:ctoken|pi|seti|acct|pm|ch|src|tok)_[A-Za-z0-9_]+/g, "[redacted]")
+    .replace(/(?:sk|pk)_(?:live|test)_[A-Za-z0-9_]+/g, "[redacted]")
+    .slice(0, 300);
+  paymentLog.error({
+    paymentFlow: "client_confirm_v2",
+    stripeErrorType: String(value.type ?? "unknown").slice(0, 80),
+    stripeErrorCode: safeCode,
+    stripeErrorParam: safeParam,
+    stripeStatusCode: Number.isInteger(value.statusCode) ? value.statusCode : undefined,
+    stripeMessage: safeMessage,
+  }, "Stripe PaymentIntent preparation failed");
   if (value.type === "StripeAuthenticationError") throw new HttpError(503, "Stripe rejected the configured server credential");
   if (value.type === "StripePermissionError") throw new HttpError(503, "The Stripe credential cannot create payments for this connected account");
   if (value.type === "StripeRateLimitError" || value.statusCode === 429) throw new HttpError(429, "Stripe rate limited this request. Try again shortly.");
-  if (value.type === "StripeInvalidRequestError" || value.statusCode === 400) throw new HttpError(422, "Stripe rejected the PaymentIntent parameters");
+  if (value.type === "StripeInvalidRequestError" || value.statusCode === 400) {
+    throw new StripePaymentIntentParameterError(safeCode, safeParam, safeMessage);
+  }
   throw new HttpError(502, "Stripe payment creation is temporarily unavailable");
 }
 
-async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId: string, confirmationTokenId?: string) {
+async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId: string) {
   if (!/^orb_tx_[A-Za-z0-9_-]{16,128}$/.test(orbitTransactionId)) throw new HttpError(400, "Enter a valid ORBIT transaction ID");
 
   const db = getDatabase();
@@ -123,26 +151,12 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
           currency: transaction.currency.toLowerCase(),
           application_fee_amount: transaction.platformFeeMinor,
           automatic_payment_methods: { enabled: true },
-          confirm: Boolean(confirmationTokenId),
-          ...(confirmationTokenId ? { confirmation_token: confirmationTokenId } : {}),
           metadata: {
             orbitTransactionId: transaction.id,
             wooOrderId: transaction.wooOrderId,
             merchantId: transaction.merchantId,
           },
         }, { ...requestOptions, idempotencyKey: stripePaymentIntentIdempotencyKey(transaction.id) });
-
-    if (
-      transaction.stripePaymentIntentId &&
-      confirmationTokenId &&
-      ["requires_payment_method", "requires_confirmation"].includes(paymentIntent.status)
-    ) {
-      paymentIntent = await stripe.paymentIntents.confirm(
-        paymentIntent.id,
-        { confirmation_token: confirmationTokenId },
-        { ...requestOptions, idempotencyKey: `orbit-payment-confirm-${transaction.id}-${confirmationTokenId}` },
-      );
-    }
 
     if (!paymentIntent.id.startsWith("pi_")) throw new HttpError(502, "Stripe returned an invalid PaymentIntent");
     if (paymentIntent.amount !== transaction.amountMinor || paymentIntent.currency.toUpperCase() !== transaction.currency || paymentIntent.application_fee_amount !== transaction.platformFeeMinor) {
@@ -197,7 +211,7 @@ function customerPublishableKey() {
   return key;
 }
 
-export async function createCustomerCheckout(checkoutToken: string, confirmationTokenId?: string) {
+export async function createCustomerCheckout(checkoutToken: string, _confirmationTokenId?: string) {
   const authorizedOrder = await verifyCheckoutToken(checkoutToken);
   const transaction = await preparePaymentTransaction(authorizedOrder.merchantId, authorizedOrder.wooOrderId);
   if (transaction.status !== "REQUIRES_PAYMENT" && !transaction.stripePaymentIntentId) {
@@ -205,7 +219,7 @@ export async function createCustomerCheckout(checkoutToken: string, confirmation
   }
   if (transaction.stripeReadiness !== "READY") throw new HttpError(409, "STRIPE_NOT_READY");
 
-  const paymentIntent = await ensureStripePaymentIntent(authorizedOrder.merchantId, transaction.id, confirmationTokenId);
+  const paymentIntent = await ensureStripePaymentIntent(authorizedOrder.merchantId, transaction.id);
   if (!paymentIntent.clientSecret) throw new HttpError(502, "Stripe did not return a client secret");
 
   return {

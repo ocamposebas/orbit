@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { createCustomerCheckout } from "@/payments/service";
+import { createCustomerCheckout, StripePaymentIntentParameterError } from "@/payments/service";
 import { apiError } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 
@@ -21,6 +21,17 @@ export async function POST(request: NextRequest) {
       headers: { "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer" },
     });
   } catch (error) {
+    if (error instanceof StripePaymentIntentParameterError) {
+      const parameter = error.stripeParam === "unknown" ? "" : ` (parameter: ${error.stripeParam})`;
+      return NextResponse.json({
+        error: error.message,
+        code: error.stripeCode,
+        message: `${error.stripeMessage}${parameter}`,
+      }, {
+        status: error.status,
+        headers: { "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer" },
+      });
+    }
     return apiError(error);
   }
 }
