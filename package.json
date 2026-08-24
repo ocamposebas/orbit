@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
+    "prestart": "prisma migrate deploy",
     "start": "next start",
     "start:deploy": "prisma migrate deploy && next start",
     "lint": "eslint src tests vitest.config.ts",
