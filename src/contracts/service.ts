@@ -5,7 +5,7 @@ import { HttpError } from "@/sentinel/http";
 import { invitationTokenSchema } from "./schema";
 
 export const INVITATION_VALIDITY_DAYS = 30;
-export const AGREEMENT_TERMS_VERSION = "orbit-msa-es-1.0";
+export const AGREEMENT_TERMS_VERSION = "orbit-msa-en-1.0";
 
 export function hashInvitationToken(token: string) {
   return createHash("sha256").update(invitationTokenSchema.parse(token)).digest("hex");
@@ -58,6 +58,7 @@ export function publicAgreementState(agreement: Awaited<ReturnType<typeof agreem
 export function agreementAdminState(agreement: {
   status: string;
   invitationExpiresAt: Date;
+  invitationIssuedAt: Date | null;
   informationCertifiedAt: Date | null;
   contractIssuedAt: Date | null;
   signedUploadedAt: Date | null;
@@ -67,9 +68,12 @@ export function agreementAdminState(agreement: {
   termsVersion: string;
 } | null) {
   if (!agreement) return null;
+  const workflow = agreement.status === "SIGNED_LOCKED" ? "SIGNED" : agreement.status === "CONTRACT_ISSUED" ? "AWAITING_SIGNATURE" : agreement.status === "DATA_COMPLETED" ? "READY_TO_ISSUE" : agreement.invitationIssuedAt ? "AWAITING_CUSTOMER" : "OPTIONAL";
   return {
     status: agreement.status,
+    workflow,
     invitationExpiresAt: agreement.invitationExpiresAt,
+    invitationIssuedAt: agreement.invitationIssuedAt,
     informationCertifiedAt: agreement.informationCertifiedAt,
     contractIssuedAt: agreement.contractIssuedAt,
     signedUploadedAt: agreement.signedUploadedAt,
@@ -86,8 +90,8 @@ export async function rotateInvitation(merchantId: string) {
   const invitation = createInvitationCredentials();
   await getDatabase().merchantAgreement.upsert({
     where: { merchantId },
-    create: { merchantId, invitationTokenHash: invitation.tokenHash, invitationExpiresAt: invitation.expiresAt, termsVersion: AGREEMENT_TERMS_VERSION },
-    update: { invitationTokenHash: invitation.tokenHash, invitationExpiresAt: invitation.expiresAt },
+    create: { merchantId, invitationTokenHash: invitation.tokenHash, invitationExpiresAt: invitation.expiresAt, invitationIssuedAt: new Date(), termsVersion: AGREEMENT_TERMS_VERSION },
+    update: { invitationTokenHash: invitation.tokenHash, invitationExpiresAt: invitation.expiresAt, invitationIssuedAt: new Date(), termsVersion: AGREEMENT_TERMS_VERSION },
   });
   return { url: invitationUrl(invitation.token), expiresAt: invitation.expiresAt };
 }

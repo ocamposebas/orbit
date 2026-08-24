@@ -98,7 +98,7 @@ describe("self-serve merchant invitations", () => {
   });
 
   it("lets the invitee atomically create the real merchant profile and primary site", async () => {
-    const invited = { id: "agreement_1", merchantId: "merchant_pending", status: "INVITED", selfServe: true, termsVersion: "orbit-msa-es-1.0", merchant: { organizationId: "org_1" } };
+    const invited = { id: "agreement_1", merchantId: "merchant_pending", status: "INVITED", selfServe: true, termsVersion: "orbit-msa-en-1.0", merchant: { organizationId: "org_1" } };
     mocks.agreementFromInvitation.mockResolvedValue(invited);
     mocks.publicAgreementState.mockReturnValue({ status: "DATA_COMPLETED" });
     const { POST } = await import("@/app/api/onboarding/[token]/route");

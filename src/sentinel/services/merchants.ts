@@ -29,7 +29,7 @@ export async function createMerchant(input: z.infer<typeof createMerchantSchema>
   return db.$transaction(async (tx) => {
     const merchant = await tx.merchant.create({ data: { organizationId: data.organizationId, businessName: data.businessName, slug, industry: data.industry, country: data.country, legalCountry: data.legalCountry, businessDescription: data.businessDescription, expectedMonthlyVolume: data.expectedMonthlyVolume } });
     await tx.merchantSite.create({ data: { merchantId: merchant.id, url: target.toString(), normalizedUrl: target.toString(), hostname: target.hostname } });
-    await tx.merchantAgreement.create({ data: { merchantId: merchant.id, invitationTokenHash: invitation.tokenHash, invitationExpiresAt: invitation.expiresAt, termsVersion: AGREEMENT_TERMS_VERSION } });
+    await tx.merchantAgreement.create({ data: { merchantId: merchant.id, invitationTokenHash: invitation.tokenHash, invitationExpiresAt: invitation.expiresAt, invitationIssuedAt: new Date(), termsVersion: AGREEMENT_TERMS_VERSION } });
     await tx.auditLog.create({ data: { organizationId: data.organizationId, merchantId: merchant.id, action: "merchant.created", targetType: "Merchant", targetId: merchant.id, metadata: { website: target.toString() } } });
     return { merchant, invitationToken: invitation.token, invitationExpiresAt: invitation.expiresAt };
   });
@@ -52,6 +52,7 @@ export async function createSelfServeMerchantInvitation(organizationId: string) 
       merchantId: merchant.id,
       invitationTokenHash: invitation.tokenHash,
       invitationExpiresAt: invitation.expiresAt,
+      invitationIssuedAt: new Date(),
       termsVersion: AGREEMENT_TERMS_VERSION,
       selfServe: true,
     } });

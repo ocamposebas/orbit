@@ -14,7 +14,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     await enforceRateLimit(request, "agreement-contract", 10);
     const { token } = await params;
     let agreement = await agreementFromInvitation(token);
-    if (agreement.status === "SIGNED_LOCKED") throw new HttpError(423, "The completed expediente is locked");
+    if (agreement.status === "SIGNED_LOCKED") throw new HttpError(423, "The completed agreement record is locked");
     if (agreement.status === "INVITED") throw new HttpError(409, "Complete and certify the merchant information before downloading the agreement");
     let pdf = agreement.contractPdf ? Uint8Array.from(agreement.contractPdf) : null;
     if (!pdf) {
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
     return new NextResponse(pdf, { headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="orbit-acuerdo-${safeContractFilename(agreement.legalName ?? agreement.merchant.businessName)}.pdf"`,
+      "Content-Disposition": `attachment; filename="orbit-agreement-${safeContractFilename(agreement.legalName ?? agreement.merchant.businessName)}.pdf"`,
       "Cache-Control": "private, no-store, max-age=0",
       "X-Content-Type-Options": "nosniff",
     } });

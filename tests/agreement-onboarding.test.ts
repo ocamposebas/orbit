@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agreementDocumentHtml, safeContractFilename, sha256 } from "@/contracts/document";
-import { createInvitationCredentials, hashInvitationToken } from "@/contracts/service";
+import { agreementAdminState, createInvitationCredentials, hashInvitationToken } from "@/contracts/service";
 import { merchantAgreementIntakeSchema, SIGNED_CONTRACT_MAX_BYTES } from "@/contracts/schema";
 
 const intake = {
@@ -44,6 +44,12 @@ describe("contractual onboarding", () => {
     expect(first.expiresAt.toISOString()).toBe("2026-09-23T00:00:00.000Z");
   });
 
+  it("distinguishes an optional legacy agreement from an invitation that was actually sent", () => {
+    const base = { status: "INVITED", invitationExpiresAt: new Date("2026-09-23T00:00:00Z"), informationCertifiedAt: null, contractIssuedAt: null, signedUploadedAt: null, signedOriginalName: null, signedSizeBytes: null, lockedAt: null, termsVersion: "orbit-msa-en-1.0" };
+    expect(agreementAdminState({ ...base, invitationIssuedAt: null })).toMatchObject({ status: "INVITED", workflow: "OPTIONAL", invitationIssuedAt: null });
+    expect(agreementAdminState({ ...base, invitationIssuedAt: new Date("2026-08-24T00:00:00Z") })).toMatchObject({ workflow: "AWAITING_CUSTOMER", invitationIssuedAt: new Date("2026-08-24T00:00:00Z") });
+  });
+
   it("normalizes certified intake and requires every irreversible consent", () => {
     const parsed = merchantAgreementIntakeSchema.parse(intake);
     expect(parsed.countryCode).toBe("US");
@@ -56,7 +62,7 @@ describe("contractual onboarding", () => {
     const parsed = merchantAgreementIntakeSchema.parse(intake);
     const html = agreementDocumentHtml({
       id: "cm1234567890",
-      termsVersion: "orbit-msa-es-1.0",
+      termsVersion: "orbit-msa-en-1.0",
       ...parsed,
       tradeName: parsed.tradeName ?? null,
       registrationNumber: parsed.registrationNumber ?? null,
@@ -65,8 +71,9 @@ describe("contractual onboarding", () => {
     });
     expect(html).toContain("Sebastian Ocampo");
     expect(html).toContain("Northstar Research LLC");
-    expect(html).toContain("no realiza KYC/KYB");
-    expect(html).toContain("no son certificaciones");
+    expect(html).toContain("does not perform KYC/KYB");
+    expect(html).toContain("are not certifications");
+    expect(html).toContain('lang="en"');
   });
 
   it("provides deterministic integrity helpers and safe filenames", () => {

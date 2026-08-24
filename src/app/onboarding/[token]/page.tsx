@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import { OnboardingPortal } from "@/components/contracts/onboarding-portal";
 
 export const metadata: Metadata = {
-  title: "Expediente contractual",
-  description: "Portal seguro de incorporación contractual de ORBIT.",
+  title: "Secure agreement onboarding",
+  description: "ORBIT secure merchant agreement onboarding portal.",
   robots: { index: false, follow: false, noarchive: true },
 };
 

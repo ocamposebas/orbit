@@ -30,6 +30,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       agreement = await getDatabase().merchantAgreement.findUniqueOrThrow({ where: { id: agreementId }, include: { merchant: { select: { businessName: true, industry: true } } } });
       pdf = agreement.contractPdf ? Uint8Array.from(agreement.contractPdf) : pdf;
     }
-    return new NextResponse(pdf, { headers: { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="orbit-acuerdo-${safeContractFilename(agreement.legalName ?? agreement.merchant.businessName)}.pdf"`, "Cache-Control": "private, no-store, max-age=0", "X-Content-Type-Options": "nosniff" } });
+    return new NextResponse(pdf, { headers: { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="orbit-agreement-${safeContractFilename(agreement.legalName ?? agreement.merchant.businessName)}.pdf"`, "Cache-Control": "private, no-store, max-age=0", "X-Content-Type-Options": "nosniff" } });
   } catch (error) { return apiError(error); }
 }
