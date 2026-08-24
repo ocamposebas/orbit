@@ -5,7 +5,7 @@ import { HttpError } from "@/sentinel/http";
 import { invitationTokenSchema } from "./schema";
 
 export const INVITATION_VALIDITY_DAYS = 30;
-export const AGREEMENT_TERMS_VERSION = "orbit-msa-en-1.0";
+export const AGREEMENT_TERMS_VERSION = "orbit-msa-en-1.1";
 
 export function hashInvitationToken(token: string) {
   return createHash("sha256").update(invitationTokenSchema.parse(token)).digest("hex");

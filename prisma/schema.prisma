@@ -83,7 +83,7 @@ model Merchant {
   industry              String
   country               String
   legalCountry          String?
-  platformFeeBps        Int?
+  platformFeeBps        Int?                         @default(300)
   businessDescription   String
   expectedMonthlyVolume String?
   status                MerchantStatus               @default(ONBOARDING)
@@ -116,7 +116,7 @@ model MerchantAgreement {
   invitationTokenHash        String          @unique
   invitationExpiresAt        DateTime
   invitationIssuedAt         DateTime?
-  termsVersion               String          @default("orbit-msa-en-1.0")
+  termsVersion               String          @default("orbit-msa-en-1.1")
   selfServe                  Boolean         @default(false)
   legalName                  String?
   tradeName                  String?

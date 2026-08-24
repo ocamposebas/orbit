@@ -1,0 +1,3 @@
+export const MONTHLY_SERVICE_FEE_USD = 350;
+export const PLATFORM_SERVICE_FEE_PERCENT = 3;
+export const PLATFORM_SERVICE_FEE_BPS = 300;

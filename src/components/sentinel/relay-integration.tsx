@@ -2,6 +2,7 @@
 
 import { Link2, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { PLATFORM_SERVICE_FEE_BPS } from "@/contracts/pricing";
 import { cn } from "@/lib/utils";
 import { sentinelFetch } from "./client";
 
@@ -141,7 +142,7 @@ export function RelayIntegrationCard({ merchantId, merchantName, platformFeeBps,
       </div>
       <p className="mt-3 text-[9px] leading-4 text-[#555a62]">Relay health is independent from Stripe verification. Signing secrets remain server-side and are used only for private Relay requests.</p>
     </section>
-    {showConfig && <RelayConfigurationDialog merchantId={merchantId} platformFeeBps={platformFeeBps} integration={integration} onClose={() => setShowConfig(false)} onSaved={async () => { setShowConfig(false); setNotice("Relay configuration saved."); await reload(); }} />}
+    {showConfig && <RelayConfigurationDialog merchantId={merchantId} integration={integration} onClose={() => setShowConfig(false)} onSaved={async () => { setShowConfig(false); setNotice("Relay configuration saved."); await reload(); }} />}
   </>;
 }
 
@@ -319,7 +320,7 @@ function RelayResult({ label, value }: { label: string; value: string }) {
   return <div className="bg-[#0c0e12] p-3"><dt className="text-[8px] uppercase tracking-[.12em] text-[#555a62]">{label}</dt><dd className="mt-1.5 text-[10px] text-[#b8bab5]">{value}</dd></div>;
 }
 
-function RelayConfigurationDialog({ merchantId, platformFeeBps, integration, onClose, onSaved }: { merchantId: string; platformFeeBps?: number | null; integration?: RelayIntegration; onClose: () => void; onSaved: () => Promise<void> }) {
+function RelayConfigurationDialog({ merchantId, integration, onClose, onSaved }: { merchantId: string; integration?: RelayIntegration; onClose: () => void; onSaved: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [replaceSecret, setReplaceSecret] = useState(!integration?.signingConfigured);
@@ -347,7 +348,7 @@ function RelayConfigurationDialog({ merchantId, platformFeeBps, integration, onC
       <form onSubmit={submit} className="space-y-4 p-5">
         <label className="block text-[10px] text-[#81858d]">WooCommerce URL<input required name="baseUrl" type="url" defaultValue={integration?.baseUrl ?? ""} placeholder="https://wp.example.com" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /><span className="mt-1.5 block leading-4 text-[#5f646d]">Canonical WooCommerce origin only. Production requires HTTPS.</span></label>
         <label className="block text-[10px] text-[#81858d]">Environment<select name="environment" defaultValue={integration?.environment ?? "PRODUCTION"} className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-[#111319] px-3 text-xs text-white outline-none focus:border-[#7779ea]"><option value="PRODUCTION">Production</option><option value="STAGING">Staging</option></select></label>
-        <label className="block text-[10px] text-[#81858d]">Platform fee (basis points)<input required name="platformFeeBps" type="number" min="0" max="10000" step="1" defaultValue={platformFeeBps ?? ""} placeholder="300" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /><span className="mt-1.5 block leading-4 text-[#5f646d]">300 basis points equals 3.00%. This setting is stored per merchant.</span></label>
+        <label className="block text-[10px] text-[#81858d]">Platform fee (basis points)<input required readOnly name="platformFeeBps" type="number" value={PLATFORM_SERVICE_FEE_BPS} className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none" /><span className="mt-1.5 block leading-4 text-[#5f646d]">Fixed ORBIT pricing: 300 basis points equals 3.00% for every merchant.</span></label>
         <div className="text-[10px] text-[#81858d]"><div className="flex items-center justify-between"><span>Signing secret</span>{integration?.signingConfigured && !replaceSecret && <button type="button" onClick={() => setReplaceSecret(true)} className="text-[#9b9df1] hover:text-white">Replace signing secret</button>}</div>{replaceSecret ? <input required name="signingSecret" type="password" minLength={16} maxLength={1024} autoComplete="new-password" placeholder="Paste the WordPress Relay signing secret" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /> : <div className="mt-1.5 flex h-10 items-center rounded-md border border-white/[.08] bg-white/[.02] px-3 text-xs text-[#6fc39d]">Configured</div>}<span className="mt-1.5 block leading-4 text-[#5f646d]">The saved secret is encrypted and is never returned to this browser.</span></div>
         <label className="flex items-center gap-3 border border-white/[.07] p-3 text-[10px] text-[#a5a8a1]"><input name="connectionEnabled" type="checkbox" defaultChecked={integration?.connectionEnabled ?? true} className="size-4 accent-[#7779ea]" />Enable Relay</label>
         {error && <p className="text-xs text-[#dd8b8b]">{error}</p>}

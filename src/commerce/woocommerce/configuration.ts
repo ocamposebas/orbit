@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PLATFORM_SERVICE_FEE_BPS } from "@/contracts/pricing";
 import { UnsafeTargetError, validatePublicUrl } from "@/sentinel/security/ssrf";
 import { RelayError, type RelayEnvironment } from "./types";
 
@@ -12,7 +13,7 @@ export const relayConfigurationSchema = z.object({
   environment: z.enum(["PRODUCTION", "STAGING"]),
   signingSecret: optionalSigningSecret,
   connectionEnabled: z.boolean(),
-  platformFeeBps: z.number().int().min(0).max(10_000).optional(),
+  platformFeeBps: z.literal(PLATFORM_SERVICE_FEE_BPS, { error: "The ORBIT platform fee is fixed at 300 basis points (3.0%)" }).optional(),
 });
 
 export function normalizeWooCommerceBaseUrl(input: string, environment: RelayEnvironment) {

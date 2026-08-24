@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { agreementDocumentHtml, safeContractFilename, sha256 } from "@/contracts/document";
-import { agreementAdminState, createInvitationCredentials, hashInvitationToken, publicAgreementState } from "@/contracts/service";
+import { agreementDocumentHtml, MONTHLY_SERVICE_FEE_USD, PLATFORM_SERVICE_FEE_PERCENT, safeContractFilename, sha256 } from "@/contracts/document";
+import { AGREEMENT_TERMS_VERSION, agreementAdminState, createInvitationCredentials, hashInvitationToken, publicAgreementState } from "@/contracts/service";
 import { merchantAgreementIntakeSchema, SIGNED_CONTRACT_MAX_BYTES } from "@/contracts/schema";
 
 const intake = {
@@ -55,7 +55,7 @@ describe("contractual onboarding", () => {
       status: "INVITED",
       selfServe: false,
       invitationExpiresAt: new Date("2026-09-23T00:00:00Z"),
-      termsVersion: "orbit-msa-en-1.0",
+      termsVersion: AGREEMENT_TERMS_VERSION,
       legalName: null,
       tradeName: null,
       entityType: null,
@@ -111,7 +111,7 @@ describe("contractual onboarding", () => {
     const parsed = merchantAgreementIntakeSchema.parse(intake);
     const html = agreementDocumentHtml({
       id: "cm1234567890",
-      termsVersion: "orbit-msa-en-1.0",
+      termsVersion: AGREEMENT_TERMS_VERSION,
       ...parsed,
       tradeName: parsed.tradeName ?? null,
       registrationNumber: parsed.registrationNumber ?? null,
@@ -122,7 +122,12 @@ describe("contractual onboarding", () => {
     expect(html).toContain("Northstar Research LLC");
     expect(html).toContain("does not perform KYC/KYB");
     expect(html).toContain("are not certifications");
+    expect(html).toContain("USD $350.00 per month");
+    expect(html).toContain("3.0% of Gross Transaction Value");
+    expect(html).toContain("data:image/png;base64,");
     expect(html).toContain('lang="en"');
+    expect(MONTHLY_SERVICE_FEE_USD).toBe(350);
+    expect(PLATFORM_SERVICE_FEE_PERCENT).toBe(3);
   });
 
   it("provides deterministic integrity helpers and safe filenames", () => {
