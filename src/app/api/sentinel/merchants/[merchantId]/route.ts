@@ -5,6 +5,7 @@ import { childLogger } from "@/sentinel/logger";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { updateMerchantLegalCountrySchema } from "@/sentinel/services/merchants";
 import { safeRelayIntegration } from "@/commerce/woocommerce/service";
+import { agreementAdminState } from "@/contracts/service";
 
 export const runtime = "nodejs";
 const log = childLogger({ component: "merchant-api" });
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { merchantId } = await params;
     const { organization } = await requireMerchantAccess(request, merchantId);
     const db = getDatabase();
-    const merchant = await db.merchant.findFirst({ where: { id: merchantId, organizationId: organization.id }, include: { sites: true, scans: { orderBy: { createdAt: "desc" }, take: 20 }, healthScores: { orderBy: { createdAt: "desc" }, take: 12, include: { components: true } }, findings: { orderBy: [{ severity: "asc" }, { lastDetectedAt: "desc" }], take: 100, include: { evidence: { orderBy: { createdAt: "desc" }, take: 8 } } }, products: { orderBy: { lastSeenAt: "desc" }, take: 100, include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } } }, policies: true, auditLogs: { orderBy: { createdAt: "desc" }, take: 100 } } });
+    const merchant = await db.merchant.findFirst({ where: { id: merchantId, organizationId: organization.id }, include: { agreement: { select: { status: true, invitationExpiresAt: true, informationCertifiedAt: true, contractIssuedAt: true, signedUploadedAt: true, signedOriginalName: true, signedSizeBytes: true, lockedAt: true, termsVersion: true } }, sites: true, scans: { orderBy: { createdAt: "desc" }, take: 20 }, healthScores: { orderBy: { createdAt: "desc" }, take: 12, include: { components: true } }, findings: { orderBy: [{ severity: "asc" }, { lastDetectedAt: "desc" }], take: 100, include: { evidence: { orderBy: { createdAt: "desc" }, take: 8 } } }, products: { orderBy: { lastSeenAt: "desc" }, take: 100, include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } } }, policies: true, auditLogs: { orderBy: { createdAt: "desc" }, take: 100 } } });
     if (!merchant) throw new HttpError(404, "Merchant not found");
     let stripeConnect = null;
     let stripeConnectAvailable = true;
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       wooCommerceRelayAvailable = false;
       log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "WooCommerce Relay schema is not deployed; serving merchant without the optional integration");
     }
-    return NextResponse.json({ merchant: { ...merchant, stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
+    return NextResponse.json({ merchant: { ...merchant, agreement: agreementAdminState(merchant.agreement), stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
   } catch (error) { return apiError(error); }
 }
 

@@ -95,6 +95,7 @@ model Merchant {
   findings              Finding[]
   healthScores          HealthScore[]
   accessGrants          MerchantAccess[]
+  agreement             MerchantAgreement?
   organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sites                 MerchantSite[]
   policies              Policy[]
@@ -106,6 +107,52 @@ model Merchant {
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
+}
+
+model MerchantAgreement {
+  id                         String          @id @default(cuid())
+  merchantId                 String          @unique
+  status                     AgreementStatus @default(INVITED)
+  invitationTokenHash        String          @unique
+  invitationExpiresAt        DateTime
+  termsVersion               String          @default("orbit-msa-es-1.0")
+  legalName                  String?
+  tradeName                  String?
+  entityType                 String?
+  taxId                      String?
+  registrationNumber         String?
+  businessAddress            String?
+  city                       String?
+  region                     String?
+  postalCode                 String?
+  countryCode                String?
+  coveredDomains             String?
+  primaryContactName         String?
+  primaryContactRole         String?
+  primaryContactEmail        String?
+  primaryContactPhone        String?
+  billingDescriptor          String?
+  estimatedMonthlyVolume     String?
+  averageTransactionAmount   String?
+  highestTransactionAmount   String?
+  productsAndServices        String?
+  informationCertifiedAt     DateTime?
+  contractIssuedAt           DateTime?
+  contractPdf                Bytes?
+  contractSha256             String?
+  signedOriginalName         String?
+  signedMimeType             String?
+  signedSizeBytes            Int?
+  signedContract             Bytes?
+  signedSha256               String?
+  signedUploadedAt           DateTime?
+  lockedAt                   DateTime?
+  createdAt                  DateTime        @default(now())
+  updatedAt                  DateTime        @updatedAt
+  merchant                   Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt])
+  @@index([invitationExpiresAt])
 }
 
 model StripeConnectIntegration {
@@ -679,6 +726,13 @@ enum MerchantStatus {
   MONITORED
   PAUSED
   BLOCKED
+}
+
+enum AgreementStatus {
+  INVITED
+  DATA_COMPLETED
+  CONTRACT_ISSUED
+  SIGNED_LOCKED
 }
 
 enum SiteEnvironment {
