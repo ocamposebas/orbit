@@ -45,11 +45,35 @@ function canonicalize(input: string, base: string): string | null {
   } catch { return null; }
 }
 
+const mutatingPath = /\/(?:logout|log-out|signout|sign-out|(?:api\/)?(?:account\/)?(?:delete|destroy|unsubscribe|revoke|disconnect)|(?:cart|basket|wishlist|favorites?)\/(?:add|change|update|remove|delete|clear))(?:\/|$)/i;
+const mutatingQuery = /^(?:add-to-cart|remove_item|wc-ajax|action|mutation|_method|command|cmd)$/i;
+
+export function isReadOnlyRequest(method: string, input: string) {
+  if (!new Set(["GET", "HEAD"]).has(method.toUpperCase())) return false;
+  try {
+    const url = new URL(input);
+    if (mutatingPath.test(url.pathname)) return false;
+    if ([...url.searchParams.keys()].some((key) => mutatingQuery.test(key))) return false;
+    return true;
+  } catch { return false; }
+}
+
 async function secureContext(browser: Browser, unsafeAllowPrivateTestTarget = false): Promise<BrowserContext> {
   const env = getServerEnv();
-  const context = await browser.newContext({ serviceWorkers: "block", userAgent: "ORBIT-Sentinel/1.0 (+website-monitoring)", viewport: { width: 1440, height: 1000 }, javaScriptEnabled: true });
+  const context = await browser.newContext({ serviceWorkers: "block", acceptDownloads: false, userAgent: "ORBIT-Sentinel/1.1 (+read-only-website-monitoring)", extraHTTPHeaders: { DNT: "1", "Sec-GPC": "1" }, viewport: { width: 1440, height: 1000 }, javaScriptEnabled: true });
+  await context.addInitScript(() => {
+    const prevent = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation(); };
+    window.addEventListener("submit", prevent, true);
+    HTMLFormElement.prototype.submit = function readOnlySubmit() { /* ORBIT never submits forms */ };
+    HTMLFormElement.prototype.requestSubmit = function readOnlyRequestSubmit() { /* ORBIT never submits forms */ };
+    Navigator.prototype.sendBeacon = function readOnlyBeacon() { return false; };
+    window.open = () => null;
+  });
   await context.route("**/*", async (route) => {
+    const request = route.request();
     const requestUrl = route.request().url();
+    if (!isReadOnlyRequest(request.method(), requestUrl)) return route.abort("blockedbyclient");
+    if (["websocket", "eventsource"].includes(request.resourceType())) return route.abort("blockedbyclient");
     if (/^(data|blob|about):/.test(requestUrl)) return route.continue();
     try { if (!unsafeAllowPrivateTestTarget) await validatePublicUrl(requestUrl); await route.continue(); }
     catch { await route.abort("blockedbyclient"); }
@@ -72,14 +96,18 @@ async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?:
     let request = response?.request() ?? null;
     while (request?.redirectedFrom()) { redirects.push(request.url()); request = request.redirectedFrom(); }
     if (redirects.length > 4) throw new Error("Redirect limit exceeded");
+    const contentType = response?.headers()["content-type"] ?? "";
+    if (contentType && !/(?:text\/html|application\/xhtml\+xml)/i.test(contentType)) return { url: page.url(), discoveredFrom, depth, status: response?.status(), contentType, inaccessibleReason: "Non-HTML response was not analyzed" };
     const html = await page.content();
     if (Buffer.byteLength(html) > env.CRAWLER_RESPONSE_LIMIT_BYTES) throw new Error("Rendered page exceeds the configured size limit");
     const finalUrl = page.url();
     if (!unsafeAllowPrivateTestTarget) await validatePublicUrl(finalUrl);
     const metadata = await page.evaluate(() => ({ canonical: document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href, description: document.querySelector<HTMLMetaElement>('meta[name="description"]')?.content, robots: document.querySelector<HTMLMetaElement>('meta[name="robots"]')?.content }));
     const normalized = extractNormalizedContent(html, finalUrl);
+    const soft404Structure = `${normalized.title} ${normalized.headings.slice(0, 2).join(" ")}`.trim();
+    if (/\b(?:404|page not found|not found|page does not exist|nothing here)\b/i.test(soft404Structure) && soft404Structure.length < 300) return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType, title: normalized.title, description: metadata.description, robots: metadata.robots, inaccessibleReason: "Soft 404 page was not analyzed" };
     const classification = classifyPage(finalUrl, normalized);
-    return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType: response?.headers()["content-type"], title: normalized.title, description: metadata.description, robots: metadata.robots, normalized, classification, hash: contentHash(normalized) };
+    return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType, title: normalized.title, description: metadata.description, robots: metadata.robots, normalized, classification, hash: contentHash(normalized) };
   } catch (error) {
     return { url, discoveredFrom, depth, inaccessibleReason: error instanceof Error ? error.message.slice(0, 500) : "Unknown crawl error" };
   }

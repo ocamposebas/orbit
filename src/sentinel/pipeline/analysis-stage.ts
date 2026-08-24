@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { contentHash } from "@/sentinel/extraction/normalize";
 import { normalizedContentSchema, type CandidateFinding, type SentinelPageType } from "@/sentinel/types";
-import { evaluatePage, evaluateSiteCoverage, isReviewableCheckout } from "@/sentinel/analysis/rules";
+import { evaluatePage, evaluateSiteCoverage, isReviewableCheckout, requiredPolicyTypes } from "@/sentinel/analysis/rules";
 import { CachedSemanticAnalyzer, LocalSemanticAnalyzer } from "@/sentinel/analysis/semantic";
 import { evaluateContradictions } from "@/sentinel/analysis/contradictions";
 import { findingsToResolve } from "@/sentinel/analysis/lifecycle";
@@ -13,7 +13,7 @@ import { detectPolicySignals, type PolicySignalType } from "@/sentinel/classific
 import { buildProductIntelligence } from "@/sentinel/analysis/product-intelligence";
 import { evaluateWebsiteLegitimacy } from "@/sentinel/analysis/legitimacy";
 import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
-import { consolidateCandidates } from "@/sentinel/analysis/candidate-quality";
+import { consolidateCandidates, isScorableCandidate } from "@/sentinel/analysis/candidate-quality";
 import { looksLikeProductUrl } from "@/sentinel/classification/classifier";
 
 export async function runAnalysisStage(scanId: string) {
@@ -37,7 +37,8 @@ export async function runAnalysisStage(scanId: string) {
     const processed = Math.min(offset + batch.length, pagesForDeepAnalysis.length);
     await updateProgress(scanId, { stage: "analyzing", message: `Evaluating page context (${processed}/${pagesForDeepAnalysis.length})`, stageProcessed: processed, stageTotal: pagesForDeepAnalysis.length });
   }
-  const rawCandidates = [...pageFindingGroups.flat(), ...evaluateSiteCoverage(pages), ...evaluateWebsiteLegitimacy(pages), ...evaluateContradictions(pages)];
+  const analysisCoverageRatio = pages.length / Math.max(scan.pagesDiscovered, pages.length, 1);
+  const rawCandidates = [...pageFindingGroups.flat(), ...evaluateSiteCoverage(pages, { coverageRatio: analysisCoverageRatio }), ...evaluateWebsiteLegitimacy(pages), ...evaluateContradictions(pages)];
   const candidates = consolidateCandidates(rawCandidates);
   const storedRuleVersions = await db.ruleVersion.findMany({ where: { version: 1, rule: { key: { in: [...new Set(candidates.map((candidate) => candidate.ruleKey))] } } }, include: { rule: { select: { key: true } } } });
   const ruleVersionByKey = new Map(storedRuleVersions.map((version) => [version.rule.key, version]));
@@ -79,8 +80,13 @@ export async function runAnalysisStage(scanId: string) {
   const productCoveragePercent = productsDiscovered > 0 ? Math.min(100, Math.round((productsDetected / productsDiscovered) * 100)) : 100;
   const certificateCoveragePercent = certificatesDiscovered > 0 ? 0 : 100;
   const scanCoveragePercent = Math.round(pageCoveragePercent * 0.65 + productCoveragePercent * 0.2 + certificateCoveragePercent * 0.15);
-  const expectedPolicyTypes = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
-  for (const type of expectedPolicyTypes) if (!presentPolicyTypes.has(type)) await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type } }, update: { coverage: "MISSING", url: null }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type, coverage: "MISSING" } });
+  const coveragePolicyTypes = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
+  const expectedPolicyTypes = requiredPolicyTypes(pages).filter((type): type is (typeof coveragePolicyTypes)[number] => coveragePolicyTypes.includes(type as (typeof coveragePolicyTypes)[number]));
+  if (analysisCoverageRatio >= 0.65) for (const type of expectedPolicyTypes) if (!presentPolicyTypes.has(type)) {
+    const coverage = analysisCoverageRatio >= 0.85 ? "MISSING" as const : "NEEDS_REVIEW" as const;
+    await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type } }, update: { coverage, url: null }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type, coverage } });
+  }
+  if (analysisCoverageRatio >= 0.85) for (const type of coveragePolicyTypes) if (!expectedPolicyTypes.includes(type) && !presentPolicyTypes.has(type)) await db.policy.upsert({ where: { merchantId_siteId_type: { merchantId: scan.merchantId, siteId: scan.siteId, type } }, update: { coverage: "NOT_APPLICABLE", url: null }, create: { merchantId: scan.merchantId, siteId: scan.siteId, type, coverage: "NOT_APPLICABLE" } });
 
   const fingerprints = new Set<string>();
   const retainedForScore: CandidateFinding[] = [];
@@ -91,7 +97,7 @@ export async function runAnalysisStage(scanId: string) {
       fingerprints.add(item.fingerprint);
       const category = item.category.toLowerCase();
       const scoreComponent = category.includes("policy") ? "POLICY_COVERAGE" : category.includes("marketing") ? "MARKETING_RISK" : category.includes("product") ? "PRODUCT_INTEGRITY" : category.includes("checkout") ? "SITE_CONTROLS" : category.includes("position") ? "OPERATIONAL_CONSISTENCY" : "RESEARCH_CONTROLS";
-      retainedForScore.push({ ruleKey: item.fingerprint, severity: item.severity, confidence: item.confidence, status: "OPEN", category: item.category, title: item.title, description: item.description, url: item.url, pageType: item.pageType as SentinelPageType, detectedText: item.detectedText ?? undefined, reason: item.reason, recommendedAction: item.recommendedAction, scoreComponent });
+      retainedForScore.push({ ruleKey: item.fingerprint, severity: item.severity, confidence: item.confidence, status: item.status === "NEEDS_REVIEW" ? "NEEDS_REVIEW" : "OPEN", category: item.category, title: item.title, description: item.description, url: item.url, pageType: item.pageType as SentinelPageType, detectedText: item.detectedText ?? undefined, reason: item.reason, recommendedAction: item.recommendedAction, scoreComponent });
     }
   }
   const evidenceJobs: string[] = [];
@@ -123,7 +129,7 @@ export async function runAnalysisStage(scanId: string) {
   findingsCreated = await db.finding.count({ where: { scanId, firstDetectedAt: { gte: scan.startedAt ?? scan.createdAt } } });
 
   let findingsResolved = 0;
-  if (scan.mode === "FULL") {
+  if (scan.mode === "FULL" && analysisCoverageRatio >= 0.85) {
     const active = await db.finding.findMany({ where: { merchantId: scan.merchantId, siteId: scan.siteId, status: { in: ["OPEN", "NEEDS_REVIEW", "CONFIRMED"] } }, select: { id: true, fingerprint: true } });
     const toResolve = findingsToResolve(active, fingerprints);
     if (toResolve.length) { const result = await db.finding.updateMany({ where: { id: { in: toResolve.map((item) => item.id) } }, data: { status: "RESOLVED", resolvedAt: new Date(), resolvedByScanId: scanId } }); findingsResolved = result.count; }
@@ -135,22 +141,26 @@ export async function runAnalysisStage(scanId: string) {
   const disclaimerPagesObserved = pages.filter((page) => /\bdisclaimer\b/i.test(`${new URL(page.url).pathname} ${page.content.title} ${page.content.headings.join(" ")}`) && page.content.disclaimers.length > 0).length;
   await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesAnalyzed, certificatesDiscovered, certificatesAnalyzed: 0, checkoutFlowsInspected, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
   await advanceScanStatus(scanId, "SCORING");
-  const requiredPoliciesFound = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"].filter((type) => presentPolicyTypes.has(type as PolicySignalType)).length;
+  const requiredPoliciesFound = expectedPolicyTypes.filter((type) => presentPolicyTypes.has(type)).length;
   const documentCoverage = certificateCoveragePercent;
   const assessmentCoverage = {
-    POLICY_COVERAGE: Math.round(scanCoveragePercent * 0.6 + (requiredPoliciesFound / 5) * 40),
+    POLICY_COVERAGE: Math.round(scanCoveragePercent * 0.6 + (requiredPoliciesFound / Math.max(expectedPolicyTypes.length, 1)) * 40),
     PRODUCT_INTEGRITY: productsDiscovered ? productCoveragePercent : 100,
     RESEARCH_CONTROLS: productsDiscovered ? Math.round((researchCoveredProducts / productsDiscovered) * 100) : 100,
     MARKETING_RISK: scanCoveragePercent,
     SITE_CONTROLS: productsDiscovered ? (checkoutFlowsInspected > 0 ? 100 : 0) : 100,
     OPERATIONAL_CONSISTENCY: Math.round(scanCoveragePercent * 0.6 + documentCoverage * 0.4),
   } as const;
-  const score = calculateHealthScore([...candidates, ...retainedForScore], assessmentCoverage);
+  const score = calculateHealthScore([...candidates, ...retainedForScore].filter(isScorableCandidate), assessmentCoverage);
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
   const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));
   await db.healthScore.upsert({ where: { merchantId_scanId: { merchantId: scan.merchantId, scanId } }, update: { total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { deleteMany: {}, create: scoreComponents } }, create: { merchantId: scan.merchantId, scanId, total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { create: scoreComponents } } });
   await advanceScanStatus(scanId, "COMPLETED", { productsDetected, policiesDetected, findingsCreated, findingsResolved, scoreBefore: previousScore?.total, scoreAfter: score.total, completedAt: new Date() });
-  await db.merchant.update({ where: { id: scan.merchantId }, data: { status: candidates.some((finding) => finding.severity === "CRITICAL" || finding.severity === "HIGH") ? "REVIEW_REQUIRED" : "MONITORED" } });
+  const activeMaterialFindings = await db.finding.count({ where: { merchantId: scan.merchantId, OR: [
+    { status: "OPEN", severity: { in: ["HIGH", "CRITICAL"] }, confidence: { gte: 0.9 } },
+    { status: { in: ["NEEDS_REVIEW", "CONFIRMED"] }, severity: { in: ["HIGH", "CRITICAL"] }, confidence: { gte: 0.9 }, detectedText: { not: null } },
+  ] } });
+  await db.merchant.update({ where: { id: scan.merchantId }, data: { status: activeMaterialFindings > 0 ? "REVIEW_REQUIRED" : "MONITORED" } });
   await db.merchantSite.update({ where: { id: scan.siteId }, data: { nextScanAt: new Date(Date.now() + (await db.merchantSite.findUniqueOrThrow({ where: { id: scan.siteId }, select: { monitoringCadenceMinutes: true } })).monitoringCadenceMinutes * 60_000) } });
   const completionAudit = await db.auditLog.findFirst({ where: { scanId, action: "scan.completed", targetType: "Scan", targetId: scanId }, select: { id: true } });
   if (!completionAudit) await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: { score: score.total, findings: candidates.length, pages: pages.length } } });

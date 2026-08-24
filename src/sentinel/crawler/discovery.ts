@@ -11,21 +11,27 @@ export interface RobotsPolicy {
 export function parseRobots(text: string, origin: string): RobotsPolicy {
   const lines = text.split(/\r?\n/).map((line) => line.replace(/#.*$/, "").trim()).filter(Boolean);
   const sitemaps: string[] = [];
-  const disallowed: string[] = [];
-  let applies = false;
+  const groups: Array<{ agents: string[]; rules: Array<{ path: string; allow: boolean }> }> = [];
+  let group: { agents: string[]; rules: Array<{ path: string; allow: boolean }> } | undefined;
   for (const line of lines) {
     const [rawKey, ...rest] = line.split(":");
     const key = rawKey.toLowerCase();
     const value = rest.join(":").trim();
-    if (key === "user-agent") applies = value === "*" || value.toLowerCase().includes("orbit-sentinel");
-    else if (key === "sitemap" && value) { try { sitemaps.push(new URL(value, origin).toString()); } catch { /* invalid sitemap URL */ } }
-    else if (key === "disallow" && applies && value) disallowed.push(value);
-    else if (key === "allow" && applies && value) {
-      const index = disallowed.indexOf(value);
-      if (index >= 0) disallowed.splice(index, 1);
-    }
+    if (key === "sitemap" && value) { try { const url = new URL(value, origin); if (url.origin === origin) sitemaps.push(url.toString()); } catch { /* invalid sitemap URL */ } }
+    else if (key === "user-agent") {
+      if (!group || group.rules.length) { group = { agents: [], rules: [] }; groups.push(group); }
+      group.agents.push(value.toLowerCase());
+    } else if ((key === "allow" || key === "disallow") && group && value) group.rules.push({ path: value.replace(/\$$/, ""), allow: key === "allow" });
   }
-  return { sitemaps: [...new Set(sitemaps)], disallowed, isAllowed(url) { const path = new URL(url).pathname; return !disallowed.some((rule) => rule !== "/" && path.startsWith(rule)) && !disallowed.includes("/"); } };
+  const specific = groups.filter((item) => item.agents.some((agent) => agent.includes("orbit-sentinel")));
+  const applicable = specific.length ? specific : groups.filter((item) => item.agents.includes("*"));
+  const rules = applicable.flatMap((item) => item.rules);
+  const disallowed = rules.filter((rule) => !rule.allow).map((rule) => rule.path);
+  return { sitemaps: [...new Set(sitemaps)], disallowed, isAllowed(url) {
+    const path = `${new URL(url).pathname}${new URL(url).search}`;
+    const matches = rules.filter((rule) => rule.path === "/" || path.startsWith(rule.path)).sort((left, right) => right.path.length - left.path.length || Number(right.allow) - Number(left.allow));
+    return matches[0]?.allow ?? true;
+  } };
 }
 
 export async function loadRobots(origin: string): Promise<RobotsPolicy> {
@@ -43,7 +49,7 @@ async function sitemapUrls(sitemapUrl: string, origin: string, remaining = 5): P
     if (response.status >= 400) return [];
     const $ = cheerio.load(response.text, { xmlMode: true });
     if ($("sitemapindex").length) {
-      const nested = $("sitemap > loc").map((_, node) => $(node).text().trim()).get().slice(0, 20);
+      const nested = $("sitemap > loc").map((_, node) => $(node).text().trim()).get().filter((value) => { try { return new URL(value, origin).origin === origin; } catch { return false; } }).slice(0, 20);
       const batches = await Promise.all(nested.map((url) => sitemapUrls(url, origin, remaining - 1)));
       return batches.flat();
     }

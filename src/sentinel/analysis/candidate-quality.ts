@@ -14,6 +14,19 @@ function guardedSeverity(finding: CandidateFinding): SentinelSeverity {
   return finding.severity;
 }
 
+export function isScorableCandidate(finding: CandidateFinding) {
+  if (finding.status === "OPEN") return true;
+  if (finding.severity === "CRITICAL" || finding.severity === "HIGH") return finding.confidence >= 0.86 && Boolean(finding.detectedText || finding.secondaryEvidence);
+  if (finding.severity === "MEDIUM") return finding.confidence >= 0.82 && Boolean(finding.detectedText || finding.secondaryEvidence || finding.affectedUrls?.length);
+  return false;
+}
+
+export function isMaterialCandidate(finding: CandidateFinding) {
+  if (finding.severity !== "CRITICAL" && finding.severity !== "HIGH") return false;
+  if (finding.status === "OPEN") return finding.confidence >= 0.9;
+  return finding.confidence >= 0.9 && Boolean(finding.detectedText || finding.secondaryEvidence);
+}
+
 /**
  * Applies the final evidence-quality gate before findings reach persistence or scoring.
  * It removes duplicate manifestations of one signal without discarding affected URLs.

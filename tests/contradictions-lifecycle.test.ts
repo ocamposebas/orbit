@@ -18,11 +18,12 @@ describe("cross-page contradictions and finding lifecycle", () => {
     const findings = await evaluatePage(directUsePage, new LocalSemanticAnalyzer());
     expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "RSRCH-ADMIN-001", severity: "CRITICAL" })]));
   });
-  it("flags consumer-directed language embedded in a public URL slug", async () => {
+  it("does not turn a URL slug into a finding without supporting page evidence", async () => {
     const url = "https://example.test/products/alpha-weight-loss-dosage";
     const content = extractNormalizedContent("<main><h1>Alpha reference</h1><p>Laboratory research material only.</p></main>", url);
     const findings = await evaluatePage({ url, pageType: "PRODUCT", content }, new LocalSemanticAnalyzer());
-    expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "MKT-SLUG-001", severity: "MEDIUM" })]));
+    expect(findings.some((finding) => finding.ruleKey === "MKT-SLUG-001")).toBe(false);
+    expect(findings.some((finding) => finding.ruleKey.startsWith("MKT-") || finding.ruleKey.startsWith("RSRCH-"))).toBe(false);
   });
   it("treats an explicit prohibition on human consumption as research context", () => {
     const text = "No product is offered, intended, or permitted for human consumption or for any personal or non-research purpose.";

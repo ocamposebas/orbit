@@ -50,7 +50,7 @@ export function classifyPage(url: string, content: NormalizedContent): Classifie
     [/\/(coa|certificate-of-analysis)(?:[-_/]|$)/, "COA", "certificate URL pattern"],
     [/\/(polic(?:y|ies)|research-use|age-policy|promotion-terms)(?:[-_/]|$)/, "POLICY", "general policy URL pattern"],
   ];
-  for (const [pattern, type, reason] of pathRules) if (pattern.test(path)) add(scores, type, 8, reason);
+  for (const [pattern, type, reason] of pathRules) if (pattern.test(path) && (type !== "PRODUCT" || hasProductEvidence(content))) add(scores, type, 8, reason);
 
   for (const signal of detectPolicySignals(url, content)) {
     const type = signal === "RESEARCH_USE" || signal === "AGE" || signal === "PROMOTION" ? "POLICY" : signal;
@@ -71,6 +71,7 @@ export function classifyPage(url: string, content: NormalizedContent): Classifie
   const ordered = Object.entries(scores).sort(([, a], [, b]) => b.score - a.score) as Array<[SentinelPageType, { score: number; reasons: string[] }]>;
   if (!ordered.length) return { pageType: "OTHER", confidence: 0.35, reasons: ["no strong page-type signal"] };
   const [pageType, winner] = ordered[0];
+  if (pageType === "PRODUCT" && !hasProductEvidence(content)) return { pageType: "OTHER", confidence: 0.86, reasons: ["product-shaped page lacked observable product or commerce evidence"] };
   const runnerUp = ordered[1]?.[1].score ?? 0;
   const confidence = Math.min(0.99, 0.52 + winner.score * 0.025 + Math.max(0, winner.score - runnerUp) * 0.015);
   return { pageType, confidence: Number(confidence.toFixed(2)), reasons: winner.reasons };
