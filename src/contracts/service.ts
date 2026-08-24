@@ -27,7 +27,7 @@ export function invitationUrl(token: string) {
 export async function agreementFromInvitation(token: string) {
   const agreement = await getDatabase().merchantAgreement.findUnique({
     where: { invitationTokenHash: hashInvitationToken(token) },
-    include: { merchant: { select: { id: true, organizationId: true, businessName: true, industry: true, businessDescription: true, expectedMonthlyVolume: true, sites: { where: { active: true }, take: 1, select: { normalizedUrl: true, hostname: true } } } } },
+    include: { merchant: { select: { id: true, organizationId: true, businessName: true, industry: true, country: true, businessDescription: true, expectedMonthlyVolume: true, sites: { where: { active: true }, take: 1, select: { normalizedUrl: true, hostname: true } } } } },
   });
   if (!agreement) throw new HttpError(404, "This invitation is invalid or is no longer available");
   if (agreement.status !== "SIGNED_LOCKED" && agreement.invitationExpiresAt <= new Date()) throw new HttpError(410, "This invitation has expired. Ask ORBIT for a new link.");
@@ -41,10 +41,13 @@ export function publicAgreementState(agreement: Awaited<ReturnType<typeof agreem
     expiresAt: agreement.invitationExpiresAt,
     termsVersion: agreement.termsVersion,
     merchant: {
-      businessName: agreement.merchant.businessName,
-      industry: agreement.merchant.industry,
-      website: agreement.merchant.sites[0]?.normalizedUrl ?? "",
+      businessName: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.businessName,
+      industry: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.industry,
+      website: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.sites[0]?.normalizedUrl ?? "",
+      operatingCountry: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.country,
+      businessDescription: agreement.selfServe && agreement.status === "INVITED" ? "" : agreement.merchant.businessDescription,
     },
+    selfServe: agreement.selfServe,
     completed: agreement.status !== "INVITED",
     contractReady: ["DATA_COMPLETED", "CONTRACT_ISSUED"].includes(agreement.status),
     signedUploadedAt: agreement.signedUploadedAt,

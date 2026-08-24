@@ -34,3 +34,35 @@ export async function createMerchant(input: z.infer<typeof createMerchantSchema>
     return { merchant, invitationToken: invitation.token, invitationExpiresAt: invitation.expiresAt };
   });
 }
+
+export async function createSelfServeMerchantInvitation(organizationId: string) {
+  const db = getDatabase();
+  const invitation = createInvitationCredentials();
+  const reference = invitation.tokenHash.slice(0, 8);
+  return db.$transaction(async (tx) => {
+    const merchant = await tx.merchant.create({ data: {
+      organizationId,
+      businessName: `Pending invitation ${reference.toUpperCase()}`,
+      slug: `pending-${reference}`,
+      industry: "Awaiting customer intake",
+      country: "Pending",
+      businessDescription: "Awaiting merchant-supplied onboarding information.",
+    } });
+    const agreement = await tx.merchantAgreement.create({ data: {
+      merchantId: merchant.id,
+      invitationTokenHash: invitation.tokenHash,
+      invitationExpiresAt: invitation.expiresAt,
+      termsVersion: AGREEMENT_TERMS_VERSION,
+      selfServe: true,
+    } });
+    await tx.auditLog.create({ data: {
+      organizationId,
+      merchantId: merchant.id,
+      action: "agreement.self_serve_invitation_created",
+      targetType: "MerchantAgreement",
+      targetId: agreement.id,
+      metadata: { expiresAt: invitation.expiresAt },
+    } });
+    return { merchant, invitationToken: invitation.token, invitationExpiresAt: invitation.expiresAt };
+  });
+}

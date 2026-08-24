@@ -4,6 +4,11 @@ import { createInvitationCredentials, hashInvitationToken } from "@/contracts/se
 import { merchantAgreementIntakeSchema, SIGNED_CONTRACT_MAX_BYTES } from "@/contracts/schema";
 
 const intake = {
+  businessName: "Northstar Research",
+  publicWebsite: "https://northstar.example",
+  industry: "Research products",
+  operatingCountry: "United States",
+  businessDescription: "Online research-products merchant serving laboratory customers.",
   legalName: "Northstar Research LLC",
   tradeName: "Northstar",
   entityType: "LLC",
@@ -43,6 +48,7 @@ describe("contractual onboarding", () => {
     const parsed = merchantAgreementIntakeSchema.parse(intake);
     expect(parsed.countryCode).toBe("US");
     expect(parsed.primaryContactEmail).toBe("alex@northstar.example");
+    expect(parsed.businessName).toBe("Northstar Research");
     expect(() => merchantAgreementIntakeSchema.parse({ ...intake, certifyAuthority: false })).toThrow();
   });
 

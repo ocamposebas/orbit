@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getDatabase } from "@/sentinel/db";
 import { apiError, merchantScope, requireRole } from "@/sentinel/http";
 import { requestSession } from "@/sentinel/auth/session";
-import { createMerchant, createMerchantSchema } from "@/sentinel/services/merchants";
+import { createSelfServeMerchantInvitation } from "@/sentinel/services/merchants";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { agreementAdminState, invitationUrl } from "@/contracts/service";
 
@@ -19,14 +19,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    await enforceRateLimit(request, "merchant-create", 10);
-    const session = await requestSession(request);
+    await enforceRateLimit(request, "merchant-self-serve-invitation", 30);
     const organization = await requireRole(request, ["OWNER", "ADMIN", "ANALYST"]);
-    const input = createMerchantSchema.omit({ organizationId: true }).parse(await request.json());
-    if (input.legalCountry && !["OWNER", "ADMIN"].includes(session?.role ?? "")) {
-      return NextResponse.json({ error: "Only an organization owner or admin can set the legal business country" }, { status: 403 });
-    }
-    const created = await createMerchant({ ...input, organizationId: organization.id });
+    const created = await createSelfServeMerchantInvitation(organization.id);
     return NextResponse.json({ merchant: created.merchant, invitationUrl: invitationUrl(created.invitationToken), invitationExpiresAt: created.invitationExpiresAt }, { status: 201 });
   } catch (error) { return apiError(error); }
 }

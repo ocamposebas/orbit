@@ -7,6 +7,11 @@ const optional = (max = 160) => z.preprocess(
 );
 
 export const merchantAgreementIntakeSchema = z.object({
+  businessName: required("Business name", 120),
+  publicWebsite: required("Public website", 2_048),
+  industry: required("Industry", 80),
+  operatingCountry: required("Operating country or market", 80),
+  businessDescription: required("Business description", 2_000),
   legalName: required("Legal business name", 160),
   tradeName: optional(160),
   entityType: required("Entity type", 80),

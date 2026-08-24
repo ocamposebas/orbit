@@ -4,6 +4,8 @@ import { merchantAgreementIntakeSchema } from "@/contracts/schema";
 import { apiError, HttpError, validateMutationOrigin } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { getDatabase } from "@/sentinel/db";
+import { normalizePublicUrl } from "@/sentinel/security/ssrf";
+import { isStripeConnectCountry } from "@/stripe/countries";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +27,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (agreement.status === "SIGNED_LOCKED") throw new HttpError(423, "This agreement is signed and permanently locked");
     if (agreement.status !== "INVITED") throw new HttpError(409, "The merchant information was already certified and can no longer be edited");
     const input = merchantAgreementIntakeSchema.parse(await request.json());
+    const publicWebsite = normalizePublicUrl(input.publicWebsite);
     const now = new Date();
     const db = getDatabase();
     await db.$transaction(async (tx) => {
@@ -57,13 +60,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         },
       });
       if (updated.count !== 1) throw new HttpError(409, "The merchant information was already submitted");
+      await tx.merchant.update({ where: { id: agreement.merchantId }, data: {
+        businessName: input.businessName,
+        industry: input.industry,
+        country: input.operatingCountry,
+        legalCountry: isStripeConnectCountry(input.countryCode) ? input.countryCode : null,
+        businessDescription: input.businessDescription,
+        expectedMonthlyVolume: input.estimatedMonthlyVolume,
+      } });
+      await tx.merchantSite.upsert({
+        where: { merchantId_normalizedUrl: { merchantId: agreement.merchantId, normalizedUrl: publicWebsite.toString() } },
+        update: { active: true, url: publicWebsite.toString(), hostname: publicWebsite.hostname },
+        create: { merchantId: agreement.merchantId, url: publicWebsite.toString(), normalizedUrl: publicWebsite.toString(), hostname: publicWebsite.hostname },
+      });
       await tx.auditLog.create({ data: {
         organizationId: agreement.merchant.organizationId,
         merchantId: agreement.merchantId,
         action: "agreement.information_certified",
         targetType: "MerchantAgreement",
         targetId: agreement.id,
-        metadata: { termsVersion: agreement.termsVersion, contactEmail: input.primaryContactEmail },
+        metadata: { termsVersion: agreement.termsVersion, contactEmail: input.primaryContactEmail, website: publicWebsite.toString(), selfServe: agreement.selfServe },
       } });
     });
     const refreshed = await agreementFromInvitation(token);

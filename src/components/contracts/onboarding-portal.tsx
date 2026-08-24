@@ -8,7 +8,8 @@ type AgreementState = {
   locked: boolean;
   expiresAt: string;
   termsVersion: string;
-  merchant: { businessName: string; industry: string; website: string };
+  selfServe: boolean;
+  merchant: { businessName: string; industry: string; website: string; operatingCountry: string; businessDescription: string };
   completed: boolean;
   contractReady: boolean;
   signedUploadedAt?: string;
@@ -77,7 +78,7 @@ export function OnboardingPortal({ token }: { token: string }) {
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[.2em] text-[#9295ff]">Acuerdo de participación y monitoreo</p>
             <h1 className="mt-4 max-w-3xl text-4xl font-medium tracking-[-.055em] text-balance sm:text-5xl lg:text-[58px] lg:leading-[1.02]">Un expediente claro.<br/><span className="text-[#858a95]">Una sola versión final.</span></h1>
-            <p className="mt-6 max-w-2xl text-sm leading-7 text-[#858b96]">{agreement.merchant.businessName} fue invitado a completar la información que ORBIT usará para emitir su acuerdo contractual. Cada etapa queda registrada y el expediente se bloquea al recibir la copia firmada.</p>
+            <p className="mt-6 max-w-2xl text-sm leading-7 text-[#858b96]">{agreement.merchant.businessName ? `${agreement.merchant.businessName} fue invitado` : "Tu empresa fue invitada"} a completar la información que ORBIT usará para crear el perfil de monitoreo y emitir su acuerdo contractual. Cada etapa queda registrada y el expediente se bloquea al recibir la copia firmada.</p>
           </div>
           <aside className="border-l border-white/[.08] pl-6">
             <p className="text-[9px] uppercase tracking-[.16em] text-[#5f6570]">Progreso del expediente</p>
@@ -101,15 +102,22 @@ export function OnboardingPortal({ token }: { token: string }) {
 
 function IntakeForm({ agreement, busy, onSubmit }: { agreement: AgreementState; busy: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
   return <form onSubmit={onSubmit} className="mt-14 space-y-6">
-    <FormSection number="01" title="Identidad legal" description="Escribe los datos exactamente como aparecen en los documentos de constitución y registro fiscal.">
-      <Field label="Razón social" name="legalName" placeholder="Nombre legal completo" defaultValue={agreement.merchant.businessName} />
+    <FormSection number="01" title="Perfil del negocio" description="Esta información creará automáticamente tu comercio y el sitio que ORBIT monitoreará.">
+      <Field label="Nombre comercial" name="businessName" placeholder="Nombre que usan tus clientes" defaultValue={agreement.merchant.businessName} />
+      <Field label="Sitio web público" name="publicWebsite" type="url" placeholder="https://empresa.com" defaultValue={agreement.merchant.website} />
+      <Field label="Industria" name="industry" placeholder="Software, comercio electrónico, servicios…" defaultValue={agreement.merchant.industry} />
+      <Field label="País o mercado de operación" name="operatingCountry" placeholder="Colombia, Estados Unidos…" defaultValue={agreement.merchant.operatingCountry} />
+      <TextField label="Descripción del negocio" name="businessDescription" placeholder="Describe productos, clientes, canales de venta y modelo operativo." defaultValue={agreement.merchant.businessDescription} />
+    </FormSection>
+    <FormSection number="02" title="Identidad legal" description="Escribe los datos exactamente como aparecen en los documentos de constitución y registro fiscal.">
+      <Field label="Razón social" name="legalName" placeholder="Nombre legal completo" />
       <Field label="Nombre comercial / DBA" name="tradeName" placeholder="Opcional" required={false} />
       <Field label="Tipo de entidad" name="entityType" placeholder="LLC, SAS, Corporation…" />
       <Field label="Identificación fiscal" name="taxId" placeholder="EIN, NIT o equivalente" />
       <Field label="Número de registro mercantil" name="registrationNumber" placeholder="Opcional" required={false} />
       <Field label="Código de país" name="countryCode" placeholder="CO" maxLength={2} />
     </FormSection>
-    <FormSection number="02" title="Domicilio y contacto" description="Usaremos estos datos para identificar a las partes y enviar avisos contractuales.">
+    <FormSection number="03" title="Domicilio y contacto" description="Usaremos estos datos para identificar a las partes y enviar avisos contractuales.">
       <Field label="Dirección legal" name="businessAddress" placeholder="Calle, número y complemento" wide />
       <Field label="Ciudad" name="city" placeholder="Ciudad" />
       <Field label="Estado / departamento / región" name="region" placeholder="Región" />
@@ -119,7 +127,7 @@ function IntakeForm({ agreement, busy, onSubmit }: { agreement: AgreementState; 
       <Field label="Correo contractual" name="primaryContactEmail" type="email" placeholder="legal@empresa.com" />
       <Field label="Teléfono" name="primaryContactPhone" type="tel" placeholder="+57 300 000 0000" />
     </FormSection>
-    <FormSection number="03" title="Superficie y operación" description="Delimita qué observará ORBIT y permite que las políticas del contrato reflejen tu operación real.">
+    <FormSection number="04" title="Superficie y operación" description="Delimita qué observará ORBIT y permite que las políticas del contrato reflejen tu operación real.">
       <TextField label="Sitios, dominios, subdominios y canales cubiertos" name="coveredDomains" placeholder="Incluye una URL o dominio por línea" defaultValue={agreement.merchant.website} />
       <TextField label="Productos y servicios" name="productsAndServices" placeholder="Describe productos, audiencia, modelo de venta, suscripciones, fulfillment y cualquier categoría regulada." defaultValue="" />
       <Field label="Descriptor de facturación deseado" name="billingDescriptor" placeholder="NOMBRE EN ESTADO DE CUENTA" />
@@ -139,7 +147,7 @@ function IntakeForm({ agreement, busy, onSubmit }: { agreement: AgreementState; 
 }
 
 function FormSection({ number, title, description, children }: { number: string; title: string; description: string; children: React.ReactNode }) {
-  return <section className="overflow-hidden rounded-2xl border border-white/[.08] bg-[#0d1015]/90 shadow-[0_30px_90px_rgba(0,0,0,.22)]"><div className="grid border-b border-white/[.07] p-6 lg:grid-cols-[220px_1fr] lg:p-8"><div><span className="font-mono text-[9px] text-[#8f92fa]">{number} / 03</span><h2 className="mt-3 text-xl font-medium tracking-[-.035em]">{title}</h2></div><p className="mt-3 max-w-xl text-xs leading-6 text-[#707782] lg:mt-0">{description}</p></div><div className="grid gap-5 p-6 sm:grid-cols-2 lg:p-8">{children}</div></section>;
+  return <section className="overflow-hidden rounded-2xl border border-white/[.08] bg-[#0d1015]/90 shadow-[0_30px_90px_rgba(0,0,0,.22)]"><div className="grid border-b border-white/[.07] p-6 lg:grid-cols-[220px_1fr] lg:p-8"><div><span className="font-mono text-[9px] text-[#8f92fa]">{number} / 04</span><h2 className="mt-3 text-xl font-medium tracking-[-.035em]">{title}</h2></div><p className="mt-3 max-w-xl text-xs leading-6 text-[#707782] lg:mt-0">{description}</p></div><div className="grid gap-5 p-6 sm:grid-cols-2 lg:p-8">{children}</div></section>;
 }
 
 function Field({ label, name, placeholder, type = "text", defaultValue, required = true, wide = false, maxLength }: { label: string; name: string; placeholder: string; type?: string; defaultValue?: string; required?: boolean; wide?: boolean; maxLength?: number }) {
