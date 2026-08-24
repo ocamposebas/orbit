@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { verifyWooCommerceOrder } from "@/commerce/woocommerce/service";
-import { verifyCheckoutToken } from "@/payments/checkout-token";
+import { verifyCheckoutConfigToken, verifyCheckoutToken } from "@/payments/checkout-token";
 import { getServerEnv } from "@/sentinel/config";
 import { getDatabase } from "@/sentinel/db";
 import { HttpError } from "@/sentinel/http";
@@ -92,7 +92,7 @@ function mapPaymentIntentFailure(error: unknown): never {
   throw new HttpError(502, "Stripe payment creation is temporarily unavailable");
 }
 
-async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId: string) {
+async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId: string, confirmationTokenId?: string) {
   if (!/^orb_tx_[A-Za-z0-9_-]{16,128}$/.test(orbitTransactionId)) throw new HttpError(400, "Enter a valid ORBIT transaction ID");
 
   const db = getDatabase();
@@ -116,20 +116,33 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
   const stripe = getStripeClient();
   try {
     const requestOptions = { stripeContext: transaction.stripeAccountId };
-    const paymentIntent = transaction.stripePaymentIntentId
+    let paymentIntent = transaction.stripePaymentIntentId
       ? await stripe.paymentIntents.retrieve(transaction.stripePaymentIntentId, {}, requestOptions)
       : await stripe.paymentIntents.create({
           amount: transaction.amountMinor,
           currency: transaction.currency.toLowerCase(),
           application_fee_amount: transaction.platformFeeMinor,
           automatic_payment_methods: { enabled: true },
-          confirm: false,
+          confirm: Boolean(confirmationTokenId),
+          ...(confirmationTokenId ? { confirmation_token: confirmationTokenId } : {}),
           metadata: {
             orbitTransactionId: transaction.id,
             wooOrderId: transaction.wooOrderId,
             merchantId: transaction.merchantId,
           },
         }, { ...requestOptions, idempotencyKey: stripePaymentIntentIdempotencyKey(transaction.id) });
+
+    if (
+      transaction.stripePaymentIntentId &&
+      confirmationTokenId &&
+      ["requires_payment_method", "requires_confirmation"].includes(paymentIntent.status)
+    ) {
+      paymentIntent = await stripe.paymentIntents.confirm(
+        paymentIntent.id,
+        { confirmation_token: confirmationTokenId },
+        { ...requestOptions, idempotencyKey: `orbit-payment-confirm-${transaction.id}-${confirmationTokenId}` },
+      );
+    }
 
     if (!paymentIntent.id.startsWith("pi_")) throw new HttpError(502, "Stripe returned an invalid PaymentIntent");
     if (paymentIntent.amount !== transaction.amountMinor || paymentIntent.currency.toUpperCase() !== transaction.currency || paymentIntent.application_fee_amount !== transaction.platformFeeMinor) {
@@ -184,7 +197,7 @@ function customerPublishableKey() {
   return key;
 }
 
-export async function createCustomerCheckout(checkoutToken: string) {
+export async function createCustomerCheckout(checkoutToken: string, confirmationTokenId?: string) {
   const authorizedOrder = await verifyCheckoutToken(checkoutToken);
   const transaction = await preparePaymentTransaction(authorizedOrder.merchantId, authorizedOrder.wooOrderId);
   if (transaction.status !== "REQUIRES_PAYMENT" && !transaction.stripePaymentIntentId) {
@@ -192,13 +205,32 @@ export async function createCustomerCheckout(checkoutToken: string) {
   }
   if (transaction.stripeReadiness !== "READY") throw new HttpError(409, "STRIPE_NOT_READY");
 
-  const paymentIntent = await ensureStripePaymentIntent(authorizedOrder.merchantId, transaction.id);
+  const paymentIntent = await ensureStripePaymentIntent(authorizedOrder.merchantId, transaction.id, confirmationTokenId);
   if (!paymentIntent.clientSecret) throw new HttpError(502, "Stripe did not return a client secret");
 
   return {
     orbitTransactionId: transaction.id,
     clientSecret: paymentIntent.clientSecret,
     connectedAccountId: paymentIntent.connectedAccount,
+    publishableKey: customerPublishableKey(),
+    stripeStatus: paymentIntent.stripeStatus,
+  };
+}
+
+export async function getCustomerCheckoutConfiguration(configToken: string) {
+  const authorized = await verifyCheckoutConfigToken(configToken);
+  const merchant = await getDatabase().merchant.findUnique({
+    where: { id: authorized.merchantId },
+    select: { stripeConnect: { select: { stripeAccountId: true, stripeEnvironment: true, cardPaymentsStatus: true } } },
+  });
+  const stripeConnect = merchant?.stripeConnect;
+  if (!stripeConnect || stripeConnect.cardPaymentsStatus?.toLowerCase() !== "active") throw new HttpError(409, "STRIPE_NOT_READY");
+  const config = getStripeConfiguration();
+  if (!config.configured) throw new HttpError(503, "Stripe Connect is not configured");
+  if (stripeConnect.stripeEnvironment !== stripeEnvironment(config.mode)) throw new HttpError(409, "Stripe environment mismatch");
+
+  return {
+    connectedAccountId: stripeConnect.stripeAccountId,
     publishableKey: customerPublishableKey(),
   };
 }

@@ -59,6 +59,11 @@ type StripePaymentDiagnostic = {
   transactionStatus: string;
 };
 
+type RelaySecretDiagnostic = {
+  secretFingerprint: string;
+  utcTime: string;
+};
+
 const statusCopy: Record<string, { title: string; detail: string; tone: string }> = {
   NOT_CONFIGURED: { title: "Not configured", detail: "Connect this merchant's WooCommerce backend to ORBIT.", tone: "text-[#8b8f98]" },
   CONFIGURED: { title: "Configured", detail: "Configuration is saved. Test the connection to verify Relay and WooCommerce availability.", tone: "text-[#8f91ef]" },
@@ -131,13 +136,44 @@ export function RelayIntegrationCard({ merchantId, merchantName, platformFeeBps,
             </div>
           </> : <div><p className="text-[11px] leading-5 text-[#777b84]">Connect {merchantName}&apos;s WooCommerce backend to ORBIT. Health checks verify Relay and WooCommerce availability; order diagnostics verify the private HMAC connection.</p>{canManage ? <button type="button" onClick={openConfiguration} className="mt-5 h-9 rounded-md bg-[#ecece8] px-4 text-[10px] font-medium text-black">Configure Relay</button> : <p className="mt-4 text-[10px] text-[#62666e]">An organization owner or admin can configure Relay.</p>}</div>}
           {notice && <p aria-live="polite" className={cn("mt-4 text-[10px]", integration?.connectionStatus === "CONNECTED" ? "text-[#6fc39d]" : "text-[#d39a72]")}>{notice}</p>}
-          {integration && canManage && <><RelayDiagnostics merchantId={merchantId} enabled={integration.connectionEnabled} /><PaymentPreparation merchantId={merchantId} enabled={integration.connectionEnabled} platformFeeBps={platformFeeBps} /></>}
+          {integration && canManage && <><RelaySecretDiagnosticPanel merchantId={merchantId} /><RelayDiagnostics merchantId={merchantId} enabled={integration.connectionEnabled} /><PaymentPreparation merchantId={merchantId} enabled={integration.connectionEnabled} platformFeeBps={platformFeeBps} /></>}
         </div>
       </div>
       <p className="mt-3 text-[9px] leading-4 text-[#555a62]">Relay health is independent from Stripe verification. Signing secrets remain server-side and are used only for private Relay requests.</p>
     </section>
     {showConfig && <RelayConfigurationDialog merchantId={merchantId} platformFeeBps={platformFeeBps} integration={integration} onClose={() => setShowConfig(false)} onSaved={async () => { setShowConfig(false); setNotice("Relay configuration saved."); await reload(); }} />}
   </>;
+}
+
+function RelaySecretDiagnosticPanel({ merchantId }: { merchantId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [diagnostic, setDiagnostic] = useState<RelaySecretDiagnostic>();
+
+  async function loadDiagnostic() {
+    setBusy(true);
+    setError("");
+    setDiagnostic(undefined);
+    try {
+      setDiagnostic(await sentinelFetch<RelaySecretDiagnostic>(`/api/sentinel/merchants/${merchantId}/relay/diagnostic`));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to read the Relay secret diagnostic");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section aria-labelledby="relay-secret-diagnostic-title" className="mt-6 border-t border-white/[.07] pt-5">
+    <p className="text-[9px] font-semibold uppercase tracking-[.14em] text-[#777b84]">Temporary safe diagnostic</p>
+    <h3 id="relay-secret-diagnostic-title" className="mt-2 text-sm font-medium text-[#d8d9d4]">Relay signing secret fingerprint</h3>
+    <p className="mt-1.5 max-w-2xl text-[10px] leading-5 text-[#62666e]">Shows only the first 12 hexadecimal characters of SHA-256 and the current ORBIT UTC time. The signing secret is never returned.</p>
+    <button type="button" onClick={() => void loadDiagnostic()} disabled={busy} className="mt-4 h-9 rounded-md border border-white/[.1] px-3.5 text-[10px] text-[#c2c4bf] disabled:opacity-50">{busy ? "Reading..." : "Show safe fingerprint"}</button>
+    {error && <p role="alert" className="mt-3 text-[10px] text-[#d17777]">{error}</p>}
+    {diagnostic && <dl aria-live="polite" className="mt-4 grid max-w-xl gap-px overflow-hidden border border-white/[.06] bg-white/[.06] sm:grid-cols-2">
+      <RelayResult label="ORBIT secret fingerprint" value={diagnostic.secretFingerprint} />
+      <RelayResult label="ORBIT UTC" value={diagnostic.utcTime} />
+    </dl>}
+  </section>;
 }
 
 function RelayDiagnostics({ merchantId, enabled }: { merchantId: string; enabled: boolean }) {
@@ -311,7 +347,7 @@ function RelayConfigurationDialog({ merchantId, platformFeeBps, integration, onC
       <form onSubmit={submit} className="space-y-4 p-5">
         <label className="block text-[10px] text-[#81858d]">WooCommerce URL<input required name="baseUrl" type="url" defaultValue={integration?.baseUrl ?? ""} placeholder="https://wp.example.com" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /><span className="mt-1.5 block leading-4 text-[#5f646d]">Canonical WooCommerce origin only. Production requires HTTPS.</span></label>
         <label className="block text-[10px] text-[#81858d]">Environment<select name="environment" defaultValue={integration?.environment ?? "PRODUCTION"} className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-[#111319] px-3 text-xs text-white outline-none focus:border-[#7779ea]"><option value="PRODUCTION">Production</option><option value="STAGING">Staging</option></select></label>
-        <label className="block text-[10px] text-[#81858d]">Platform fee (basis points)<input required name="platformFeeBps" type="number" min="0" max="10000" step="1" defaultValue={platformFeeBps ?? ""} placeholder="190" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /><span className="mt-1.5 block leading-4 text-[#5f646d]">190 basis points equals 1.90%. This setting is stored per merchant.</span></label>
+        <label className="block text-[10px] text-[#81858d]">Platform fee (basis points)<input required name="platformFeeBps" type="number" min="0" max="10000" step="1" defaultValue={platformFeeBps ?? ""} placeholder="300" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /><span className="mt-1.5 block leading-4 text-[#5f646d]">300 basis points equals 3.00%. This setting is stored per merchant.</span></label>
         <div className="text-[10px] text-[#81858d]"><div className="flex items-center justify-between"><span>Signing secret</span>{integration?.signingConfigured && !replaceSecret && <button type="button" onClick={() => setReplaceSecret(true)} className="text-[#9b9df1] hover:text-white">Replace signing secret</button>}</div>{replaceSecret ? <input required name="signingSecret" type="password" minLength={16} maxLength={1024} autoComplete="new-password" placeholder="Paste the WordPress Relay signing secret" className="mt-1.5 h-10 w-full rounded-md border border-white/[.1] bg-white/[.025] px-3 text-xs text-white outline-none focus:border-[#7779ea]" /> : <div className="mt-1.5 flex h-10 items-center rounded-md border border-white/[.08] bg-white/[.02] px-3 text-xs text-[#6fc39d]">Configured</div>}<span className="mt-1.5 block leading-4 text-[#5f646d]">The saved secret is encrypted and is never returned to this browser.</span></div>
         <label className="flex items-center gap-3 border border-white/[.07] p-3 text-[10px] text-[#a5a8a1]"><input name="connectionEnabled" type="checkbox" defaultChecked={integration?.connectionEnabled ?? true} className="size-4 accent-[#7779ea]" />Enable Relay</label>
         {error && <p className="text-xs text-[#dd8b8b]">{error}</p>}
