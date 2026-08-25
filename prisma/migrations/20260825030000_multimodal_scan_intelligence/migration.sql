@@ -1,0 +1,1 @@
+ALTER TABLE "Scan" ADD COLUMN "intelligence" JSONB NOT NULL DEFAULT '{}';

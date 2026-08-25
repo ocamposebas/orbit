@@ -55,7 +55,7 @@ export async function validatePublicUrl(input: string | URL): Promise<URL> {
 
 export interface SafeFetchOptions { timeoutMs?: number; maxBytes?: number; maxRedirects?: number; accept?: string; headers?: Record<string, string>; method?: "GET" | "POST"; body?: string; }
 
-export async function safeFetchText(input: string | URL, options: SafeFetchOptions = {}): Promise<{ url: URL; status: number; contentType: string; text: string; headers: Headers }> {
+export async function safeFetchBinary(input: string | URL, options: SafeFetchOptions = {}): Promise<{ url: URL; status: number; contentType: string; bytes: Uint8Array; headers: Headers }> {
   let current = await validatePublicUrl(input);
   const timeoutMs = options.timeoutMs ?? 12_000;
   const maxBytes = options.maxBytes ?? 2_000_000;
@@ -91,8 +91,13 @@ export async function safeFetchText(input: string | URL, options: SafeFetchOptio
       const bytes = new Uint8Array(size);
       let offset = 0;
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-      return { url: current, status: response.status, contentType: response.headers.get("content-type") ?? "", text: new TextDecoder().decode(bytes), headers: response.headers };
+      return { url: current, status: response.status, contentType: response.headers.get("content-type") ?? "", bytes, headers: response.headers };
     } finally { clearTimeout(timeout); }
   }
   throw new UnsafeTargetError("Unable to fetch target safely");
+}
+
+export async function safeFetchText(input: string | URL, options: SafeFetchOptions = {}): Promise<{ url: URL; status: number; contentType: string; text: string; headers: Headers }> {
+  const response = await safeFetchBinary(input, options);
+  return { ...response, text: new TextDecoder().decode(response.bytes) };
 }

@@ -82,6 +82,36 @@ async function secureContext(browser: Browser, unsafeAllowPrivateTestTarget = fa
   return context;
 }
 
+const prohibitedInteractiveLabel = /(?:accept|agree|consent|place order|pay|purchase|subscribe|submit|send|book|schedule|delete|remove|logout|sign out)/i;
+const safeInteractiveLabel = /(?:menu|navigation|details|more info|description|ingredients|faq|question|accordion|expand|view more|read more|specification|certificate|lab result|research information)/i;
+
+export async function inspectSafeInteractiveStates(page: Page) {
+  const observed: Array<{ kind: string; label: string; selector: string }> = [];
+  await page.locator("details:not([open])").evaluateAll((elements) => elements.slice(0, 20).forEach((element) => element.setAttribute("open", ""))).catch(() => undefined);
+  const candidates = page.locator("button[aria-expanded='false'],[role='button'][aria-expanded='false'],[role='tab'][aria-selected='false']");
+  for (let index = 0; index < Math.min(await candidates.count().catch(() => 0), 20); index++) {
+    const item = candidates.nth(index);
+    const label = ((await item.getAttribute("aria-label").catch(() => null)) || (await item.innerText().catch(() => ""))).replace(/\s+/g, " ").trim().slice(0, 200);
+    if (!label || prohibitedInteractiveLabel.test(label) || !safeInteractiveLabel.test(label)) continue;
+    const selector = await item.evaluate((element) => {
+      if (element.id) return `#${CSS.escape(element.id)}`;
+      const tag = element.tagName.toLowerCase();
+      const role = element.getAttribute("role");
+      const expanded = element.getAttribute("aria-expanded");
+      return `${tag}${role ? `[role="${role}"]` : ""}${expanded ? `[aria-expanded="${expanded}"]` : ""}`;
+    }).catch(() => "[interactive-control]");
+    await item.click({ timeout: 1_500 }).catch(() => undefined);
+    observed.push({ kind: "expanded-control", label, selector });
+  }
+  const selects = page.locator("select[name*='variant' i],select[name*='option' i],select[id*='variant' i]");
+  for (let index = 0; index < Math.min(await selects.count().catch(() => 0), 8); index++) {
+    const select = selects.nth(index);
+    const options = await select.locator("option:not([disabled])").evaluateAll((items) => items.map((item) => ({ value: (item as HTMLOptionElement).value, label: (item.textContent || "").trim() }))).catch(() => [] as Array<{ value: string; label: string }>);
+    for (const option of options.slice(0, 12)) if (option.value) observed.push({ kind: "product-variation", label: option.label, selector: await select.evaluate((element) => element.id ? `#${CSS.escape(element.id)}` : element.tagName.toLowerCase()).catch(() => "select") });
+  }
+  return observed;
+}
+
 async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?: string, unsafeAllowPrivateTestTarget = false): Promise<CrawledPage> {
   const env = getServerEnv();
   try {
@@ -92,6 +122,7 @@ async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?:
       response = await page.goto(url, { waitUntil: "domcontentloaded" });
     }
     await page.waitForLoadState("networkidle", { timeout: 2_500 }).catch(() => undefined);
+    const interactiveStates = await inspectSafeInteractiveStates(page);
     const redirects: string[] = [];
     let request = response?.request() ?? null;
     while (request?.redirectedFrom()) { redirects.push(request.url()); request = request.redirectedFrom(); }
@@ -103,7 +134,8 @@ async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?:
     const finalUrl = page.url();
     if (!unsafeAllowPrivateTestTarget) await validatePublicUrl(finalUrl);
     const metadata = await page.evaluate(() => ({ canonical: document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href, description: document.querySelector<HTMLMetaElement>('meta[name="description"]')?.content, robots: document.querySelector<HTMLMetaElement>('meta[name="robots"]')?.content }));
-    const normalized = extractNormalizedContent(html, finalUrl);
+    const renderedVisibleText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+    const normalized = extractNormalizedContent(html, finalUrl, { originalUrl: url, renderedVisibleText, interactiveStates });
     const soft404Structure = `${normalized.title} ${normalized.headings.slice(0, 2).join(" ")}`.trim();
     if (/\b(?:404|page not found|not found|page does not exist|nothing here)\b/i.test(soft404Structure) && soft404Structure.length < 300) return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType, title: normalized.title, description: metadata.description, robots: metadata.robots, inaccessibleReason: "Soft 404 page was not analyzed" };
     const classification = classifyPage(finalUrl, normalized);

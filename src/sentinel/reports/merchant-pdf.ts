@@ -1,6 +1,7 @@
 import { chromium } from "playwright";
 import { spawnSync } from "node:child_process";
 import { getDatabase } from "@/sentinel/db";
+import { evidenceStorage } from "@/sentinel/storage";
 
 const activeStatuses = ["OPEN", "NEEDS_REVIEW", "CONFIRMED", "ACCEPTED_RISK"] as const;
 const severityRank: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
@@ -20,6 +21,10 @@ function progressNumber(progress: unknown, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
 function scoreState(score: number | undefined) {
   if (score === undefined) return { label: "Awaiting assessment", tone: "muted" };
   if (score >= 85) return { label: "Healthy", tone: "good" };
@@ -35,18 +40,25 @@ export async function loadMerchantReport(merchantId: string, organizationId: str
       healthScores: { orderBy: { createdAt: "desc" }, take: 1, include: { components: true, scan: true } },
       findings: {
         where: { status: { in: [...activeStatuses] } },
-        orderBy: { lastDetectedAt: "desc" },
-        take: 40,
-        include: { evidence: { where: { kind: "TEXT" }, orderBy: { createdAt: "asc" }, take: 8 } },
+        orderBy: [{ severity: "asc" }, { lastDetectedAt: "desc" }],
+        take: 12,
+        include: { evidence: { orderBy: { createdAt: "asc" }, take: 16 } },
       },
       policies: { orderBy: { type: "asc" } },
+      products: { orderBy: { lastSeenAt: "desc" }, take: 30, include: { variants: true } },
       _count: { select: { products: true } },
     },
   });
 }
 
 export async function renderMerchantReportPdf(report: NonNullable<Awaited<ReturnType<typeof loadMerchantReport>>>) {
-  const html = merchantReportHtml(report);
+  const visualData = new Map<string, string>();
+  const visualKeys = [...new Set(report.findings.flatMap((finding) => finding.evidence.filter((item) => item.kind === "SCREENSHOT" && item.storageKey).map((item) => item.storageKey!)))].slice(0, 12);
+  for (const key of visualKeys) {
+    const bytes = await evidenceStorage().get(key);
+    if (bytes) visualData.set(key, `data:${key.endsWith(".jpg") || key.endsWith(".jpeg") ? "image/jpeg" : "image/webp"};base64,${Buffer.from(bytes).toString("base64")}`);
+  }
+  const html = merchantReportHtml(report, visualData);
   const configuredExecutable = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
   const systemExecutable = process.platform === "linux" ? ["chromium", "chromium-browser"].map((command) => spawnSync("which", [command], { encoding: "utf8" }).stdout.trim()).find(Boolean) : undefined;
   const browser = await chromium.launch({ headless: true, executablePath: configuredExecutable || systemExecutable || undefined });
@@ -67,7 +79,7 @@ export async function renderMerchantReportPdf(report: NonNullable<Awaited<Return
   }
 }
 
-function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMerchantReport>>>) {
+function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMerchantReport>>>, visualData = new Map<string, string>()) {
   const health = report.healthScores[0];
   const scan = health?.scan;
   const score = health?.total;
@@ -77,9 +89,9 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
   const expectedPolicies = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"];
   const policyMap = new Map(report.policies.map((policy) => [policy.type, policy]));
   const coverage = progressNumber(scan?.progress, "scanCoveragePercent");
-  const certificates = progressNumber(scan?.progress, "certificatesDiscovered");
-  const certificatesAnalyzed = progressNumber(scan?.progress, "certificatesAnalyzed");
-  const checkout = progressNumber(scan?.progress, "checkoutFlowsInspected");
+  const visualPages = progressNumber(scan?.progress, "visualPagesAnalyzed");
+  const documentsReviewed = progressNumber(scan?.progress, "documentsAnalyzed");
+  const checkoutStates = progressNumber(scan?.progress, "checkoutStatesInspected");
   const disclaimerPages = progressNumber(scan?.progress, "disclaimerPagesObserved");
   const researchRestrictionPages = progressNumber(scan?.progress, "researchRestrictionPagesObserved");
   const researchCoveredProducts = progressNumber(scan?.progress, "researchCoveredProducts");
@@ -88,6 +100,13 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
   const assessment = findings.length
     ? `${findings.length} evidence-backed observation${findings.length === 1 ? " remains" : "s remain"} open for review.`
     : "No material open finding was produced from the evidence reviewed in the latest completed assessment.";
+  const intelligence = jsonRecord(scan?.intelligence);
+  const graph = jsonRecord(intelligence.evidenceGraph);
+  const themes = Array.isArray(graph.themes) ? graph.themes.map(jsonRecord).slice(0, 12) : [];
+  const limitations = Array.isArray(intelligence.methodologyLimitations) ? intelligence.methodologyLimitations.filter((item): item is string => typeof item === "string") : [];
+  const themeRows = themes.length ? themes.map((theme) => `<tr><td>${escapeHtml(theme.riskTheme)}</td><td>${escapeHtml(theme.severity)}</td><td>${Array.isArray(theme.evidence) ? theme.evidence.length : 0}</td><td>${Array.isArray(theme.mitigatingEvidence) ? theme.mitigatingEvidence.length : 0}</td></tr>`).join("") : '<tr><td colspan="4">No material risk theme was retained.</td></tr>';
+  const limitationRows = limitations.length ? `<ul>${limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "<p>No model or surface-specific failure was recorded.</p>";
+  const productRows = report.products.length ? report.products.map((product) => `<tr><td>${escapeHtml(product.name)}</td><td>${escapeHtml(product.sku ?? "â€”")}</td><td>${product.variants.length}</td><td>${escapeHtml(new URL(product.canonicalUrl).pathname)}</td></tr>`).join("") : '<tr><td colspan="4">No normalized product record was retained.</td></tr>';
 
   const componentRows = health?.components.map((component) => `<div class="component"><div class="component-head"><span>${escapeHtml(component.label)}</span><b>${component.score}</b></div><div class="track"><i style="width:${Math.max(0, Math.min(100, component.score))}%"></i></div></div>`).join("") ?? '<p class="empty">Component scoring will appear after a completed assessment.</p>';
   const policyRows = expectedPolicies.map((type) => {
@@ -96,9 +115,11 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
     return `<tr><td>${escapeHtml(type.replaceAll("_", " "))}</td><td><span class="status ${found ? "found" : "missing"}">${found ? "FOUND" : "NOT OBSERVED"}</span></td><td>${policy?.url ? escapeHtml(new URL(policy.url).pathname) : "—"}</td></tr>`;
   }).join("");
   const findingRows = findings.length ? findings.map((finding, index) => {
-    const evidence = [...new Map(finding.evidence.map((item) => [`${item.pageUrl}|${item.evidenceSnippet ?? item.normalizedText ?? ""}`, item])).values()];
+    const evidence = [...new Map(finding.evidence.filter((item) => item.kind === "TEXT").map((item) => [`${item.pageUrl}|${item.evidenceSnippet ?? item.normalizedText ?? ""}`, item])).values()];
     const evidenceBlocks = evidence.map((item, evidenceIndex) => `<blockquote><b>Evidence ${String.fromCharCode(65 + evidenceIndex)}</b><br>“${escapeHtml(item.evidenceSnippet ?? item.normalizedText ?? "Evidence retained from the observed page.")}”<small>${escapeHtml(item.pageUrl)}</small></blockquote>`).join("");
-    return `<article class="finding avoid-break"><div class="finding-index">${String(index + 1).padStart(2, "0")}</div><div><div class="finding-meta"><span class="severity ${finding.severity.toLowerCase()}">${escapeHtml(finding.severity)}</span><span>${Math.round(finding.confidence * 100)}% confidence</span><span>${escapeHtml(finding.status.replaceAll("_", " "))}</span></div><h3>${escapeHtml(finding.title)}</h3><p>${escapeHtml(finding.description)}</p><div class="finding-grid"><div><label>Why it was flagged</label><p>${escapeHtml(finding.reason)}</p></div><div><label>Recommended action</label><p>${escapeHtml(finding.recommendedAction)}</p></div></div>${evidenceBlocks}</div></article>`;
+    const visual = finding.evidence.find((item) => item.kind === "SCREENSHOT" && item.storageKey && visualData.has(item.storageKey));
+    const visualBlock = visual?.storageKey ? `<figure class="visual-evidence"><img src="${visualData.get(visual.storageKey)}"><figcaption>Retained visual evidence Â· ${escapeHtml(visual.pageUrl)}</figcaption></figure>` : "";
+    return `<article class="finding avoid-break"><div class="finding-index">${String(index + 1).padStart(2, "0")}</div><div><div class="finding-meta"><span class="severity ${finding.severity.toLowerCase()}">${escapeHtml(finding.severity)}</span><span>${Math.round(finding.confidence * 100)}% confidence</span><span>${escapeHtml(finding.status.replaceAll("_", " "))}</span></div><h3>${escapeHtml(finding.title)}</h3><p>${escapeHtml(finding.description)}</p><div class="finding-grid"><div><label>Why it was flagged</label><p>${escapeHtml(finding.reason)}</p></div><div><label>Recommended action</label><p>${escapeHtml(finding.recommendedAction)}</p></div></div>${evidenceBlocks}${visualBlock}</div></article>`;
   }).join("") : '<div class="clean-state"><span>✓</span><div><b>No open findings</b><p>No material issue was observed in the evidence reviewed for the latest completed assessment.</p></div></div>';
 
   return `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -129,6 +150,7 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
     .finding { display: grid; grid-template-columns: 10mm 1fr; gap: 5mm; padding: 5mm 0 7mm; border-bottom: 1px solid #dfe1e5; } .finding-index { color: #a1a5ad; font-size: 8px; } .finding-meta { display: flex; gap: 8px; color: #8a8e96; font-size: 7px; letter-spacing: .5px; text-transform: uppercase; } .severity { font-weight: 700; } .critical, .high { color: #a74646; } .medium { color: #9b7029; } .low { color: #4e699a; }
     .finding h3 { margin: 2mm 0 1mm; font-size: 14px; font-weight: 500; } .finding p { margin: 0; color: #5c616a; } .finding-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-top: 4mm; } .finding-grid label { display: block; margin-bottom: 1mm; color: #8588e5; font-size: 7px; letter-spacing: 1px; text-transform: uppercase; }
     blockquote { margin: 4mm 0 0; padding: 3mm 4mm; border-left: 2px solid #8588e5; background: #f5f5f7; color: #444850; font-size: 9px; } blockquote small { display: block; margin-top: 2mm; color: #888d95; word-break: break-all; }
+    .visual-evidence { margin: 4mm 0 0; padding: 3mm; background: #f5f5f7; } .visual-evidence img { display: block; width: 100%; max-height: 95mm; object-fit: contain; } .visual-evidence figcaption { margin-top: 2mm; color: #777c85; font-size: 8px; word-break: break-all; }
     .clean-state { display: flex; gap: 5mm; padding: 8mm; background: #f2f7f4; border: 1px solid #d7e7dd; } .clean-state > span { color: #237351; font-size: 18px; } .clean-state b { font-size: 13px; } .clean-state p { margin: 2px 0 0; color: #5f6862; }
     .method { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; } .method div { border-top: 1px solid #dfe1e5; padding-top: 3mm; } .method b { font-size: 9px; } .method p { color: #676c74; margin: 2mm 0 0; }
     .disclaimer { margin-top: 9mm; padding: 5mm; background: #111318; color: #a6a9b0; font-size: 8px; line-height: 1.6; } .empty { color: #888d95; }
@@ -136,9 +158,11 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
   </style></head><body>
     <section class="cover"><div class="brand"><span class="brand-mark"></span>ORBIT <span style="color:#6e727c;font-weight:400;letter-spacing:2px">SENTINEL</span></div><div class="cover-main"><p class="eyebrow">Merchant intelligence report</p><h1>${escapeHtml(report.businessName)}</h1><p class="cover-copy">A point-in-time view of observed website risk, policy coverage and review-ready evidence.</p><div class="cover-score"><div class="score-number">${scoreDisplay}<small>/100</small></div><div><div class="score-label">${escapeHtml(state.label)}</div><div class="score-note">ORBIT internal health score · 0 is weakest, 100 is strongest</div></div></div></div><div class="cover-foot"><div><label>Website</label><b>${escapeHtml(report.sites[0]?.hostname ?? "Not configured")}</b></div><div><label>Assessment completed</label><b>${escapeHtml(formatDate(scan?.completedAt))}</b></div><div><label>Report generated</label><b>${escapeHtml(formatDate(generatedAt))}</b></div></div></section>
     <main class="page"><section class="section"><div class="section-head"><h2>Executive assessment</h2><span class="section-no">01</span></div><p class="lead">${escapeHtml(assessment)} This assessment reflects public evidence successfully reached within the discovered scan boundary and should be interpreted with the coverage notes below.</p><div class="meta-grid"><div class="meta"><label>Pages reviewed</label><b>${scan?.pagesProcessed ?? 0}</b></div><div class="meta"><label>Products mapped</label><b>${scan?.productsDetected ?? report._count.products}</b></div><div class="meta"><label>Open findings</label><b>${findings.length}</b></div><div class="meta"><label>Observed coverage</label><b>${coverage}%</b></div></div><div class="score-layout"><div class="score-panel"><strong>${scoreDisplay}</strong><p>${escapeHtml(state.label)}</p><p>Formula ${escapeHtml(health?.formulaVersion ?? "not calculated")}</p></div><div>${componentRows}</div></div></section>
-    <section class="section"><div class="section-head"><h2>Observed surface</h2><span class="section-no">02</span></div><div class="signal-grid"><div class="signal"><b>${scan?.pagesDiscovered ?? 0}</b><span>URLs discovered</span></div><div class="signal"><b>${checkout}</b><span>Public cart / checkout views</span></div><div class="signal"><b>${certificates}</b><span>Certificate links discovered</span></div><div class="signal"><b>${certificatesAnalyzed}</b><span>Certificates deeply analyzed</span></div></div><p class="lead" style="margin-top:5mm">Coverage describes successfully observed public content, not an assertion that every possible URL, image, document, private account area or dynamic state was verified.</p></section>
+    <section class="section"><div class="section-head"><h2>Observed surface</h2><span class="section-no">02</span></div><div class="signal-grid"><div class="signal"><b>${scan?.pagesDiscovered ?? 0}</b><span>URLs discovered</span></div><div class="signal"><b>${visualPages}</b><span>Pages visually analyzed</span></div><div class="signal"><b>${documentsReviewed}</b><span>Documents extracted</span></div><div class="signal"><b>${checkoutStates}</b><span>Checkout states inspected</span></div></div><p class="lead" style="margin-top:5mm">Coverage describes successfully observed public content, not an assertion that every possible URL, image, document, private account area or dynamic state was verified.</p></section>
+    <section class="section"><div class="section-head"><h2>Key risk themes</h2><span class="section-no">03</span></div><table><thead><tr><th>THEME</th><th>SEVERITY</th><th>EVIDENCE</th><th>MITIGATING</th></tr></thead><tbody>${themeRows}</tbody></table></section>
+    <section class="section"><div class="section-head"><h2>Products reviewed</h2><span class="section-no">04</span></div><table><thead><tr><th>PRODUCT</th><th>SKU</th><th>VARIANTS</th><th>PUBLIC PATH</th></tr></thead><tbody>${productRows}</tbody></table></section>
     <section class="section"><div class="section-head"><h2>Policy coverage</h2><span class="section-no">03</span></div><table><thead><tr><th>POLICY AREA</th><th>OBSERVED STATUS</th><th>PUBLIC PATH</th></tr></thead><tbody>${policyRows}</tbody></table><div class="meta-grid"><div class="meta"><label>Research-use policy</label><b>${policyMap.has("RESEARCH_USE") ? "Observed" : "Not observed"}</b></div><div class="meta"><label>Explicit disclaimer pages</label><b>${disclaimerPages}</b></div><div class="meta"><label>Pages with restrictions</label><b>${researchRestrictionPages}</b></div><div class="meta"><label>Product disclosure coverage</label><b>${researchCoveredProducts}/${scan?.productsDetected ?? 0}</b></div></div><p class="lead">Positive controls are reported as observed evidence, not used as permission to ignore a separate material contradiction. A restriction that merely names a prohibited activity is never treated as promotion.</p></section>
     <section class="section"><div class="section-head"><h2>Open findings</h2><span class="section-no">04 · ${findings.length} TOTAL</span></div><div class="signal-grid" style="margin:0 0 5mm"><div class="signal"><b>${severityCounts.CRITICAL ?? 0}</b><span>Critical</span></div><div class="signal"><b>${severityCounts.HIGH ?? 0}</b><span>High</span></div><div class="signal"><b>${severityCounts.MEDIUM ?? 0}</b><span>Medium</span></div><div class="signal"><b>${severityCounts.LOW ?? 0}</b><span>Low</span></div></div>${findingRows}</section>
-    <section class="section"><div class="section-head"><h2>Method & limitations</h2><span class="section-no">05</span></div><div class="method"><div><b>Evidence-led screening</b><p>Findings are produced from retained page evidence, contextual rules and the merchant’s observed public positioning. Confidence indicates strength of the observed signal, not a legal conclusion.</p></div><div><b>Point-in-time result</b><p>Websites change continuously. This report reflects the latest completed assessment shown on the cover and may not describe later changes.</p></div><div><b>Human review</b><p>Open observations should be reviewed in context. Accepted or resolved observations can reappear if the underlying public evidence changes.</p></div><div><b>Internal health score</b><p>The ORBIT Health Score is an internal prioritization measure. It is not a certification, approval decision or score issued by another institution.</p></div></div><div class="disclaimer">ORBIT provides software for compliance monitoring and risk intelligence. This report is informational screening based on observed evidence. It is not legal advice, a compliance certification, or a guarantee of approval or continued service by any third party.</div></section></main>
+    <section class="section"><div class="section-head"><h2>Method & limitations</h2><span class="section-no">06</span></div><div class="method"><div><b>Evidence-led multimodal screening</b><p>Findings are produced from retained page, image, document, checkout, contextual-rule and merchant-level evidence. Confidence indicates signal strength, not a legal conclusion.</p></div><div><b>Point-in-time result</b><p>Websites change continuously. This report reflects the latest completed assessment shown on the cover and may not describe later changes.</p></div><div><b>Human review</b><p>Open observations should be reviewed in context. Model output supplies observations only and never decides approval, certification or final score.</p></div><div><b>Internal health score</b><p>The ORBIT Health Score is a deterministic internal prioritization measure and is reported separately from scan coverage.</p></div></div><div class="lead">${limitationRows}</div><div class="disclaimer">ORBIT provides software for compliance monitoring and risk intelligence. This report is informational screening based on observed evidence. It is not legal advice, a compliance certification, or a guarantee of approval or continued service by any third party.</div></section></main>
   </body></html>`;
 }

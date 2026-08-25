@@ -16,8 +16,11 @@ import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
 import { consolidateCandidates, isScorableCandidate } from "@/sentinel/analysis/candidate-quality";
 import { looksLikeProductUrl } from "@/sentinel/classification/classifier";
 import { getServerEnv } from "@/sentinel/config";
-import { runHybridSemanticAnalysis, type HybridSemanticStats } from "@/sentinel/analysis/hybrid-semantic";
+import { merchantSemanticCandidates, runHybridSemanticAnalysis, runMerchantSemanticPass, type HybridSemanticStats } from "@/sentinel/analysis/hybrid-semantic";
 import { configuredWebsiteSemanticAnalyzer } from "@/sentinel/analysis/website-semantic";
+import { runVisualIntelligence } from "@/sentinel/analysis/visual-intelligence";
+import { runDocumentIntelligence } from "@/sentinel/analysis/document-intelligence";
+import { buildEvidenceGraph } from "@/sentinel/analysis/evidence-graph";
 
 function compactJson(record: Record<string, unknown>): Prisma.InputJsonValue {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as Prisma.InputJsonObject;
@@ -31,6 +34,17 @@ function storedFindingScoreComponent(categoryValue: string): CandidateFinding["s
   if (/checkout/.test(category)) return "SITE_CONTROLS";
   if (/position|contradiction|deceptive|inconsistent|pharmacy|prescription/.test(category)) return "OPERATIONAL_CONSISTENCY";
   return "RESEARCH_CONTROLS";
+}
+
+function enrichCandidateProvenance(candidate: CandidateFinding, pages: Array<{ url: string; pageType: SentinelPageType; content: ReturnType<typeof normalizedContentSchema.parse> }>): CandidateFinding {
+  if (candidate.domSelector || !candidate.detectedText) return candidate;
+  const page = pages.find((item) => item.url === candidate.url);
+  if (!page) return candidate;
+  const needle = candidate.detectedText.replace(/\s+/g, " ").trim().toLowerCase();
+  const located = page.content.domEvidence.find((item) => item.text.replace(/\s+/g, " ").trim().toLowerCase().includes(needle));
+  if (!located) return candidate;
+  const prominence: CandidateFinding["prominence"] = candidate.prominence ?? (page.pageType === "PRODUCT" || page.pageType === "COLLECTION" || page.pageType === "CATEGORY" || located.evidenceType === "CTA" ? "PRIMARY_COMMERCIAL" : page.pageType === "ARTICLE" || page.pageType === "BLOG" ? "EDITORIAL" : "SITEWIDE");
+  return { ...candidate, domSelector: located.selector, evidenceType: candidate.evidenceType ?? located.evidenceType, sourceKind: candidate.sourceKind ?? "TEXT", prominence };
 }
 
 export async function runAnalysisStage(scanId: string) {
@@ -59,15 +73,28 @@ export async function runAnalysisStage(scanId: string) {
   const websiteAnalyzer = configuredWebsiteSemanticAnalyzer();
   let semanticCandidates: CandidateFinding[] = [];
   let semanticStats: HybridSemanticStats | undefined;
+  let semanticPageAnalyses: Awaited<ReturnType<typeof runHybridSemanticAnalysis>>["pageAnalyses"] = [];
   if (websiteAnalyzer) {
     const env = getServerEnv();
     await updateProgress(scanId, { stage: "analyzing", message: "Running structured page and merchant semantic analysis", stageProcessed: pagesForDeepAnalysis.length, stageTotal: pagesForDeepAnalysis.length });
-    const semantic = await runHybridSemanticAnalysis({ analyzer: websiteAnalyzer, pages, merchantName: scan.merchant.businessName, deterministicCandidates, concurrency: env.AI_PAGE_CONCURRENCY, maxPageChars: env.AI_MAX_PAGE_CHARS });
+    const semantic = await runHybridSemanticAnalysis({ analyzer: websiteAnalyzer, pages, merchantName: scan.merchant.businessName, deterministicCandidates, concurrency: env.AI_PAGE_CONCURRENCY, maxPageChars: env.AI_MAX_PAGE_CHARS, skipMerchant: true });
     semanticCandidates = semantic.candidates;
+    semanticPageAnalyses = semantic.pageAnalyses;
     semanticStats = semantic.stats;
   }
-  const rawCandidates = [...deterministicCandidates, ...semanticCandidates];
-  const candidates = consolidateCandidates(rawCandidates);
+  await updateProgress(scanId, { stage: "analyzing", message: "Inspecting visual and public-document evidence", stageProcessed: pagesForDeepAnalysis.length, stageTotal: pagesForDeepAnalysis.length });
+  const [visual, documents] = await Promise.all([runVisualIntelligence(scanId, pages), runDocumentIntelligence(scanId, pages)]);
+  const preliminaryCandidates = [...deterministicCandidates, ...semanticCandidates, ...visual.candidates, ...documents.candidates];
+  if (websiteAnalyzer) {
+    const merchant = await runMerchantSemanticPass({ analyzer: websiteAnalyzer, pages, merchantName: scan.merchant.businessName, pageAnalyses: semanticPageAnalyses, candidates: preliminaryCandidates });
+    semanticCandidates.push(...merchantSemanticCandidates(merchant.analysis, pages, websiteAnalyzer.provider, websiteAnalyzer.model));
+    if (semanticStats) {
+      semanticStats.merchantCalls += merchant.stats.merchantCalls; semanticStats.cacheHits += merchant.stats.cacheHits; semanticStats.failures += merchant.stats.failures;
+      semanticStats.inputTokens += merchant.stats.inputTokens; semanticStats.outputTokens += merchant.stats.outputTokens; semanticStats.estimatedCostUsd = Number((semanticStats.estimatedCostUsd + merchant.stats.estimatedCostUsd).toFixed(6));
+    }
+  }
+  const rawCandidates = [...deterministicCandidates, ...semanticCandidates, ...visual.candidates, ...documents.candidates];
+  const candidates = consolidateCandidates(rawCandidates.map((candidate) => enrichCandidateProvenance(candidate, pages)));
   const storedRuleVersions = await db.ruleVersion.findMany({ where: { version: 1, rule: { key: { in: [...new Set(candidates.map((candidate) => candidate.ruleKey))] } } }, include: { rule: { select: { key: true } } } });
   const ruleVersionByKey = new Map(storedRuleVersions.map((version) => [version.rule.key, version]));
 
@@ -78,14 +105,16 @@ export async function runAnalysisStage(scanId: string) {
     if (page.pageType === "PRODUCT" && page.content.productName) {
       const intelligence = buildProductIntelligence(page.content, page.url, scan.merchant.businessName);
       const numericPrice = page.content.prices[0]?.replace(/[^\d.,]/g, "").replace(",", ".");
-      const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl: page.url } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl: page.url, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, claims: page.content.claims, disclaimers: page.content.disclaimers } });
+      const availability = page.content.stockText.map((item) => item.text).join(" | ").slice(0, 500) || undefined;
+      const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl: page.url } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl: page.url, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers } });
       const productSnapshotPayload = { content: page.content, intelligence };
       const productSnapshotData = { data: productSnapshotPayload as unknown as Prisma.InputJsonValue, hash: contentHash(productSnapshotPayload) };
       const existingProductSnapshot = await db.productSnapshot.findFirst({ where: { productId: product.id, scanId }, select: { id: true } });
       if (existingProductSnapshot) await db.productSnapshot.update({ where: { id: existingProductSnapshot.id }, data: productSnapshotData });
       else await db.productSnapshot.create({ data: { productId: product.id, scanId, ...productSnapshotData } });
       await db.productVariant.deleteMany({ where: { productId: product.id } });
-      if (page.content.variants.length) await db.productVariant.createMany({ data: page.content.variants.map((name) => ({ productId: product.id, name })) });
+      const variants: Array<{ name: string; sku?: string; price?: string; availability?: string }> = page.content.productVariations.length ? page.content.productVariations : page.content.variants.map((name) => ({ name }));
+      if (variants.length) await db.productVariant.createMany({ data: variants.map((variant) => ({ productId: product.id, name: variant.name, sku: variant.sku, price: variant.price && Number.isFinite(Number(variant.price.replace(/[^\d.]/g, ""))) ? variant.price.replace(/[^\d.]/g, "") : undefined, availability: variant.availability })) });
       productsDetected++;
     }
     const detectedPolicyTypes = detectPolicySignals(page.url, page.content, page.pageType);
@@ -100,14 +129,20 @@ export async function runAnalysisStage(scanId: string) {
   }
   const policiesDetected = presentPolicyTypes.size;
   const productsDiscovered = scan.pages.filter((page) => looksLikeProductUrl(page.url)).length;
-  const variantsScanned = pages.reduce((sum, page) => sum + (page.pageType === "PRODUCT" ? page.content.variants.length : 0), 0);
-  const imagesAnalyzed = pages.reduce((sum, page) => sum + page.content.images.length, 0);
+  const variantsScanned = pages.reduce((sum, page) => sum + (page.pageType === "PRODUCT" ? Math.max(page.content.variants.length, page.content.productVariations.length) : 0), 0);
+  const imagesDiscovered = pages.reduce((sum, page) => sum + page.content.images.length, 0);
+  const imagesAnalyzed = visual.stats.assetsAnalyzed;
   const certificatesDiscovered = new Set(pages.flatMap((page) => page.content.certificateLinks)).size;
   const checkoutFlowsInspected = pages.filter((page) => page.pageType === "CART" || isReviewableCheckout(page)).length;
+  const checkoutStatesInspected = pages.filter((page) => page.pageType === "CART" || page.pageType === "CHECKOUT").reduce((sum, page) => sum + Math.max(1, page.content.interactiveStates.length), 0);
   const pageCoveragePercent = Math.min(100, Math.round((pages.length / Math.max(scan.pagesDiscovered, pages.length, 1)) * 100));
   const productCoveragePercent = productsDiscovered > 0 ? Math.min(100, Math.round((productsDetected / productsDiscovered) * 100)) : 100;
-  const certificateCoveragePercent = certificatesDiscovered > 0 ? 0 : 100;
-  const scanCoveragePercent = Math.round(pageCoveragePercent * 0.65 + productCoveragePercent * 0.2 + certificateCoveragePercent * 0.15);
+  const semanticCoveragePercent = websiteAnalyzer ? Math.round((semanticPageAnalyses.length / Math.max(pages.length, 1)) * 100) : 0;
+  const visualCoveragePercent = visual.stats.pagesSelected ? Math.round((visual.stats.pagesAnalyzed / visual.stats.pagesSelected) * 100) : 100;
+  const documentCoveragePercent = documents.stats.discovered ? Math.round((documents.stats.extracted / documents.stats.discovered) * 100) : 100;
+  const checkoutCoveragePercent = productsDiscovered ? (checkoutFlowsInspected > 0 ? 100 : 0) : 100;
+  const inaccessibleAreas = scan.pages.filter((page) => Boolean(page.inaccessibleReason) || (page.httpStatus ?? 0) >= 400).length;
+  const scanCoveragePercent = Math.round(pageCoveragePercent * 0.4 + productCoveragePercent * 0.15 + semanticCoveragePercent * 0.15 + visualCoveragePercent * 0.1 + documentCoveragePercent * 0.1 + checkoutCoveragePercent * 0.1);
   const coveragePolicyTypes = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
   const expectedPolicyTypes = requiredPolicyTypes(pages).filter((type): type is (typeof coveragePolicyTypes)[number] => coveragePolicyTypes.includes(type as (typeof coveragePolicyTypes)[number]));
   if (analysisCoverageRatio >= 0.65) for (const type of expectedPolicyTypes) if (!presentPolicyTypes.has(type)) {
@@ -140,20 +175,31 @@ export async function runAnalysisStage(scanId: string) {
     const sourcePage = pages.find((page) => page.url === candidate.url);
     const pageHash = sourcePage ? contentHash(sourcePage.content) : fingerprint;
     const modelVersion = candidate.modelVersion ?? claimAnalyzer.model;
-    const evidenceMetadata = compactJson({ ruleKey: candidate.ruleKey, role: "primary", affectedUrls: candidate.affectedUrls ?? [], analysisSource: candidate.analysisSource ?? "DETERMINISTIC", evidenceType: candidate.evidenceType, humanReviewRequired: candidate.humanReviewRequired ?? candidate.status === "NEEDS_REVIEW", semanticCategory: candidate.semanticCategory, semanticClassification: candidate.semanticClassification, provider: candidate.provider, promptVersion: candidate.promptVersion, riskTheme: candidate.riskTheme });
+    const evidenceMetadata = compactJson({ ruleKey: candidate.ruleKey, role: "primary", affectedUrls: candidate.affectedUrls ?? [], analysisSource: candidate.analysisSource ?? "DETERMINISTIC", evidenceType: candidate.evidenceType, evidenceClassification: candidate.evidenceClassification, prominence: candidate.prominence, sourceKind: candidate.sourceKind ?? "TEXT", domSelector: candidate.domSelector, assetHash: candidate.assetHash, humanReviewRequired: candidate.humanReviewRequired ?? candidate.status === "NEEDS_REVIEW", semanticCategory: candidate.semanticCategory, semanticClassification: candidate.semanticClassification, provider: candidate.provider, promptVersion: candidate.promptVersion, riskTheme: candidate.riskTheme });
     const evidenceData = { snapshotId: sourcePage?.snapshotId, pageUrl: candidate.url, normalizedText: candidate.detectedText, evidenceSnippet: candidate.detectedText, pageHash, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion, classificationConfidence: candidate.confidence, metadata: evidenceMetadata };
     const existingEvidence = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: "TEXT", pageHash, modelVersion, normalizedText: candidate.detectedText ?? null }, select: { id: true } });
     if (existingEvidence) await db.findingEvidence.update({ where: { id: existingEvidence.id }, data: evidenceData });
     else await db.findingEvidence.create({ data: { findingId: finding.id, kind: "TEXT", ...evidenceData } });
+    if (candidate.assetStorageKey && candidate.assetHash) {
+      const assetKind = candidate.sourceKind === "DOCUMENT" ? "SNAPSHOT" as const : "SCREENSHOT" as const;
+      const assetEvidence = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: assetKind, storageKey: candidate.assetStorageKey }, select: { id: true } });
+      if (!assetEvidence) await db.findingEvidence.create({ data: { findingId: finding.id, kind: assetKind, snapshotId: sourcePage?.snapshotId, pageUrl: candidate.url, normalizedText: candidate.detectedText, evidenceSnippet: candidate.detectedText, pageHash: candidate.assetHash, domSelector: candidate.domSelector, storageKey: candidate.assetStorageKey, modelVersion, classificationConfidence: candidate.confidence, metadata: evidenceMetadata } });
+    }
     const supportingEvidence = [...(candidate.secondaryEvidence ? [{ ...candidate.secondaryEvidence, evidenceType: undefined }] : []), ...(candidate.supportingEvidence ?? [])];
     const uniqueSupportingEvidence = [...new Map(supportingEvidence.map((evidence) => [`${evidence.url}|${evidence.text}|${evidence.role}`, evidence])).values()];
     for (const supporting of uniqueSupportingEvidence) {
       const secondaryPage = pages.find((page) => page.url === supporting.url);
-      const secondaryHash = secondaryPage ? contentHash(secondaryPage.content) : contentHash(supporting.text);
-      const secondaryData = { snapshotId: secondaryPage?.snapshotId, pageUrl: supporting.url, normalizedText: supporting.text, evidenceSnippet: supporting.text, pageHash: secondaryHash, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion, classificationConfidence: candidate.confidence, metadata: compactJson({ ruleKey: candidate.ruleKey, role: supporting.role, analysisSource: candidate.analysisSource ?? "DETERMINISTIC", evidenceType: supporting.evidenceType, humanReviewRequired: candidate.humanReviewRequired ?? candidate.status === "NEEDS_REVIEW", provider: candidate.provider, promptVersion: candidate.promptVersion, riskTheme: candidate.riskTheme }) };
+      const secondaryHash = supporting.assetHash ?? (secondaryPage ? contentHash(secondaryPage.content) : contentHash(supporting.text));
+      const secondaryMetadata = compactJson({ ruleKey: candidate.ruleKey, role: supporting.role, analysisSource: candidate.analysisSource ?? "DETERMINISTIC", evidenceType: supporting.evidenceType, evidenceClassification: supporting.classification, prominence: candidate.prominence, sourceKind: supporting.sourceKind ?? "TEXT", domSelector: supporting.domSelector, assetHash: supporting.assetHash, humanReviewRequired: candidate.humanReviewRequired ?? candidate.status === "NEEDS_REVIEW", provider: candidate.provider, promptVersion: candidate.promptVersion, riskTheme: candidate.riskTheme });
+      const secondaryData = { snapshotId: secondaryPage?.snapshotId, pageUrl: supporting.url, normalizedText: supporting.text, evidenceSnippet: supporting.text, pageHash: secondaryHash, domSelector: supporting.domSelector, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion, classificationConfidence: candidate.confidence, metadata: secondaryMetadata };
       const existingSecondary = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: "TEXT", pageHash: secondaryHash, modelVersion, normalizedText: supporting.text }, select: { id: true } });
       if (existingSecondary) await db.findingEvidence.update({ where: { id: existingSecondary.id }, data: secondaryData });
       else await db.findingEvidence.create({ data: { findingId: finding.id, kind: "TEXT", ...secondaryData } });
+      if (supporting.assetStorageKey && supporting.assetHash) {
+        const assetKind = supporting.sourceKind === "DOCUMENT" ? "SNAPSHOT" as const : "SCREENSHOT" as const;
+        const assetEvidence = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: assetKind, storageKey: supporting.assetStorageKey }, select: { id: true } });
+        if (!assetEvidence) await db.findingEvidence.create({ data: { findingId: finding.id, kind: assetKind, ...secondaryData, storageKey: supporting.assetStorageKey } });
+      }
     }
     if (candidate.severity === "HIGH" || candidate.severity === "CRITICAL") evidenceJobs.push(finding.id);
   }
@@ -171,19 +217,24 @@ export async function runAnalysisStage(scanId: string) {
   const researchCoveredProducts = productPages.filter((page) => page.content.disclaimers.some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
   const researchRestrictionPagesObserved = pages.filter((page) => [...page.content.disclaimers, ...page.content.paragraphs].some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
   const disclaimerPagesObserved = pages.filter((page) => /\bdisclaimer\b/i.test(`${new URL(page.url).pathname} ${page.content.title} ${page.content.headings.join(" ")}`) && page.content.disclaimers.length > 0).length;
-  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesAnalyzed, certificatesDiscovered, certificatesAnalyzed: 0, checkoutFlowsInspected, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
+  const pageRestrictions = pages.flatMap((page) => page.content.disclaimers.filter((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION").map((text) => ({ url: page.url, pageType: page.pageType, text })));
+  for (const candidate of candidates) if (candidate.scoreComponent === "MARKETING_RISK" && !candidate.riskTheme?.startsWith("CONTRADICTION:")) candidate.mitigatingEvidence = pageRestrictions.slice(0, 12).map((restriction) => ({ url: restriction.url, text: restriction.text, role: "merchant-level-restriction", evidenceType: "DISCLAIMER", classification: "MITIGATING" }));
+  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesDiscovered, imagesAnalyzed, screenshotsAnalyzed: visual.stats.assetsAnalyzed, visualPagesAnalyzed: visual.stats.pagesAnalyzed, visualCoveragePercent, certificatesDiscovered, certificatesAnalyzed: documents.stats.extracted, documentsDiscovered: documents.stats.discovered, documentsAnalyzed: documents.stats.extracted, documentCoveragePercent, checkoutFlowsInspected, checkoutStatesInspected, semanticPagesAnalyzed: semanticPageAnalyses.length, semanticCoveragePercent, inaccessibleAreas, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
   await advanceScanStatus(scanId, "SCORING");
   const requiredPoliciesFound = expectedPolicyTypes.filter((type) => presentPolicyTypes.has(type)).length;
-  const documentCoverage = certificateCoveragePercent;
   const assessmentCoverage = {
-    POLICY_COVERAGE: Math.round(scanCoveragePercent * 0.6 + (requiredPoliciesFound / Math.max(expectedPolicyTypes.length, 1)) * 40),
-    PRODUCT_INTEGRITY: productsDiscovered ? productCoveragePercent : 100,
-    RESEARCH_CONTROLS: productsDiscovered ? Math.round((researchCoveredProducts / productsDiscovered) * 100) : 100,
-    MARKETING_RISK: scanCoveragePercent,
-    SITE_CONTROLS: productsDiscovered ? (checkoutFlowsInspected > 0 ? 100 : 0) : 100,
-    OPERATIONAL_CONSISTENCY: Math.round(scanCoveragePercent * 0.6 + documentCoverage * 0.4),
+    POLICY_COVERAGE: Math.round(pageCoveragePercent * 0.6 + (requiredPoliciesFound / Math.max(expectedPolicyTypes.length, 1)) * 40),
+    PRODUCT_INTEGRITY: Math.round(productCoveragePercent * 0.55 + visualCoveragePercent * 0.2 + documentCoveragePercent * 0.25),
+    RESEARCH_CONTROLS: productsDiscovered ? Math.round((researchCoveredProducts / Math.max(productsDiscovered, 1)) * 70 + semanticCoveragePercent * 0.3) : semanticCoveragePercent,
+    MARKETING_RISK: Math.round(pageCoveragePercent * 0.45 + semanticCoveragePercent * 0.3 + visualCoveragePercent * 0.25),
+    SITE_CONTROLS: checkoutCoveragePercent,
+    OPERATIONAL_CONSISTENCY: Math.round(pageCoveragePercent * 0.5 + semanticCoveragePercent * 0.25 + documentCoveragePercent * 0.25),
   } as const;
   const score = calculateHealthScore([...candidates, ...retainedForScore].filter(isScorableCandidate), assessmentCoverage);
+  const evidenceGraph = buildEvidenceGraph(candidates, pageRestrictions);
+  const estimatedCostUsd = Number(((semanticStats?.estimatedCostUsd ?? 0) + visual.stats.estimatedCostUsd + documents.stats.estimatedCostUsd).toFixed(6));
+  const intelligence = { version: "orbit-multimodal-v1", riskScore: 100 - score.total, healthScore: score.total, coverage: { overall: scanCoveragePercent, pages: pageCoveragePercent, products: productCoveragePercent, semantic: semanticCoveragePercent, visual: visualCoveragePercent, documents: documentCoveragePercent, checkout: checkoutCoveragePercent, inaccessibleAreas }, evidenceGraph, visual: visual.stats, documents: { stats: documents.stats, records: documents.documents.map((document) => ({ url: document.url, sourcePageUrl: document.sourcePageUrl, documentType: document.documentType, hash: document.hash, storageKey: document.storageKey, pageCount: document.pageCount, metadata: document.metadata })) }, model: { semantic: semanticStats, estimatedCostUsd, fallbackIncomplete: !websiteAnalyzer || Boolean((semanticStats?.failures ?? 0) + visual.stats.failures + documents.stats.failures) }, methodologyLimitations: [...(!websiteAnalyzer ? ["Semantic and vision provider was not configured; deterministic analysis continued and model coverage is incomplete."] : []), ...(visual.stats.failures ? [`${visual.stats.failures} visual page analysis attempt(s) failed.`] : []), ...(documents.stats.failures ? [`${documents.stats.failures} public document analysis attempt(s) failed.`] : []), ...(checkoutCoveragePercent < 100 ? ["A populated public checkout state was not observable without a state-changing cart action."] : [])] };
+  await db.scan.update({ where: { id: scanId }, data: { intelligence: intelligence as unknown as Prisma.InputJsonValue } });
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
   const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));
   await db.healthScore.upsert({ where: { merchantId_scanId: { merchantId: scan.merchantId, scanId } }, update: { total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { deleteMany: {}, create: scoreComponents } }, create: { merchantId: scan.merchantId, scanId, total: score.total, formulaVersion: score.formulaVersion, explanation: score.explanation as unknown as Prisma.InputJsonValue, components: { create: scoreComponents } } });
@@ -195,7 +246,7 @@ export async function runAnalysisStage(scanId: string) {
   await db.merchant.update({ where: { id: scan.merchantId }, data: { status: activeMaterialFindings > 0 ? "REVIEW_REQUIRED" : "MONITORED" } });
   await db.merchantSite.update({ where: { id: scan.siteId }, data: { nextScanAt: new Date(Date.now() + (await db.merchantSite.findUniqueOrThrow({ where: { id: scan.siteId }, select: { monitoringCadenceMinutes: true } })).monitoringCadenceMinutes * 60_000) } });
   const completionAudit = await db.auditLog.findFirst({ where: { scanId, action: "scan.completed", targetType: "Scan", targetId: scanId }, select: { id: true } });
-  if (!completionAudit) await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: compactJson({ score: score.total, findings: candidates.length, pages: pages.length, semantic: semanticStats }) } });
+  if (!completionAudit) await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: compactJson({ score: score.total, riskScore: 100 - score.total, findings: candidates.length, pages: pages.length, semantic: semanticStats, visual: visual.stats, documents: documents.stats, estimatedCostUsd }) } });
   await updateProgress(scanId, { stage: "completed", message: "Scan completed", pagesProcessed: pages.length, pagesTotal: pages.length, stageProcessed: 1, stageTotal: 1 });
   await Promise.all(evidenceJobs.map((findingId) => queues().evidence.add("capture", { findingId }, { jobId: `evidence-${findingId}-${scanId}` })));
   return { score: score.total, findings: candidates.length, findingsCreated, productsDetected, policiesDetected };

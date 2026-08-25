@@ -21,6 +21,7 @@ function observation(exactText: string, overrides: Partial<SemanticObservation> 
     severity: "HIGH",
     confidence: 0.94,
     contextualExplanation: "A physiological outcome is used to organize a public commercial research catalog; research wording does not remove the intended-use signal.",
+    evidenceClassification: "ADVERSE",
     humanReviewRequired: true,
     ...overrides,
   };
@@ -30,12 +31,12 @@ describe("hybrid website semantic analysis", () => {
   it("retains all Core Aminos evidence channels needed by the semantic pass", () => {
     const document = buildPageSemanticDocument(page);
     expect(document.evidenceItems).toEqual(expect.arrayContaining([
-      { evidenceType: "NAVIGATION", text: "Obesity Research Products" },
-      { evidenceType: "NAVIGATION", text: "Muscle Growth Research Products" },
-      { evidenceType: "NAVIGATION", text: "Cognitive Research Products" },
-      { evidenceType: "NAVIGATION", text: "Reproductive Research Products" },
-      { evidenceType: "DISCLAIMER", text: "We are not a compounding pharmacy." },
-      { evidenceType: "CTA", text: "Browse Research Products" },
+      expect.objectContaining({ evidenceType: "NAVIGATION", text: "Obesity Research Products" }),
+      expect.objectContaining({ evidenceType: "NAVIGATION", text: "Muscle Growth Research Products" }),
+      expect.objectContaining({ evidenceType: "NAVIGATION", text: "Cognitive Research Products" }),
+      expect.objectContaining({ evidenceType: "NAVIGATION", text: "Reproductive Research Products" }),
+      expect.objectContaining({ evidenceType: "DISCLAIMER", text: "We are not a compounding pharmacy." }),
+      expect.objectContaining({ evidenceType: "CTA", text: "Browse Research Products" }),
     ]));
   });
 
@@ -46,7 +47,7 @@ describe("hybrid website semantic analysis", () => {
       observation("Muscle Growth Research Products"),
       observation("Cognitive Research Products"),
       observation("Reproductive Research Products"),
-      observation("We are not a compounding pharmacy.", { category: "PHARMACY_PRESCRIPTION", classification: "NEGATION", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "We are not a compounding pharmacy." }, severity: "INFO", confidence: 0.99, contextualExplanation: "The sentence expressly denies pharmacy status.", humanReviewRequired: false }),
+      observation("We are not a compounding pharmacy.", { category: "PHARMACY_PRESCRIPTION", classification: "NEGATION", evidenceClassification: "MITIGATING", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "We are not a compounding pharmacy." }, severity: "INFO", confidence: 0.99, contextualExplanation: "The sentence expressly denies pharmacy status.", humanReviewRequired: false }),
     ] });
     const validated = validatePageSemanticAnalysis(document, raw);
     const candidates = pageSemanticCandidates(validated, [page], "fixture", "fixture-model");
@@ -67,7 +68,7 @@ describe("hybrid website semantic analysis", () => {
 
   it("builds an auditable merchant-level RUO-versus-marketing contradiction", () => {
     const intended = observation("Obesity Research Products");
-    const restriction = observation("All products are sold for research use only and are not for human consumption.", { category: "RESEARCH_POSITIONING", classification: "RESTRICTION", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "All products are sold for research use only and are not for human consumption." }, severity: "INFO", confidence: 0.99, contextualExplanation: "The merchant states an explicit RUO restriction.", humanReviewRequired: false });
+    const restriction = observation("All products are sold for research use only and are not for human consumption.", { category: "RESEARCH_POSITIONING", classification: "RESTRICTION", evidenceClassification: "MITIGATING", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "All products are sold for research use only and are not for human consumption." }, severity: "INFO", confidence: 0.99, contextualExplanation: "The merchant states an explicit RUO restriction.", humanReviewRequired: false });
     const merchantDocument: MerchantSemanticDocument = { merchantName: "Core Aminos Research", pages: [{ pageUrl: merchantUrl, pageType: "HOME", observations: [intended, restriction] }], deterministicFindings: [] };
     const analysis = merchantSemanticAnalysisSchema.parse({ observations: [{ ...intended, category: "CONTRADICTION", classification: "CONTRADICTION", contextualExplanation: "The public obesity catalog positioning conflicts with the merchant's separate research-only and no-human-consumption restriction.", supportingEvidence: [restriction.evidence], humanReviewRequired: true }] });
     const validated = validateMerchantSemanticAnalysis(merchantDocument, analysis);
@@ -115,8 +116,8 @@ describe("hybrid website semantic analysis", () => {
   });
 
   it("rejects disclaimer-only contradictions and downgrades non-critical promotional contradictions", () => {
-    const restriction = observation("All products are sold for research use only and are not for human consumption.", { category: "RESEARCH_POSITIONING", classification: "RESTRICTION", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "All products are sold for research use only and are not for human consumption." }, severity: "INFO", confidence: 0.99, humanReviewRequired: false });
-    const pharmacyRestriction = observation("We are not a compounding pharmacy.", { category: "PHARMACY_PRESCRIPTION", classification: "NEGATION", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "We are not a compounding pharmacy." }, severity: "INFO", confidence: 0.99, humanReviewRequired: false });
+    const restriction = observation("All products are sold for research use only and are not for human consumption.", { category: "RESEARCH_POSITIONING", classification: "RESTRICTION", evidenceClassification: "MITIGATING", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "All products are sold for research use only and are not for human consumption." }, severity: "INFO", confidence: 0.99, humanReviewRequired: false });
+    const pharmacyRestriction = observation("We are not a compounding pharmacy.", { category: "PHARMACY_PRESCRIPTION", classification: "NEGATION", evidenceClassification: "MITIGATING", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "We are not a compounding pharmacy." }, severity: "INFO", confidence: 0.99, humanReviewRequired: false });
     const intended = observation("Obesity Research Products");
     const document: MerchantSemanticDocument = { merchantName: "Core Aminos", pages: [{ pageUrl: merchantUrl, pageType: "HOME", observations: [restriction, pharmacyRestriction, intended] }], deterministicFindings: [] };
     const disclaimerOnly = merchantSemanticAnalysisSchema.parse({ observations: [{ ...restriction, category: "CONTRADICTION", classification: "CONTRADICTION", severity: "CRITICAL", humanReviewRequired: true, supportingEvidence: [pharmacyRestriction.evidence] }] });

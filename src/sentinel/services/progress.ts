@@ -8,7 +8,7 @@ const stageOrder: ScanProgress["stage"][] = ["queued", "discovering", "crawling"
 const statusOrder: ScanStatus[] = ["QUEUED", "DISCOVERING", "CRAWLING", "CLASSIFYING", "ANALYZING", "EVIDENCE", "SCORING", "COMPLETED"];
 
 export function initialProgress(): ScanProgress {
-  return { pipelineVersion, stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, productsDiscovered: 0, productsScanned: 0, variantsScanned: 0, imagesAnalyzed: 0, certificatesDiscovered: 0, certificatesAnalyzed: 0, checkoutFlowsInspected: 0, disclaimerPagesObserved: 0, researchRestrictionPagesObserved: 0, researchCoveredProducts: 0, scanCoveragePercent: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
+  return { pipelineVersion, stage: "queued", message: "Waiting for an available crawler", urlsFound: 0, pagesProcessed: 0, pagesTotal: 0, productsDetected: 0, productsDiscovered: 0, productsScanned: 0, variantsScanned: 0, imagesDiscovered: 0, imagesAnalyzed: 0, screenshotsAnalyzed: 0, visualPagesAnalyzed: 0, visualCoveragePercent: 0, certificatesDiscovered: 0, certificatesAnalyzed: 0, documentsDiscovered: 0, documentsAnalyzed: 0, documentCoveragePercent: 0, checkoutFlowsInspected: 0, checkoutStatesInspected: 0, semanticPagesAnalyzed: 0, semanticCoveragePercent: 0, inaccessibleAreas: 0, disclaimerPagesObserved: 0, researchRestrictionPagesObserved: 0, researchCoveredProducts: 0, scanCoveragePercent: 0, policiesDetected: 0, claimsInspected: 0, findings: 0, attempt: 0, recoveredPages: 0, stageProcessed: 0, stageTotal: 0, updatedAt: new Date().toISOString() };
 }
 
 export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<ScanProgress>, updatedAt = new Date().toISOString()): ScanProgress {
@@ -29,10 +29,21 @@ export function mergeProgress(current: Partial<ScanProgress>, patch: Partial<Sca
     productsDiscovered: Math.max(current.productsDiscovered ?? 0, patch.productsDiscovered ?? 0),
     productsScanned: Math.max(current.productsScanned ?? 0, patch.productsScanned ?? 0),
     variantsScanned: Math.max(current.variantsScanned ?? 0, patch.variantsScanned ?? 0),
+    imagesDiscovered: Math.max(current.imagesDiscovered ?? 0, patch.imagesDiscovered ?? 0),
     imagesAnalyzed: Math.max(current.imagesAnalyzed ?? 0, patch.imagesAnalyzed ?? 0),
+    screenshotsAnalyzed: Math.max(current.screenshotsAnalyzed ?? 0, patch.screenshotsAnalyzed ?? 0),
+    visualPagesAnalyzed: Math.max(current.visualPagesAnalyzed ?? 0, patch.visualPagesAnalyzed ?? 0),
+    visualCoveragePercent: Math.max(current.visualCoveragePercent ?? 0, patch.visualCoveragePercent ?? 0),
     certificatesDiscovered: Math.max(current.certificatesDiscovered ?? 0, patch.certificatesDiscovered ?? 0),
     certificatesAnalyzed: Math.max(current.certificatesAnalyzed ?? 0, patch.certificatesAnalyzed ?? 0),
+    documentsDiscovered: Math.max(current.documentsDiscovered ?? 0, patch.documentsDiscovered ?? 0),
+    documentsAnalyzed: Math.max(current.documentsAnalyzed ?? 0, patch.documentsAnalyzed ?? 0),
+    documentCoveragePercent: Math.max(current.documentCoveragePercent ?? 0, patch.documentCoveragePercent ?? 0),
     checkoutFlowsInspected: Math.max(current.checkoutFlowsInspected ?? 0, patch.checkoutFlowsInspected ?? 0),
+    checkoutStatesInspected: Math.max(current.checkoutStatesInspected ?? 0, patch.checkoutStatesInspected ?? 0),
+    semanticPagesAnalyzed: Math.max(current.semanticPagesAnalyzed ?? 0, patch.semanticPagesAnalyzed ?? 0),
+    semanticCoveragePercent: Math.max(current.semanticCoveragePercent ?? 0, patch.semanticCoveragePercent ?? 0),
+    inaccessibleAreas: Math.max(current.inaccessibleAreas ?? 0, patch.inaccessibleAreas ?? 0),
     disclaimerPagesObserved: Math.max(current.disclaimerPagesObserved ?? 0, patch.disclaimerPagesObserved ?? 0),
     researchRestrictionPagesObserved: Math.max(current.researchRestrictionPagesObserved ?? 0, patch.researchRestrictionPagesObserved ?? 0),
     researchCoveredProducts: Math.max(current.researchCoveredProducts ?? 0, patch.researchCoveredProducts ?? 0),

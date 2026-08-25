@@ -5,6 +5,14 @@ const labels: Record<ScoreComponentKey, string> = { POLICY_COVERAGE: "Website le
 const weights: Record<ScoreComponentKey, number> = { POLICY_COVERAGE: 0.22, PRODUCT_INTEGRITY: 0.18, RESEARCH_CONTROLS: 0.18, MARKETING_RISK: 0.2, SITE_CONTROLS: 0.12, OPERATIONAL_CONSISTENCY: 0.1 };
 const deductions = { CRITICAL: 35, HIGH: 16, MEDIUM: 8, LOW: 3, INFO: 0 } as const;
 const severityRank = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 } as const;
+const prominenceMultiplier: Record<NonNullable<CandidateFinding["prominence"]>, number> = { PRIMARY_COMMERCIAL: 1.2, PRODUCT_DESCRIPTION: 1.1, NAVIGATION: 1.05, SITEWIDE: 1, EDITORIAL: 0.75, TECHNICAL: 0.65 };
+
+function inferredProminence(finding: CandidateFinding): NonNullable<CandidateFinding["prominence"]> {
+  if (finding.prominence) return finding.prominence;
+  if (["PRODUCT", "COLLECTION", "CATEGORY", "CHECKOUT", "CART"].includes(finding.pageType)) return "PRIMARY_COMMERCIAL";
+  if (["ARTICLE", "BLOG"].includes(finding.pageType)) return "EDITORIAL";
+  return "SITEWIDE";
+}
 
 export function calculateHealthScore(findings: CandidateFinding[], assessmentCoverage: Partial<Record<ScoreComponentKey, number>> = {}) {
   const keys = Object.keys(labels) as ScoreComponentKey[];
@@ -18,9 +26,15 @@ export function calculateHealthScore(findings: CandidateFinding[], assessmentCov
       const primary = [...themedFindings].sort((left, right) => severityRank[right.severity] - severityRank[left.severity] || right.confidence - left.confidence)[0];
       const occurrenceUrls = new Set(themedFindings.flatMap((finding) => finding.affectedUrls ?? [finding.url]));
       const base = deductions[primary.severity];
+      const prominence = Math.max(...themedFindings.map((finding) => prominenceMultiplier[inferredProminence(finding)]));
+      const confidence = Math.max(...themedFindings.map((finding) => finding.confidence));
+      const confidenceMultiplier = 0.85 + Math.min(1, confidence) * 0.15;
+      const hasMitigation = themedFindings.some((finding) => (finding.mitigatingEvidence?.length ?? 0) > 0);
+      const mitigationMultiplier = hasMitigation && !theme.startsWith("CONTRADICTION:") ? 0.9 : 1;
+      const adjustedBase = Math.max(base ? 1 : 0, Math.round(base * prominence * confidenceMultiplier * mitigationMultiplier));
       const incrementalOccurrences = Math.min(2, Math.max(0, occurrenceUrls.size - 1));
-      const incremental = Math.min(Math.round(base * 0.5), incrementalOccurrences * Math.ceil(base * 0.25));
-      return { ruleKey: theme, severity: primary.severity, points: base + incremental, title: occurrenceUrls.size > 1 ? `${primary.title} (${occurrenceUrls.size} pages; repeat impact capped)` : primary.title };
+      const incremental = Math.min(Math.round(adjustedBase * 0.5), incrementalOccurrences * Math.ceil(adjustedBase * 0.25));
+      return { ruleKey: theme, severity: primary.severity, points: adjustedBase + incremental, title: occurrenceUrls.size > 1 ? `${primary.title} (${occurrenceUrls.size} pages; repeat impact capped)` : primary.title };
     });
     const observedScore = Math.max(0, 100 - deductionRows.reduce((sum, row) => sum + row.points, 0));
     const coverage = Math.max(0, Math.min(100, assessmentCoverage[key] ?? 100));
@@ -31,5 +45,5 @@ export function calculateHealthScore(findings: CandidateFinding[], assessmentCov
     return { key, label: labels[key], score, observedScore, assessmentCoverage: coverage, deductions: deductionRows };
   });
   const total = Math.round(components.reduce((sum, component) => sum + component.score * weights[component.key], 0));
-  return { total, formulaVersion: "orbit-health-v7", components, explanation: { basis: "Internal ORBIT score derived from material risk themes, grouped evidence and the evidence coverage achieved by each assessment area.", scale: { minimum: 0, maximum: 100, higherIsBetter: true }, weights, assessmentCoverage, uncertaintyFloor: 70, repeatedThemeCap: 1.5, note: "Each unique material risk theme receives one full deduction. Evidence on additional pages adds at most two 25% increments, capped at 150% of the theme's base deduction. Related evidence on one page does not multiply score impact. Restrictions, cautions, questions and disclaimers are not treated as promotion. This score is decision support, not a certification." } };
+  return { total, formulaVersion: "orbit-health-v8", components, explanation: { basis: "Internal ORBIT score derived from unique material risk themes, severity, validated confidence, deterministic prominence, mitigating controls, capped repetition, and observed coverage.", scale: { minimum: 0, maximum: 100, higherIsBetter: true }, weights, assessmentCoverage, uncertaintyFloor: 70, repeatedThemeCap: 1.5, prominenceMultipliers: prominenceMultiplier, note: "Each unique material risk theme receives one prominence- and confidence-adjusted deduction. Evidence on additional pages adds at most two 25% increments, capped at 150% of that theme deduction. Related evidence on one page does not multiply score impact. Mitigating evidence can reduce a non-contradiction theme by at most 10%. Model output supplies observations only; deterministic code calculates the score." } };
 }

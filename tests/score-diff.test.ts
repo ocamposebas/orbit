@@ -6,7 +6,7 @@ import type { CandidateFinding } from "@/sentinel/types";
 const finding: CandidateFinding = { ruleKey: "MKT-001", severity: "HIGH", confidence: 0.96, status: "NEEDS_REVIEW", category: "Marketing", title: "Claim", description: "Signal", url: "https://example.test/product", pageType: "PRODUCT", reason: "Context", recommendedAction: "Review", scoreComponent: "MARKETING_RISK" };
 
 describe("explainable scoring and smart diff", () => {
-  it("deducts the documented amount from the affected component", () => { const score = calculateHealthScore([finding]); const marketing = score.components.find((item) => item.key === "MARKETING_RISK"); expect(marketing?.score).toBe(84); expect(marketing?.deductions[0].points).toBe(16); expect(score.total).toBe(97); });
+  it("applies deterministic commercial prominence to the affected component", () => { const score = calculateHealthScore([finding]); const marketing = score.components.find((item) => item.key === "MARKETING_RISK"); expect(marketing?.score).toBe(81); expect(marketing?.deductions[0].points).toBe(19); expect(score.total).toBe(96); });
   it("uses 100 for the strongest posture and deduplicates identical observations", () => {
     expect(calculateHealthScore([]).total).toBe(100);
     const score = calculateHealthScore([finding, finding]);
@@ -23,8 +23,8 @@ describe("explainable scoring and smart diff", () => {
     const score = calculateHealthScore(repeated);
     const marketing = score.components.find((item) => item.key === "MARKETING_RISK");
     expect(marketing?.deductions).toHaveLength(1);
-    expect(marketing?.deductions[0].points).toBe(24);
-    expect(marketing?.score).toBe(76);
+    expect(marketing?.deductions[0].points).toBe(29);
+    expect(marketing?.score).toBe(71);
   });
   it("keeps materially different claim types as separate scoring themes", () => {
     const medical = { ...finding, ruleKey: "MKT-MEDICAL-001", detectedText: "Treats cognitive disease." };

@@ -6,11 +6,11 @@ const baseClaimRules = new Set(["MKT-MEDICAL-001", "MKT-TESTIMONIAL-001", "MKT-C
 const repeatedEvidenceRules = new Set([...baseClaimRules, "MKT-INTENDED-USE-001", "POSITION-CONFLICT-001"]);
 
 function evidenceScopedRule(ruleKey: string) {
-  return repeatedEvidenceRules.has(ruleKey) || ruleKey.startsWith("SEM-");
+  return repeatedEvidenceRules.has(ruleKey) || /^(?:SEM-|VISUAL-|DOCUMENT-)/.test(ruleKey);
 }
 
 function normalizedEvidence(finding: CandidateFinding) {
-  return finding.detectedText?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+  return finding.assetHash ? `asset:${finding.assetHash}` : finding.detectedText?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
 }
 
 function riskTopic(text: string) {
@@ -39,7 +39,7 @@ export function materialRiskTheme(finding: CandidateFinding) {
 }
 
 function pageGroupable(finding: CandidateFinding) {
-  return finding.scoreComponent === "MARKETING_RISK" || /^(?:MKT-|RSRCH-ADMIN|RX-REVIEW|POSITION-CONFLICT|SEM-(?:PAGE|MERCHANT)-(?:INTENDED_USE|HUMAN_THERAPEUTIC_OUTCOME|MEDICAL_CLAIM|DOSING_ADMINISTRATION|CONTRADICTION|DECEPTIVE_INCONSISTENT_POSITIONING))/.test(finding.ruleKey);
+  return finding.scoreComponent === "MARKETING_RISK" || /^(?:MKT-|RSRCH-ADMIN|RX-REVIEW|POSITION-CONFLICT|VISUAL-|DOCUMENT-|SEM-(?:PAGE|MERCHANT)-(?:INTENDED_USE|HUMAN_THERAPEUTIC_OUTCOME|MEDICAL_CLAIM|DOSING_ADMINISTRATION|CONTRADICTION|DECEPTIVE_INCONSISTENT_POSITIONING))/.test(finding.ruleKey);
 }
 
 function preferredFinding(left: CandidateFinding, right: CandidateFinding) {
@@ -56,8 +56,8 @@ function groupPageFindings(left: CandidateFinding, right: CandidateFinding, them
   const primaryKey = evidenceKey({ url: preferred.url, text: preferred.detectedText ?? preferred.title });
   const secondaryKey = preferred.secondaryEvidence ? evidenceKey(preferred.secondaryEvidence) : "";
   const evidence = [
-    ...(left.detectedText ? [{ url: left.url, text: left.detectedText, role: "related-theme-evidence", evidenceType: left.evidenceType }] : []),
-    ...(right.detectedText ? [{ url: right.url, text: right.detectedText, role: "related-theme-evidence", evidenceType: right.evidenceType }] : []),
+    ...(left.detectedText ? [{ url: left.url, text: left.detectedText, role: "related-theme-evidence", evidenceType: left.evidenceType, sourceKind: left.sourceKind, assetStorageKey: left.assetStorageKey, assetHash: left.assetHash, domSelector: left.domSelector, classification: left.evidenceClassification }] : []),
+    ...(right.detectedText ? [{ url: right.url, text: right.detectedText, role: "related-theme-evidence", evidenceType: right.evidenceType, sourceKind: right.sourceKind, assetStorageKey: right.assetStorageKey, assetHash: right.assetHash, domSelector: right.domSelector, classification: right.evidenceClassification }] : []),
     ...(left.secondaryEvidence ? [{ ...left.secondaryEvidence, evidenceType: undefined }] : []),
     ...(right.secondaryEvidence ? [{ ...right.secondaryEvidence, evidenceType: undefined }] : []),
     ...(left.supportingEvidence ?? []),

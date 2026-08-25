@@ -318,6 +318,7 @@ model Scan {
   startedAt        DateTime?
   completedAt      DateTime?
   error            String?
+  intelligence     Json          @default("{}")
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
   auditLogs        AuditLog[]

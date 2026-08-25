@@ -32,14 +32,19 @@ Heavy scan-browser work is isolated in persistent workers. The web service uses 
 - email/password sign-in with salted scrypt hashes and revocable database sessions;
 - full, incremental, quick and targeted scan records;
 - real Playwright Chromium rendering;
+- bounded safe expansion of public menus, tabs, details, FAQs and product-variation controls;
 - homepage, robots, sitemap-index, sitemap and internal-link discovery;
 - URL normalization, DNS validation, redirect limits and SSRF protection;
 - normalized extraction of structured data, forms, links, controls and technology signals;
+- DOM-located H1â€“H6, true navigation, footer, badges, link CTAs, stock, descriptions, variants, images and embedded documents;
 - classification using URL and content evidence together;
 - product and policy entities with versioned snapshots;
 - contextual claim analysis with explicit negation handling and hash-based cache;
 - deterministic, contextual and contradiction signals;
 - immutable evidence records and selective high-severity screenshots;
+- prominence-ranked multimodal review of full-page, viewport, banner, product, editorial and checkout visuals;
+- bounded public-PDF extraction and strict document observations;
+- a persisted evidence graph grouping adverse, contradictory and mitigating records by unique material risk theme;
 - normalized content hashes, historical snapshots and sentence-level smart diff;
 - finding review, careful resolution and audit history;
 - versioned ruleset schema and seeded baseline rule;
@@ -89,14 +94,24 @@ docker compose --profile workers up -d --build
 | `APP_URL` | Canonical web origin used by mutation origin checks |
 | `AI_PROVIDER` | `deterministic` or `openai-compatible`; the latter enables both page and merchant LLM passes |
 | `AI_MODEL` | Provider model identifier recorded with semantic evidence |
+| `AI_VISION_MODEL` | Multimodal model used for rendered-page and image review |
+| `AI_DOCUMENT_MODEL` | Structured semantic model used after PDF text extraction |
 | `AI_API_KEY` | Required server-only credential when the remote semantic layer is enabled |
 | `AI_BASE_URL` | OpenAI-compatible API base URL; requests use `/chat/completions` with strict JSON Schema output |
 | `AI_TIMEOUT_MS` | Per semantic request timeout |
 | `AI_MAX_PAGE_CHARS` | Maximum retained evidence characters sent per page |
 | `AI_MAX_OUTPUT_TOKENS` | Maximum structured output tokens per semantic request |
 | `AI_PAGE_CONCURRENCY` | Concurrent page-level semantic requests, capped at eight |
+| `AI_VISUAL_MAX_PAGES` | Maximum prominence-ranked pages sent to visual review per scan |
+| `AI_VISUAL_MAX_ASSETS_PER_PAGE` | Maximum deduplicated visual assets reviewed per selected page |
+| `AI_VISUAL_MAX_IMAGE_BYTES` | Maximum encoded source bytes accepted for one visual asset |
+| `AI_DOCUMENT_MAX_FILES` | Maximum public PDFs extracted per scan |
+| `AI_DOCUMENT_MAX_PAGES` | Maximum pages extracted from each public PDF |
+| `AI_DOCUMENT_MAX_CHARS` | Maximum document characters sent to semantic review |
 | `AI_INPUT_COST_PER_MILLION` | Optional input-token price used for scan cost estimates |
 | `AI_OUTPUT_COST_PER_MILLION` | Optional output-token price used for scan cost estimates |
+| `AI_VISION_INPUT_COST_PER_MILLION` / `AI_VISION_OUTPUT_COST_PER_MILLION` | Optional vision-model rates; generic rates are the fallback |
+| `AI_DOCUMENT_INPUT_COST_PER_MILLION` / `AI_DOCUMENT_OUTPUT_COST_PER_MILLION` | Optional document-model rates; generic rates are the fallback |
 | `SCREENSHOT_STORAGE` | Development evidence-storage directory |
 | `CRAWLER_MAX_PAGES` | Hard per-scan page limit |
 | `CRAWLER_MAX_DEPTH` | Internal-link discovery depth |
@@ -118,8 +133,8 @@ Never expose server variables through `NEXT_PUBLIC_*`.
 2. A `QUEUED` scan and persistent progress record are created.
 3. BullMQ sends the scan to the crawler worker.
 4. The crawler validates DNS and every navigation target, discovers public URLs, renders pages and stores normalized snapshots.
-5. The analysis worker extracts products and policies, evaluates inexpensive rules, sends only candidate statements to contextual analysis, reconciles findings and calculates the score.
-6. High and critical findings are sent to the evidence worker for a selective screenshot.
+5. The analysis worker normalizes products and policies, evaluates deterministic rules, runs bounded page, visual and document observations, and performs one cross-source merchant pass.
+6. Validated evidence is consolidated into unique themes, persisted with source/model provenance and scored by deterministic code. High and critical findings also receive a reproduction screenshot.
 7. The frontend polls a lightweight endpoint and renders only persisted job state.
 
 Jobs use exponential retry. Exhausted jobs enter a dead-letter queue and mark their scan failed. Worker liveness is stored in `WorkerHeartbeat`.
@@ -152,7 +167,7 @@ Deterministic checks run first. A keyword can nominate a statement for contextua
 
 ## Semantic analyzer
 
-Sentinel is hybrid. The deterministic rule engine runs first and remains active for every scan. When `AI_PROVIDER=openai-compatible`, a second engine sends bounded, typed page evidence to an LLM using temperature zero and strict JSON Schema output. Page results classify intended use, human outcomes, research positioning, contradictions, disclaimers, pharmacy/prescription context, dosing, medical claims, qualification and checkout controls, policy coverage, and inconsistent positioning.
+Sentinel is hybrid and multimodal. The deterministic rule engine runs first and remains active for every scan. When `AI_PROVIDER=openai-compatible`, bounded typed page evidence, prominence-ranked rendered visual evidence and extracted public-document text receive separate strict JSON Schema observations at temperature zero. A final merchant pass compares text, checkout, visual and document observations across the merchant.
 
 LLM output is parsed with strict Zod schemas and rejected unless each exact evidence quote, URL and evidence type can be matched to the retained page input. Negations and controls remain observations but do not become risk findings. Validated risk observations are converted to `NEEDS_REVIEW` candidates; the LLM never receives or returns an approval or certification decision.
 
@@ -160,7 +175,7 @@ A second merchant-level pass compares validated page observations and determinis
 
 `SemanticAnalyzer` continues to provide local claim-level context. `WebsiteSemanticAnalyzer` provides the structured remote page and merchant passes. Both caches use content hash, prompt version, provider and model. Cache rows store structured results and request usage only—never hidden reasoning traces or credentials.
 
-Cost estimates are written to `scan.completed` audit metadata when per-million-token rates are configured. The estimate is `input tokens × AI_INPUT_COST_PER_MILLION / 1,000,000 + output tokens × AI_OUTPUT_COST_PER_MILLION / 1,000,000`; cache hits have zero incremental estimated cost.
+Content, screenshot and document hashes suppress duplicated model work. Page importance limits visual review; document and page inputs are bounded; results are cached by content, prompt, provider and model. Combined semantic, visual and document cost estimates are written to scan intelligence and completion audit metadata when per-million-token rates are configured. Cache hits have zero incremental estimated cost.
 
 ## Finding lifecycle
 
@@ -168,7 +183,7 @@ Findings are fingerprinted by rule and evidence-bearing text, with site-wide ide
 
 ## Score engine
 
-`orbit-health-v7` starts each component at 100 and applies disclosed deductions by unique material risk theme. Related evidence on one page is grouped into one finding, and additional pages add at most two 25% increments, capping a repeated theme at 150% of its base deduction. Only semantic observations that pass schema, exact-evidence, contextual, confidence and human-review gates enter the score pipeline. Deterministic findings remain authoritative when the same evidence is observed by both layers. The total is a fixed weighted sum. Stored scores include formula version, weights, component results and each deduction. ORBIT Health is an internal decision-support measure, not a legal conclusion or external approval metric.
+`orbit-health-v8` applies deterministic deductions by unique material risk theme. Severity is adjusted by coded prominence, validated confidence and bounded mitigating controls. Additional pages add at most two 25% increments, capping repetition at 150%. Related text, visual and document evidence on one page cannot multiply score impact. Coverage is stored separately, and incomplete semantic, visual, document or checkout inspection lowers assessment certainty rather than silently passing. LLMs never calculate or decide the score.
 
 ## Security model
 

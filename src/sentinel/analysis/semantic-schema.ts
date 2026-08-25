@@ -40,6 +40,15 @@ export const semanticEvidenceTypes = [
   "CHECKOUT",
   "STRUCTURED_DATA",
   "VISIBLE_TEXT",
+  "FOOTER",
+  "LINK_CTA",
+  "BADGE",
+  "STOCK",
+  "IMAGE_ALT",
+  "IMAGE_FILENAME",
+  "PRODUCT_VARIATION",
+  "VISUAL",
+  "DOCUMENT",
 ] as const;
 
 export type SemanticCategory = (typeof semanticCategories)[number];
@@ -59,6 +68,7 @@ export const semanticObservationSchema = z.object({
   severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]),
   confidence: z.number().min(0).max(1),
   contextualExplanation: z.string().trim().min(1).max(2_000),
+  evidenceClassification: z.enum(["ADVERSE", "NEUTRAL", "MITIGATING", "CONTRADICTORY", "INFORMATIONAL"]),
   humanReviewRequired: z.boolean(),
 }).strict();
 

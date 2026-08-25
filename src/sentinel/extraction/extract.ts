@@ -10,6 +10,40 @@ function toAbsolute(value: string | undefined, baseUrl: string): string {
   try { return new URL(value, baseUrl).toString(); } catch { return ""; }
 }
 
+function selectorFor($: cheerio.CheerioAPI, element: Parameters<cheerio.CheerioAPI>[0]) {
+  const node = $(element);
+  const id = node.attr("id");
+  if (id) return `#${id.replace(/[^a-zA-Z0-9_-]/g, "\\$&")}`;
+  const tag = typeof element === "object" && element && "tagName" in element ? String(element.tagName).toLowerCase() : "*";
+  const classes = (node.attr("class") ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((value) => `.${value.replace(/[^a-zA-Z0-9_-]/g, "\\$&")}`).join("");
+  const parent = node.parent();
+  const siblings = parent.children(tag);
+  const position = siblings.length > 1 ? `:nth-of-type(${siblings.index(node) + 1})` : "";
+  return `${tag}${classes}${position}`;
+}
+
+function queryParams(url: string) {
+  const params: Record<string, string[]> = {};
+  try { for (const [key, value] of new URL(url).searchParams) (params[key] ??= []).push(value); } catch { /* invalid URL remains empty */ }
+  return params;
+}
+
+function firstStructuredString(value: unknown, keys: string[]): string | undefined {
+  if (Array.isArray(value)) return value.map((item) => firstStructuredString(item, keys)).find(Boolean);
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of keys) if (typeof record[key] === "string" && String(record[key]).trim()) return String(record[key]);
+  return Object.values(record).map((item) => firstStructuredString(item, keys)).find(Boolean);
+}
+
+function structuredProducts(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.flatMap(structuredProducts);
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const type = Array.isArray(record["@type"]) ? record["@type"].join(" ") : String(record["@type"] ?? "");
+  return [...(/\bproduct\b/i.test(type) ? [record] : []), ...Object.values(record).flatMap(structuredProducts)];
+}
+
 function structuredCommercialText(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(structuredCommercialText);
   if (!value || typeof value !== "object") return [];
@@ -21,11 +55,13 @@ function structuredCommercialText(value: unknown): string[] {
   return [...own, ...Object.values(record).flatMap(structuredCommercialText)];
 }
 
-export function extractNormalizedContent(html: string, url: string): NormalizedContent {
+export function extractNormalizedContent(html: string, url: string, options: { originalUrl?: string; renderedVisibleText?: string; interactiveStates?: Array<{ kind: string; label: string; selector: string }> } = {}): NormalizedContent {
   const $ = cheerio.load(html);
   const linkRecords = $("a[href]").map((_, element) => ({ href: toAbsolute($(element).attr("href"), url), text: normalizeText($(element).text()), rel: $(element).attr("rel") })).get().filter((item) => item.href);
   const structuredData = $("script[type='application/ld+json']").map((_, element) => { try { return JSON.parse($(element).text()); } catch { return null; } }).get().filter(Boolean);
-  const metadata = { title: normalizeText($("title").first().text()), description: normalizeText($("meta[name='description']").attr("content") ?? ""), openGraphTitle: normalizeText($("meta[property='og:title']").attr("content") ?? ""), openGraphDescription: normalizeText($("meta[property='og:description']").attr("content") ?? "") };
+  const openGraph: Record<string, string> = {};
+  $("meta[property^='og:']").each((_, element) => { const key = normalizeText($(element).attr("property") ?? ""); const value = normalizeText($(element).attr("content") ?? ""); if (key && value) openGraph[key] = value; });
+  const metadata = { title: normalizeText($("title").first().text()), description: normalizeText($("meta[name='description']").attr("content") ?? ""), openGraphTitle: normalizeText(openGraph["og:title"] ?? ""), openGraphDescription: normalizeText(openGraph["og:description"] ?? "") };
   const technologies: string[] = [];
   const source = html.toLowerCase();
   if (source.includes("cdn.shopify.com") || source.includes("shopify-section")) technologies.push("Shopify");
@@ -38,7 +74,8 @@ export function extractNormalizedContent(html: string, url: string): NormalizedC
   const title = normalizeText($("title").first().text() || $("h1").first().text());
   const primaryRoot = $("main,article,[role='main']").first();
   const contentRoot = primaryRoot.length ? primaryRoot : $("body");
-  const headings = stableUnique(contentRoot.find("h1,h2,h3").map((_, element) => $(element).text()).get());
+  const headingRecords = contentRoot.find("h1,h2,h3,h4,h5,h6").map((_, element) => ({ text: normalizeText($(element).text()), level: Number(element.tagName.slice(1)), selector: selectorFor($, element) })).get().filter((item) => item.text);
+  const headings = stableUnique(headingRecords.map((item) => item.text));
   const paragraphs = stableUnique(contentRoot.find("p").map((_, element) => $(element).text()).get());
   const buttons = stableUnique(contentRoot.find("button,[role='button'],input[type='submit']").map((_, element) => $(element).text() || $(element).attr("value") || "").get());
   const forms = contentRoot.find("form").map((_, element) => ({
@@ -53,9 +90,33 @@ export function extractNormalizedContent(html: string, url: string): NormalizedC
   })).get();
   const images = contentRoot.find("img[src]").map((_, element) => { const src = toAbsolute($(element).attr("src"), url); let filename = ""; try { filename = decodeURIComponent(new URL(src).pathname.split("/").pop() ?? ""); } catch { /* retain empty filename */ } return { src, filename, alt: normalizeText($(element).attr("alt") ?? ""), title: normalizeText($(element).attr("title") ?? "") }; }).get().filter((image) => image.src);
   const breadcrumbs = stableUnique(contentRoot.find("nav[aria-label*='breadcrumb' i] a,[class*='breadcrumb' i] a,[itemtype*='BreadcrumbList'] [itemprop='name']").map((_, element) => $(element).text()).get());
-  const certificateLinks = stableUnique(linkRecords.filter((link) => /(?:coa|certificate|lab[-_ ]?report|testing[-_ ]?document)/i.test(`${link.href} ${link.text}`)).map((link) => link.href));
-  const visibleBlocks = contentRoot.find("h1,h2,h3,h4,p,li,blockquote,label,button").map((_, element) => normalizeText($(element).text())).get().filter(Boolean);
-  const visibleText = normalizeText(visibleBlocks.join(" ") || contentRoot.text());
+  const documentPattern = /(?:\.pdf(?:$|[?#])|coa|certificate|lab[-_ ]?report|testing[-_ ]?document|supporting[-_ ]?document)/i;
+  const embeddedDocuments = $("a[href],iframe[src],embed[src],object[data]").map((_, element) => {
+    const raw = $(element).attr("href") || $(element).attr("src") || $(element).attr("data");
+    const documentUrl = toAbsolute(raw, url);
+    const text = normalizeText($(element).text() || $(element).attr("title") || $(element).attr("aria-label") || "");
+    const combined = `${documentUrl} ${text}`;
+    if (!documentPattern.test(combined)) return null;
+    return { url: documentUrl, text, selector: selectorFor($, element), documentType: /\.pdf(?:$|[?#])/i.test(documentUrl) ? "PDF" : /coa/i.test(combined) ? "COA" : /certificate/i.test(combined) ? "CERTIFICATE" : "DOCUMENT" };
+  }).get().filter((item): item is { url: string; text: string; selector: string; documentType: string } => Boolean(item?.url));
+  const certificateLinks = stableUnique(embeddedDocuments.filter((item) => /COA|CERTIFICATE|LAB|PDF/.test(item.documentType) || /(?:coa|certificate|lab[-_ ]?report)/i.test(`${item.url} ${item.text}`)).map((item) => item.url));
+  const visibleBlocks = contentRoot.find("h1,h2,h3,h4,h5,h6,p,li,blockquote,label,button,figcaption,dt,dd").map((_, element) => normalizeText($(element).text())).get().filter(Boolean);
+  const visibleText = normalizeText(options.renderedVisibleText || visibleBlocks.join(" ") || contentRoot.text());
+  const navigation = $("nav a[href],header a[href],[role='navigation'] a[href]").map((_, element) => ({ text: normalizeText($(element).text() || $(element).attr("aria-label") || ""), selector: selectorFor($, element), href: toAbsolute($(element).attr("href"), url) })).get().filter((item) => item.text);
+  const footer = $("footer h1,footer h2,footer h3,footer h4,footer h5,footer h6,footer p,footer li,footer a,footer button,[role='contentinfo'] p,[role='contentinfo'] a").map((_, element) => ({ text: normalizeText($(element).text()), selector: selectorFor($, element), href: $(element).is("a") ? toAbsolute($(element).attr("href"), url) : undefined })).get().filter((item) => item.text);
+  const linkCtas = $("a[href]").map((_, element) => {
+    const text = normalizeText($(element).text() || $(element).attr("aria-label") || "");
+    const role = `${$(element).attr("class") ?? ""} ${$(element).attr("role") ?? ""}`;
+    return /\b(?:buy|shop|order|add to cart|learn more|view|browse|get started|continue|checkout|select|choose|download)\b/i.test(text) || /button|btn|cta/i.test(role) ? { text, selector: selectorFor($, element), href: toAbsolute($(element).attr("href"), url) } : null;
+  }).get().filter((item): item is { text: string; selector: string; href: string } => Boolean(item?.text));
+  const badges = $("[class*='badge' i],[class*='pill' i],[class*='tag' i],[data-badge],[aria-label*='badge' i]").map((_, element) => ({ text: normalizeText($(element).text() || $(element).attr("aria-label") || ""), selector: selectorFor($, element) })).get().filter((item) => item.text);
+  const stockText = contentRoot.find("[class*='stock' i],[class*='availability' i],[itemprop='availability']").map((_, element) => ({ text: normalizeText($(element).text() || $(element).attr("content") || ""), selector: selectorFor($, element) })).get().filter((item) => item.text);
+  const checkoutText = contentRoot.find("[class*='checkout' i],[class*='payment' i],[id*='checkout' i],[id*='payment' i]").map((_, element) => ({ text: normalizeText($(element).text()), selector: selectorFor($, element) })).get().filter((item) => item.text && item.text.length <= 2_000);
+  const domEvidence = contentRoot.find("h1,h2,h3,h4,h5,h6,p,li,blockquote,label,button,[role='button'],a[href],img[alt],figcaption,dt,dd").map((_, element) => {
+    const text = normalizeText(element.tagName === "img" ? $(element).attr("alt") ?? "" : $(element).text() || $(element).attr("aria-label") || "");
+    const evidenceType = /^h[1-6]$/.test(element.tagName) ? "HEADING" : element.tagName === "a" ? "LINK" : element.tagName === "img" ? "IMAGE_ALT" : element.tagName === "button" || $(element).attr("role") === "button" ? "CTA" : "VISIBLE_TEXT";
+    return { text, selector: selectorFor($, element), evidenceType };
+  }).get().filter((item) => item.text);
   const controlText = visibleText.toLowerCase();
   const controls = {
     ageGate: /(?:are you|confirm).{0,30}(?:18|21|legal age)/i.test(controlText),
@@ -86,9 +147,15 @@ export function extractNormalizedContent(html: string, url: string): NormalizedC
   ];
   const claims = stableUnique(commercialEvidence).filter((text) => claimTerms.test(text));
   const disclaimers = sentences.filter((sentence) => disclaimerTerms.test(sentence));
-  const productSchema = structuredData.flatMap((entry) => Array.isArray(entry) ? entry : [entry]).find((entry) => typeof entry === "object" && entry && String((entry as Record<string, unknown>)["@type"]).toLowerCase().includes("product")) as Record<string, unknown> | undefined;
+  const productSchema = structuredData.flatMap(structuredProducts)[0];
   const productName = typeof productSchema?.name === "string" ? productSchema.name : $("h1").first().text();
-  const sku = typeof productSchema?.sku === "string" ? productSchema.sku : undefined;
-  const variantValues = $("select[name*='variant'] option,select[name*='option'] option,[data-variant-value]").map((_, el) => $(el).attr("data-variant-value") || $(el).text()).get();
-  return normalizedContentSchema.parse({ title, headings, paragraphs, visibleText, buttons, links: linkRecords, forms, structuredData, prices, productName: normalizeText(productName ?? "") || undefined, sku, variants: stableUnique(variantValues), claims, disclaimers, technologies, images, breadcrumbs, certificateLinks, metadata, controls });
+  const sku = typeof productSchema?.sku === "string" ? productSchema.sku : normalizeText($("[itemprop='sku'],[data-sku]").first().attr("content") || $("[itemprop='sku'],[data-sku]").first().attr("data-sku") || $("[itemprop='sku'],[data-sku]").first().text()) || undefined;
+  const productVariations = $("select[name*='variant'] option,select[name*='option'] option,[data-variant-value]").map((_, element) => ({ name: normalizeText($(element).attr("data-variant-value") || $(element).text()), value: $(element).attr("value") || undefined, sku: $(element).attr("data-sku") || undefined, price: $(element).attr("data-price") || undefined, availability: $(element).attr("data-availability") || undefined })).get().filter((item) => item.name);
+  const schemaCategory = firstStructuredString(productSchema, ["category"]);
+  const productCategories = stableUnique([...(schemaCategory ? schemaCategory.split(/[,>|]/) : []), ...linkRecords.filter((link) => /\/(?:collections?|categor(?:y|ies))\//i.test(link.href)).map((link) => link.text), ...breadcrumbs.slice(0, -1)]);
+  const productTags = stableUnique($("a[rel~='tag'],[class*='product-tag' i],[data-product-tag]").map((_, element) => normalizeText($(element).text() || $(element).attr("data-product-tag") || "")).get());
+  const shortDescription = normalizeText($(".woocommerce-product-details__short-description,[class*='short-description' i],[data-short-description]").first().text() || (typeof productSchema?.description === "string" ? productSchema.description : "")) || undefined;
+  const fullDescription = normalizeText($(".woocommerce-Tabs-panel--description,[class*='product-description' i],[data-product-description],[itemprop='description']").first().text() || (paragraphs.length ? paragraphs.join(" ") : "")) || undefined;
+  const finalLocation = new URL(url);
+  return normalizedContentSchema.parse({ title, headings, paragraphs, visibleText, buttons, links: linkRecords, forms, structuredData, prices, productName: normalizeText(productName ?? "") || undefined, sku, variants: stableUnique(productVariations.map((item) => item.name)), claims, disclaimers, technologies, images, breadcrumbs, certificateLinks, metadata, controls, location: { originalUrl: options.originalUrl ?? url, finalUrl: url, pathname: finalLocation.pathname, queryParams: queryParams(url) }, headingRecords, navigation, footer, linkCtas, badges, stockText, checkoutText, embeddedDocuments, descriptions: { short: shortDescription, full: fullDescription }, productCategories, productTags, productVariations, openGraph, interactiveStates: options.interactiveStates ?? [], domEvidence });
 }

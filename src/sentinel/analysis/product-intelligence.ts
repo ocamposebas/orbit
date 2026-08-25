@@ -48,12 +48,18 @@ export function buildProductIntelligence(content: NormalizedContent, url: string
     suggestedSku: [displayCatalogName, normalizedConcentration].filter(Boolean).join("-"),
     suggestedSlug: `/product/${displayCatalogName.toLowerCase()}`,
     slug: new URL(url).pathname,
-    description: content.paragraphs.join(" "),
-    variants: content.variants,
+    shortDescription: content.descriptions.short,
+    fullDescription: content.descriptions.full ?? content.paragraphs.join(" "),
+    description: content.descriptions.full ?? content.paragraphs.join(" "),
+    variants: content.productVariations.length ? content.productVariations : content.variants.map((name) => ({ name })),
+    categories: content.productCategories,
+    tags: content.productTags,
     concentration,
     researchUseText: content.disclaimers,
     claims: content.claims,
     images: content.images,
+    ctas: [...content.buttons, ...content.linkCtas.map((cta) => cta.text)],
+    stockText: content.stockText.map((item) => item.text),
     certificateUrls: content.certificateLinks,
     metadata: content.metadata,
     structuredData: content.structuredData,
@@ -62,4 +68,3 @@ export function buildProductIntelligence(content: NormalizedContent, url: string
     canonicalIdentityRetained: true,
   };
 }
-
