@@ -28,6 +28,8 @@ const LUNA_MAX_RATE_LIMIT_DELAY_MS = 60_000;
 
 export type ResponsesOutput = {
   id?: string;
+  status?: "completed" | "failed" | "in_progress" | "cancelled" | "queued" | "incomplete";
+  incomplete_details?: { reason?: string } | null;
   message?: string;
   output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>;
   output_text?: string;
@@ -42,6 +44,23 @@ type LunaResponseMetadata = {
   requestId: string | null;
   elapsedMs: number;
 };
+
+export type LunaStructuredOutputFailureReason = "INCOMPLETE_MAX_OUTPUT_TOKENS" | "INCOMPLETE_RESPONSE" | "MISSING_STRUCTURED_OUTPUT" | "MALFORMED_STRUCTURED_OUTPUT" | "SCHEMA_INVALID";
+
+export class LunaStructuredOutputError extends Error {
+  constructor(
+    message: string,
+    readonly reason: LunaStructuredOutputFailureReason,
+    readonly phase: Extract<LunaFailurePhase, "response_parsing" | "json_schema_validation">,
+    readonly responseStatus: ResponsesOutput["status"],
+    readonly incompleteReason: string | null,
+    readonly outputTokens: number,
+    readonly outputCharacters: number,
+  ) {
+    super(message);
+    this.name = "LunaStructuredOutputError";
+  }
+}
 
 class LunaApiRequestError extends Error {
   constructor(
@@ -293,13 +312,13 @@ export class LunaMerchantReviewer {
 
   constructor(private readonly config: LunaReviewerConfig, private readonly request: typeof fetch = fetch) {}
 
-  private async call(input: { promptVersion: string; systemPrompt: string; payload: unknown; safetyIdentifier: string; evidenceRecordCount: number; imageRecords?: EvidenceManifestRecord[] }) {
+  private async call(input: { promptVersion: string; systemPrompt: string; payload: unknown; safetyIdentifier: string; evidenceRecordCount: number; imageRecords?: EvidenceManifestRecord[]; finalAggregation?: boolean; retryCount?: number; retryReason?: LunaStructuredOutputFailureReason; maxOutputTokens?: number }) {
     const inputManifestHash = contentHash({ promptVersion: input.promptVersion, payload: input.payload });
     const cached = await getDatabase().reviewRun.findFirst({ where: { inputManifestHash, promptVersion: input.promptVersion, provider: this.provider, model: this.config.model, status: "COMPLETED" }, orderBy: { completedAt: "desc" } });
     if (cached) return { review: lunaMerchantReviewSchema.parse(cached.output), runId: cached.id, usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cached: true }, responseMetadata: undefined };
 
     const scanId = typeof input.payload === "object" && input.payload && "scanId" in input.payload ? String(input.payload.scanId) : "unknown";
-    const run = await getDatabase().reviewRun.create({ data: { scanId, role: "PRIMARY", provider: this.provider, model: this.config.model, promptVersion: input.promptVersion, inputManifestHash, configuration: { reasoningEffort: this.config.reasoningEffort, endpoint: "responses", store: false } } });
+    const run = await getDatabase().reviewRun.create({ data: { scanId, role: "PRIMARY", provider: this.provider, model: this.config.model, promptVersion: input.promptVersion, inputManifestHash, configuration: { reasoningEffort: this.config.reasoningEffort, endpoint: "responses", store: false, finalAggregation: input.finalAggregation ?? false, retryCount: input.retryCount ?? 0, retryReason: input.retryReason ?? null } } });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
     const startedAt = Date.now();
@@ -341,6 +360,7 @@ export class LunaMerchantReviewer {
         await validator.close();
       }
       const payloadText = JSON.stringify(input.payload);
+      const maxOutputTokens = input.maxOutputTokens ?? this.config.maxOutputTokens;
       const send = async (images: PreparedLunaImage[]) => {
         phase = "request";
         raw = undefined;
@@ -350,7 +370,7 @@ export class LunaMerchantReviewer {
           evidenceRecordCount: input.evidenceRecordCount,
           imageCount: images.length,
           approximateInputCharacters: input.systemPrompt.length + payloadText.length,
-          maxOutputTokens: this.config.maxOutputTokens,
+          maxOutputTokens,
           reasoningEffort: this.config.reasoningEffort,
           timeoutMs: this.config.timeoutMs,
         }), "Sending primary Luna Responses API request");
@@ -364,7 +384,7 @@ export class LunaMerchantReviewer {
             store: false,
             safety_identifier: input.safetyIdentifier,
             reasoning: { effort: this.config.reasoningEffort, context: "current_turn" },
-            max_output_tokens: this.config.maxOutputTokens,
+            max_output_tokens: maxOutputTokens,
             instructions: input.systemPrompt,
             input: [{ role: "user", content: [{ type: "input_text", text: payloadText }, ...images.flatMap((image) => image.content)] }],
             text: { format: { type: "json_schema", name: "orbit_luna_merchant_review", strict: true, schema: lunaMerchantReviewJsonSchema } },
@@ -376,7 +396,12 @@ export class LunaMerchantReviewer {
           responseBodyPromise = undefined;
         }
         phase = "response_parsing";
-        raw = await response.json() as ResponsesOutput;
+        try {
+          raw = await response.json() as ResponsesOutput;
+        } catch (error) {
+          if (input.finalAggregation && response.ok) throw new LunaStructuredOutputError(error instanceof Error ? error.message : "Luna Responses API body was not valid JSON.", "MALFORMED_STRUCTURED_OUTPUT", "response_parsing", undefined, null, 0, 0);
+          throw error;
+        }
         if (!response.ok) {
           phase = "request";
           const message = raw.error?.message || `Luna Responses API returned HTTP ${response.status}.`;
@@ -407,11 +432,21 @@ export class LunaMerchantReviewer {
         await send(images);
       }
       if (!raw || !response) throw new Error("Luna Responses API returned no response.");
-      const text = responseText(raw);
-      if (!text) throw new Error("Luna Responses API returned no structured output text.");
-      const parsed = JSON.parse(text);
-      phase = "json_schema_validation";
-      const review = lunaMerchantReviewSchema.parse(parsed);
+      let parsedOutput: ReturnType<typeof parseLunaStructuredOutput>;
+      try {
+        parsedOutput = parseLunaStructuredOutput(raw);
+        if (input.finalAggregation) logger.info(lunaStructuredResponseLogFields({ response: raw, requestId: requestIdFrom(response), outputCharacters: parsedOutput.outputText.length, validationResult: "VALID", retryReason: input.retryReason, retryCount: input.retryCount ?? 0 }), "Luna final aggregation structured output validated");
+      } catch (error) {
+        if (error instanceof LunaStructuredOutputError) {
+          phase = error.phase;
+          if (input.finalAggregation) {
+            const validationResult = error.reason === "INCOMPLETE_MAX_OUTPUT_TOKENS" || error.reason === "INCOMPLETE_RESPONSE" ? "NOT_ATTEMPTED_INCOMPLETE" : error.reason === "SCHEMA_INVALID" ? "SCHEMA_INVALID" : error.reason === "MISSING_STRUCTURED_OUTPUT" ? "MISSING_OUTPUT" : "MALFORMED_JSON";
+            logger.warn(lunaStructuredResponseLogFields({ response: raw, requestId: requestIdFrom(response), outputCharacters: error.outputCharacters, validationResult, retryReason: input.retryReason ?? error.reason, retryCount: input.retryCount ?? 0 }), "Luna final aggregation structured output was not usable");
+          }
+        }
+        throw error;
+      }
+      const { review, outputText: text } = parsedOutput;
       apiReviewCompleted = true;
       const usage = { inputTokens: raw.usage?.input_tokens ?? Math.ceil(JSON.stringify(input.payload).length / 4), outputTokens: raw.usage?.output_tokens ?? Math.ceil(text.length / 4), cachedTokens: raw.usage?.input_tokens_details?.cached_tokens ?? 0, cached: false };
       await getDatabase().reviewRun.update({ where: { id: run.id }, data: { status: "COMPLETED", output: review as unknown as Prisma.InputJsonValue, usage, completedAt: new Date() } });
@@ -508,7 +543,17 @@ export class LunaMerchantReviewer {
     if (shardReviews.length === 1) return { review: shardReviews[0], runId: runIds[0], runIds, usage };
 
     const synthesisPayload = { scanId: input.scanId, merchant: { name: input.merchantName, description: input.merchantDescription }, completeInventory: inventory(records), shardReviews };
-    const synthesis = await this.call({ promptVersion: LUNA_REVIEW_PROMPT_VERSION, systemPrompt: holisticSystemPrompt, payload: synthesisPayload, safetyIdentifier, evidenceRecordCount: records.length });
+    const synthesisInput = { promptVersion: LUNA_REVIEW_PROMPT_VERSION, systemPrompt: holisticSystemPrompt, payload: synthesisPayload, safetyIdentifier, evidenceRecordCount: records.length, finalAggregation: true } as const;
+    let synthesis: Awaited<ReturnType<LunaMerchantReviewer["call"]>>;
+    try {
+      synthesis = await this.call(synthesisInput);
+    } catch (error) {
+      if (!(error instanceof LunaStructuredOutputError)) throw error;
+      const retryCount = 1;
+      const maxOutputTokens = finalRetryOutputBudget(this.config.maxOutputTokens, error);
+      logger.warn({ retryReason: error.reason, retryCount, previousResponseStatus: error.responseStatus ?? null, incompleteReason: error.incompleteReason, previousOutputTokens: error.outputTokens, previousOutputCharacters: error.outputCharacters, maxOutputTokens }, "Retrying Luna final aggregation only with completed shard outputs");
+      synthesis = await this.call({ ...synthesisInput, retryCount, retryReason: error.reason, maxOutputTokens });
+    }
     usage.calls++; usage.inputTokens += synthesis.usage.inputTokens; usage.outputTokens += synthesis.usage.outputTokens; usage.cachedTokens += synthesis.usage.cachedTokens; usage.cacheHits += Number(synthesis.usage.cached);
     runIds.push(synthesis.runId);
     return { review: this.validateEvidence(input.manifest, synthesis.review, synthesis.responseMetadata), runId: synthesis.runId, runIds, usage };
@@ -523,6 +568,58 @@ export function configuredLunaReviewer() {
     return undefined;
   }
   return new LunaMerchantReviewer({ apiKey: env.AI_API_KEY, baseUrl: env.AI_BASE_URL, model: env.AI_REVIEW_MODEL, reasoningEffort: env.AI_REVIEW_REASONING_EFFORT, timeoutMs: env.AI_TIMEOUT_MS, maxOutputTokens: env.AI_MAX_OUTPUT_TOKENS, maxInputChars: env.AI_REVIEW_MAX_INPUT_CHARS, maxRecords: env.AI_REVIEW_MAX_RECORDS, maxImages: env.AI_REVIEW_MAX_IMAGES, maxImageBytes: env.AI_VISUAL_MAX_IMAGE_BYTES });
+}
+
+export function parseLunaStructuredOutput(response: ResponsesOutput) {
+  const text = responseText(response);
+  const incompleteReason = response.incomplete_details?.reason ?? null;
+  const outputTokens = response.usage?.output_tokens ?? 0;
+  if (response.status !== "completed") {
+    const maxOutputTokens = response.status === "incomplete" && incompleteReason === "max_output_tokens";
+    throw new LunaStructuredOutputError(
+      maxOutputTokens ? "Luna structured output was truncated at max_output_tokens." : `Luna Responses API completion status was ${response.status ?? "unknown"}.`,
+      maxOutputTokens ? "INCOMPLETE_MAX_OUTPUT_TOKENS" : "INCOMPLETE_RESPONSE",
+      "response_parsing",
+      response.status,
+      incompleteReason,
+      outputTokens,
+      text.length,
+    );
+  }
+  if (!text) throw new LunaStructuredOutputError("Luna Responses API returned no structured output text.", "MISSING_STRUCTURED_OUTPUT", "response_parsing", response.status, incompleteReason, outputTokens, 0);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new LunaStructuredOutputError(error instanceof Error ? error.message : "Luna structured output was not valid JSON.", "MALFORMED_STRUCTURED_OUTPUT", "response_parsing", response.status, incompleteReason, outputTokens, text.length);
+  }
+  const validated = lunaMerchantReviewSchema.safeParse(parsed);
+  if (!validated.success) throw new LunaStructuredOutputError("Luna structured output did not satisfy the merchant review runtime schema.", "SCHEMA_INVALID", "json_schema_validation", response.status, incompleteReason, outputTokens, text.length);
+  return { review: validated.data, outputText: text };
+}
+
+function finalRetryOutputBudget(configured: number, error: LunaStructuredOutputError) {
+  return Math.max(configured * 2, error.outputTokens * 2, Math.ceil(error.outputCharacters / 2) + 4_096, 12_000);
+}
+
+export function lunaStructuredResponseLogFields(input: {
+  response: ResponsesOutput;
+  requestId: string | null;
+  outputCharacters: number;
+  validationResult: "VALID" | "NOT_ATTEMPTED_INCOMPLETE" | "MALFORMED_JSON" | "SCHEMA_INVALID" | "MISSING_OUTPUT";
+  retryReason?: string | null;
+  retryCount: number;
+}) {
+  return {
+    responseStatus: input.response.status ?? null,
+    incompleteReason: input.response.incomplete_details?.reason ?? null,
+    outputTokens: input.response.usage?.output_tokens ?? 0,
+    finalOutputCharacterCount: input.outputCharacters,
+    structuredOutputValidationResult: input.validationResult,
+    retryReason: input.retryReason ?? null,
+    retryCount: input.retryCount,
+    requestId: input.requestId,
+  };
 }
 
 export async function persistLunaObservations(runId: string, review: LunaMerchantReview) {
