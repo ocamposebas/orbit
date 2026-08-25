@@ -19,6 +19,11 @@ Use externalVerificationRequest only for a material, objectively checkable merch
 const indexingSystemPrompt = `${holisticSystemPrompt}
 This is an evidence-indexing shard from one merchant. Inspect every supplied record. Return structured candidate observations for later merchant-wide synthesis. Do not treat this shard as the complete merchant and do not infer absence outside it.`;
 
+export const LUNA_GRADUAL_MAX_INPUT_CHARS = 450_000;
+const LUNA_RATE_LIMIT_RETRIES = 4;
+const LUNA_DEFAULT_RATE_LIMIT_DELAY_MS = 15_000;
+const LUNA_MAX_RATE_LIMIT_DELAY_MS = 60_000;
+
 export type ResponsesOutput = {
   id?: string;
   message?: string;
@@ -35,6 +40,67 @@ type LunaResponseMetadata = {
   requestId: string | null;
   elapsedMs: number;
 };
+
+class LunaApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly httpStatus: number,
+    readonly openaiErrorType?: string,
+    readonly openaiErrorCode?: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = "LunaApiRequestError";
+  }
+}
+
+export function lunaPartitionCharacterLimit(configuredMaximum: number) {
+  return Math.min(configuredMaximum, LUNA_GRADUAL_MAX_INPUT_CHARS);
+}
+
+export function shouldSplitOversizedLunaRequest(input: { httpStatus: number; openaiErrorType?: string; openaiErrorCode?: string; message: string }) {
+  if (input.httpStatus !== 429 || input.openaiErrorCode !== "rate_limit_exceeded") return false;
+  if (input.openaiErrorType !== "tokens") return false;
+  if (/request too large/i.test(input.message)) return true;
+  const limit = /limit\s+(\d+)/i.exec(input.message)?.[1];
+  const requested = /requested\s+(\d+)/i.exec(input.message)?.[1];
+  return Boolean(limit && requested && Number(requested) > Number(limit));
+}
+
+function isOversizedLunaRequest(error: unknown) {
+  return error instanceof LunaApiRequestError && shouldSplitOversizedLunaRequest({
+    httpStatus: error.httpStatus,
+    openaiErrorType: error.openaiErrorType,
+    openaiErrorCode: error.openaiErrorCode,
+    message: error.message,
+  });
+}
+
+function splitRecords(records: EvidenceManifestRecord[]) {
+  const midpoint = Math.ceil(records.length / 2);
+  return [records.slice(0, midpoint), records.slice(midpoint)] as const;
+}
+
+function rateLimitDelayMs(response: Response, message: string) {
+  const milliseconds = Number(response.headers?.get("retry-after-ms"));
+  if (Number.isFinite(milliseconds) && milliseconds > 0) return Math.min(milliseconds, LUNA_MAX_RATE_LIMIT_DELAY_MS);
+  const seconds = Number(response.headers?.get("retry-after"));
+  if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds * 1_000, LUNA_MAX_RATE_LIMIT_DELAY_MS);
+  const messageSeconds = /try again in\s+([\d.]+)s/i.exec(message)?.[1];
+  if (messageSeconds && Number.isFinite(Number(messageSeconds))) return Math.min(Math.ceil(Number(messageSeconds) * 1_000) + 250, LUNA_MAX_RATE_LIMIT_DELAY_MS);
+  return LUNA_DEFAULT_RATE_LIMIT_DELAY_MS;
+}
+
+function retryableRateLimit(error: unknown): error is LunaApiRequestError {
+  return error instanceof LunaApiRequestError
+    && error.httpStatus === 429
+    && error.openaiErrorCode === "rate_limit_exceeded"
+    && !isOversizedLunaRequest(error);
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
 
 function safeDiagnosticText(value: unknown, apiKey: string) {
   if (value === undefined || value === null) return null;
@@ -244,7 +310,14 @@ export class LunaMerchantReviewer {
       raw = await response.json() as ResponsesOutput;
       if (!response.ok) {
         phase = "request";
-        throw new Error(raw.error?.message || `Luna Responses API returned HTTP ${response.status}.`);
+        const message = raw.error?.message || `Luna Responses API returned HTTP ${response.status}.`;
+        throw new LunaApiRequestError(
+          message,
+          response.status,
+          raw.error?.type,
+          raw.error?.code,
+          response.status === 429 ? rateLimitDelayMs(response, message) : undefined,
+        );
       }
       const text = responseText(raw);
       if (!text) throw new Error("Luna Responses API returned no structured output text.");
@@ -304,17 +377,44 @@ export class LunaMerchantReviewer {
   async review(input: { scanId: string; merchantId: string; merchantName: string; merchantDescription: string; manifest: EvidenceManifest }) {
     const records = input.manifest.records.filter((record) => record.scope === "MERCHANT_SITE");
     if (!records.length) throw new Error("Luna review requires retained first-party evidence.");
-    const partitions = partitionRecords(records, this.config.maxInputChars, this.config.maxRecords);
+    const partitions = partitionRecords(records, lunaPartitionCharacterLimit(this.config.maxInputChars), this.config.maxRecords);
     const safetyIdentifier = contentHash(`orbit-merchant:${input.merchantId}`);
     const shardReviews: LunaMerchantReview[] = [];
     const runIds: string[] = [];
     const usage = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheHits: 0, calls: 0 };
-    for (let index = 0; index < partitions.length; index++) {
-      const payload = { scanId: input.scanId, merchant: { name: input.merchantName, description: input.merchantDescription }, shard: { index: index + 1, total: partitions.length }, inventory: inventory(partitions[index]), evidence: partitions[index].map(compactRecord) };
-      const imageRecords = [...new Map(partitions[index].filter((record) => (record.artifactKind === "IMAGE" || record.artifactKind === "SCREENSHOT") && record.storageKey).map((record) => [record.artifactId, record])).values()].slice(0, this.config.maxImages);
-      const result = await this.call({ promptVersion: partitions.length === 1 ? LUNA_REVIEW_PROMPT_VERSION : LUNA_INDEX_PROMPT_VERSION, systemPrompt: partitions.length === 1 ? holisticSystemPrompt : indexingSystemPrompt, payload, safetyIdentifier, evidenceRecordCount: partitions[index].length, imageRecords });
+    const rateLimitRetries = new WeakMap<EvidenceManifestRecord[], number>();
+    for (let index = 0; index < partitions.length;) {
+      const partition = partitions[index];
+      const payload = { scanId: input.scanId, merchant: { name: input.merchantName, description: input.merchantDescription }, shard: { index: index + 1, total: partitions.length }, inventory: inventory(partition), evidence: partition.map(compactRecord) };
+      const imageRecords = [...new Map(partition.filter((record) => (record.artifactKind === "IMAGE" || record.artifactKind === "SCREENSHOT") && record.storageKey).map((record) => [record.artifactId, record])).values()].slice(0, this.config.maxImages);
+      let result: Awaited<ReturnType<LunaMerchantReviewer["call"]>>;
+      try {
+        result = await this.call({ promptVersion: partitions.length === 1 ? LUNA_REVIEW_PROMPT_VERSION : LUNA_INDEX_PROMPT_VERSION, systemPrompt: partitions.length === 1 ? holisticSystemPrompt : indexingSystemPrompt, payload, safetyIdentifier, evidenceRecordCount: partition.length, imageRecords });
+      } catch (error) {
+        if (isOversizedLunaRequest(error) && partition.length >= 2) {
+          const [firstHalf, secondHalf] = splitRecords(partition);
+          partitions.splice(index, 1, firstHalf, secondHalf);
+          logger.warn({
+            failedEvidenceRecordCount: partition.length,
+            retryEvidenceRecordCounts: [firstHalf.length, secondHalf.length],
+          }, "Luna request exceeded the token limit; retrying sequentially with smaller evidence shards");
+          continue;
+        }
+        if (retryableRateLimit(error)) {
+          const retryAttempt = (rateLimitRetries.get(partition) ?? 0) + 1;
+          if (retryAttempt <= LUNA_RATE_LIMIT_RETRIES) {
+            rateLimitRetries.set(partition, retryAttempt);
+            const waitMs = error.retryAfterMs ?? LUNA_DEFAULT_RATE_LIMIT_DELAY_MS;
+            logger.warn({ evidenceRecordCount: partition.length, retryAttempt, waitMs }, "Luna rate limit reached; waiting before retrying the evidence shard");
+            await wait(waitMs);
+            continue;
+          }
+        }
+        throw error;
+      }
       shardReviews.push(this.validateEvidence(input.manifest, result.review, result.responseMetadata));
       runIds.push(result.runId); usage.calls++; usage.inputTokens += result.usage.inputTokens; usage.outputTokens += result.usage.outputTokens; usage.cachedTokens += result.usage.cachedTokens; usage.cacheHits += Number(result.usage.cached);
+      index++;
     }
     if (shardReviews.length === 1) return { review: shardReviews[0], runId: runIds[0], runIds, usage };
 

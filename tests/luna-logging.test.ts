@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sanitizeLogText, serializeErrorForLog } from "@/sentinel/logger";
-import { lunaFailureLogFields, lunaRequestLogFields } from "@/sentinel/review/luna";
+import { LUNA_GRADUAL_MAX_INPUT_CHARS, lunaFailureLogFields, lunaPartitionCharacterLimit, lunaRequestLogFields, shouldSplitOversizedLunaRequest } from "@/sentinel/review/luna";
 
 describe("Luna logging", () => {
   it("serializes Error properties instead of producing an empty object", () => {
@@ -82,5 +82,31 @@ describe("Luna logging", () => {
       reasoningEffort: "high",
       timeoutMs: 120_000,
     });
+  });
+
+  it("caps large configured inputs so Luna evidence is sent in gradual shards", () => {
+    expect(lunaPartitionCharacterLimit(850_000)).toBe(LUNA_GRADUAL_MAX_INPUT_CHARS);
+    expect(lunaPartitionCharacterLimit(200_000)).toBe(200_000);
+  });
+
+  it("splits only a per-request token-size rejection, not every rate limit", () => {
+    expect(shouldSplitOversizedLunaRequest({
+      httpStatus: 429,
+      openaiErrorType: "tokens",
+      openaiErrorCode: "rate_limit_exceeded",
+      message: "Request too large. Limit 200000, Requested 257035 tokens per min (TPM).",
+    })).toBe(true);
+    expect(shouldSplitOversizedLunaRequest({
+      httpStatus: 429,
+      openaiErrorType: "requests",
+      openaiErrorCode: "rate_limit_exceeded",
+      message: "Rate limit reached; retry later.",
+    })).toBe(false);
+    expect(shouldSplitOversizedLunaRequest({
+      httpStatus: 429,
+      openaiErrorType: "tokens",
+      openaiErrorCode: "rate_limit_exceeded",
+      message: "Token rate limit reached. Used 140000, Requested 120000. Try again in 18.5s.",
+    })).toBe(false);
   });
 });
