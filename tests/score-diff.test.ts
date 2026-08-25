@@ -18,13 +18,13 @@ describe("explainable scoring and smart diff", () => {
     const score = calculateHealthScore([{ ...finding, detectedText: "First claim" }, second]);
     expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
   });
-  it("caps twenty repeated high-risk theme occurrences at one-and-a-half deductions", () => {
+  it("scores twenty repeated high-risk occurrences as one material theme", () => {
     const repeated = Array.from({ length: 20 }, (_, index) => ({ ...finding, url: `https://example.test/article-${index}`, detectedText: `Muscle growth and hypertrophy evidence ${index}` }));
     const score = calculateHealthScore(repeated);
     const marketing = score.components.find((item) => item.key === "MARKETING_RISK");
     expect(marketing?.deductions).toHaveLength(1);
-    expect(marketing?.deductions[0].points).toBe(29);
-    expect(marketing?.score).toBe(71);
+    expect(marketing?.deductions[0].points).toBe(19);
+    expect(marketing?.score).toBe(81);
   });
   it("keeps materially different claim types as separate scoring themes", () => {
     const medical = { ...finding, ruleKey: "MKT-MEDICAL-001", detectedText: "Treats cognitive disease." };

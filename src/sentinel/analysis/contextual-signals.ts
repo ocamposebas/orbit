@@ -31,7 +31,9 @@ const researchRestriction = [
   /\b(?:must|may|should|can|shall)\s+not\b.{0,140}\b(?:consume|ingest|inject|administer|use (?:in|on|for) humans?|human (?:use|consumption))\b/i,
   /\b(?:do not|don['’]t|prohibited|forbidden)\b.{0,140}\b(?:consume|ingest|inject|administer|human|patient|personal use)\b/i,
   /\b(?:solely|exclusively|strictly)\s+(?:intended )?for (?:laboratory |analytical )?research\b/i,
-  /\b(?:research[- ]use only|research[- ]only use|for research purposes only|not for use in humans?|not for human (?:use|consumption))\b/i,
+  /\b(?:research[- ]use only|research[- ]only(?: use)?|for research purposes only|laboratory (?:research|use) only|not for use in humans?|not for human (?:use|consumption))\b/i,
+  /\b(?:clear )?label(?:ing)?\b.{0,100}\b(?:research[- ]use only|research[- ]only|laboratory (?:research|use) only)\b/i,
+  /\b(?:regulatory|compliance) disclaimer\b|\bthis statement has not been evaluated by (?:the )?(?:FDA|Food and Drug Administration)\b/i,
 ];
 
 const scientificDiscussion = /\b(?:investigat(?:ed|ion)|stud(?:y|ied|ies)|evaluat(?:ed|ion)|observed|reported|examined|research(?:ers)?|literature|preclinical|in[ -]?vitro|in[ -]?vivo|animal model|rodent|receptor[- ]binding|assay|analytical reference|laboratory analysis)\b/i;
@@ -60,7 +62,7 @@ const explicitDenial = [
   /\b(?:not|never)\s+(?:for|intended for|approved for|authorized for)\b/i,
   /\b(?:we|this (?:company|business|site|website)|the (?:company|business|site|website))\s+(?:are|is)\s+not\s+(?:a|an)\s+(?:(?:compounding|retail)\s+)?(?:pharmacy|medical provider|telemedicine provider)\b/i,
 ];
-const cautionOrCriticism = /(?:\b(?:marketed|promoted|advertised|claimed|positioned)\b.{0,220}\b(?:claims?\s+)?(?:lack|lacks|lacking|without|insufficient|unsupported|unsubstantiated|misleading|not supported|no sufficient)\b.{0,100}\b(?:evidence|support|substantiation|proof)\b|\b(?:claims?\s+)?(?:lack|lacks|lacking|insufficient|unsupported|unsubstantiated|misleading|not supported)\b.{0,120}\b(?:marketed|promoted|advertised|health benefits?|anti[- ]?aging|muscle (?:growth|building)|performance)\b|\b(?:warns?|warning|cautions?|criticizes?|prohibits?|discourages?)\b.{0,180}\b(?:claims?|marketing|promotion|human use|health benefits?))/i;
+const cautionOrCriticism = /(?:\b(?:marketed|promoted|advertised|claimed|positioned)\b.{0,220}\b(?:claims?\s+)?(?:lack|lacks|lacking|without|insufficient|unsupported|unsubstantiated|misleading|not supported|no sufficient)\b.{0,100}\b(?:evidence|support|substantiation|proof)\b|\b(?:claims?\s+)?(?:lack|lacks|lacking|insufficient|unsupported|unsubstantiated|misleading|not supported)\b.{0,180}\b(?:evidence|support|substantiation|proof|marketed|promoted|advertised|health benefits?|anti[- ]?aging|muscle (?:growth|building)|performance)\b|\b(?:warns?|warning|cautions?|criticizes?|prohibits?|discourages?)\b.{0,180}\b(?:claims?|marketing|promotion|human use|health benefits?|consumption|administration))/i;
 const standaloneQuestion = /^(?:can|could|should|would|what|which|who|when|where|why|how|is|are|do|does|did|may|might)\b[^.]{0,500}\?$/i;
 
 function result(input: Omit<ContextualSignal, "evidence">, evidence: string): ContextualSignal {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { evidenceClassifications } from "./evidence-classification";
 
 export const semanticCategories = [
   "INTENDED_USE",
@@ -68,7 +69,7 @@ export const semanticObservationSchema = z.object({
   severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]),
   confidence: z.number().min(0).max(1),
   contextualExplanation: z.string().trim().min(1).max(2_000),
-  evidenceClassification: z.enum(["ADVERSE", "NEUTRAL", "MITIGATING", "CONTRADICTORY", "INFORMATIONAL"]),
+  evidenceClassification: z.enum(evidenceClassifications),
   humanReviewRequired: z.boolean(),
 }).strict();
 

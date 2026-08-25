@@ -110,48 +110,48 @@ model Merchant {
 }
 
 model MerchantAgreement {
-  id                         String          @id @default(cuid())
-  merchantId                 String          @unique
-  status                     AgreementStatus @default(INVITED)
-  invitationTokenHash        String          @unique
-  invitationExpiresAt        DateTime
-  invitationIssuedAt         DateTime?
-  termsVersion               String          @default("orbit-msa-en-1.1")
-  selfServe                  Boolean         @default(false)
-  legalName                  String?
-  tradeName                  String?
-  entityType                 String?
-  taxId                      String?
-  registrationNumber         String?
-  businessAddress            String?
-  city                       String?
-  region                     String?
-  postalCode                 String?
-  countryCode                String?
-  coveredDomains             String?
-  primaryContactName         String?
-  primaryContactRole         String?
-  primaryContactEmail        String?
-  primaryContactPhone        String?
-  billingDescriptor          String?
-  estimatedMonthlyVolume     String?
-  averageTransactionAmount   String?
-  highestTransactionAmount   String?
-  productsAndServices        String?
-  informationCertifiedAt     DateTime?
-  contractIssuedAt           DateTime?
-  contractPdf                Bytes?
-  contractSha256             String?
-  signedOriginalName         String?
-  signedMimeType             String?
-  signedSizeBytes            Int?
-  signedContract             Bytes?
-  signedSha256               String?
-  signedUploadedAt           DateTime?
-  lockedAt                   DateTime?
-  createdAt                  DateTime        @default(now())
-  updatedAt                  DateTime        @updatedAt
-  merchant                   Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  id                       String          @id @default(cuid())
+  merchantId               String          @unique
+  status                   AgreementStatus @default(INVITED)
+  invitationTokenHash      String          @unique
+  invitationExpiresAt      DateTime
+  invitationIssuedAt       DateTime?
+  termsVersion             String          @default("orbit-msa-en-1.1")
+  selfServe                Boolean         @default(false)
+  legalName                String?
+  tradeName                String?
+  entityType               String?
+  taxId                    String?
+  registrationNumber       String?
+  businessAddress          String?
+  city                     String?
+  region                   String?
+  postalCode               String?
+  countryCode              String?
+  coveredDomains           String?
+  primaryContactName       String?
+  primaryContactRole       String?
+  primaryContactEmail      String?
+  primaryContactPhone      String?
+  billingDescriptor        String?
+  estimatedMonthlyVolume   String?
+  averageTransactionAmount String?
+  highestTransactionAmount String?
+  productsAndServices      String?
+  informationCertifiedAt   DateTime?
+  contractIssuedAt         DateTime?
+  contractPdf              Bytes?
+  contractSha256           String?
+  signedOriginalName       String?
+  signedMimeType           String?
+  signedSizeBytes          Int?
+  signedContract           Bytes?
+  signedSha256             String?
+  signedUploadedAt         DateTime?
+  lockedAt                 DateTime?
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+  merchant                 Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   @@index([status, updatedAt])
   @@index([invitationExpiresAt])
@@ -300,34 +300,38 @@ model MerchantSite {
 }
 
 model Scan {
-  id               String        @id @default(cuid())
-  merchantId       String
-  siteId           String
-  mode             ScanMode
-  status           ScanStatus    @default(QUEUED)
-  progress         Json          @default("{}")
-  targetUrls       Json?
-  pagesDiscovered  Int           @default(0)
-  pagesProcessed   Int           @default(0)
-  productsDetected Int           @default(0)
-  policiesDetected Int           @default(0)
-  findingsCreated  Int           @default(0)
-  findingsResolved Int           @default(0)
-  scoreBefore      Int?
-  scoreAfter       Int?
-  startedAt        DateTime?
-  completedAt      DateTime?
-  error            String?
-  intelligence     Json          @default("{}")
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
-  auditLogs        AuditLog[]
-  findings         Finding[]
-  healthScores     HealthScore[]
-  changes          PageChange[]
-  merchant         Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  site             MerchantSite  @relation(fields: [siteId], references: [id], onDelete: Cascade)
-  pages            ScanPage[]
+  id                     String                  @id @default(cuid())
+  merchantId             String
+  siteId                 String
+  mode                   ScanMode
+  status                 ScanStatus              @default(QUEUED)
+  progress               Json                    @default("{}")
+  targetUrls             Json?
+  pagesDiscovered        Int                     @default(0)
+  pagesProcessed         Int                     @default(0)
+  productsDetected       Int                     @default(0)
+  policiesDetected       Int                     @default(0)
+  findingsCreated        Int                     @default(0)
+  findingsResolved       Int                     @default(0)
+  scoreBefore            Int?
+  scoreAfter             Int?
+  startedAt              DateTime?
+  completedAt            DateTime?
+  error                  String?
+  intelligence           Json                    @default("{}")
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  auditLogs              AuditLog[]
+  findings               Finding[]
+  healthScores           HealthScore[]
+  changes                PageChange[]
+  merchant               Merchant                @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  site                   MerchantSite            @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  pages                  ScanPage[]
+  evidenceArtifacts      EvidenceArtifact[]
+  reviewRuns             ReviewRun[]
+  verificationAssertions VerificationAssertion[]
+  adjudicationDecisions  AdjudicationDecision[]
 
   @@index([merchantId, createdAt])
   @@index([status, createdAt])
@@ -532,7 +536,7 @@ model RuleVersion {
 }
 
 model Finding {
-  id                String            @id @default(cuid())
+  id                String                @id @default(cuid())
   organizationId    String
   merchantId        String
   siteId            String
@@ -540,7 +544,7 @@ model Finding {
   ruleVersionId     String?
   severity          Severity
   confidence        Float
-  status            FindingStatus     @default(OPEN)
+  status            FindingStatus         @default(OPEN)
   category          String
   title             String
   description       String
@@ -550,21 +554,23 @@ model Finding {
   reason            String
   recommendedAction String
   fingerprint       String
-  firstDetectedAt   DateTime          @default(now())
-  lastDetectedAt    DateTime          @default(now())
+  firstDetectedAt   DateTime              @default(now())
+  lastDetectedAt    DateTime              @default(now())
   resolvedAt        DateTime?
   resolvedByScanId  String?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  adjudicationId    String?               @unique
   alerts            Alert[]
-  merchant          Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  ruleVersion       RuleVersion?      @relation(fields: [ruleVersionId], references: [id])
-  scan              Scan              @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  site              MerchantSite      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  merchant          Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ruleVersion       RuleVersion?          @relation(fields: [ruleVersionId], references: [id])
+  scan              Scan                  @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  site              MerchantSite          @relation(fields: [siteId], references: [id], onDelete: Cascade)
   evidence          FindingEvidence[]
   reviews           FindingReview[]
   remediations      Remediation[]
+  adjudication      AdjudicationDecision? @relation(fields: [adjudicationId], references: [id])
 
   @@unique([merchantId, fingerprint, firstDetectedAt])
   @@index([organizationId, status, severity])
@@ -572,9 +578,10 @@ model Finding {
 }
 
 model FindingEvidence {
-  id                       String        @id @default(cuid())
+  id                       String          @id @default(cuid())
   findingId                String
   snapshotId               String?
+  evidenceRecordId         String?
   kind                     EvidenceKind
   pageUrl                  String
   normalizedText           String?
@@ -585,12 +592,14 @@ model FindingEvidence {
   ruleVersion              String?
   modelVersion             String?
   classificationConfidence Float?
-  metadata                 Json          @default("{}")
-  createdAt                DateTime      @default(now())
-  finding                  Finding       @relation(fields: [findingId], references: [id], onDelete: Cascade)
-  snapshot                 PageSnapshot? @relation(fields: [snapshotId], references: [id])
+  metadata                 Json            @default("{}")
+  createdAt                DateTime        @default(now())
+  finding                  Finding         @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  snapshot                 PageSnapshot?   @relation(fields: [snapshotId], references: [id])
+  evidenceRecord           EvidenceRecord? @relation(fields: [evidenceRecordId], references: [id])
 
   @@index([findingId, createdAt])
+  @@index([evidenceRecordId])
 }
 
 model FindingReview {
@@ -711,6 +720,160 @@ model SemanticAnalysis {
   createdAt     DateTime @default(now())
 
   @@unique([contentHash, promptVersion, provider, model])
+}
+
+model EvidenceArtifact {
+  id         String               @id @default(cuid())
+  scanId     String
+  scope      EvidenceScope
+  kind       EvidenceArtifactKind
+  url        String
+  parentUrl  String?
+  mimeType   String?
+  httpStatus Int?
+  storageKey String?
+  sha256     String
+  metadata   Json                 @default("{}")
+  capturedAt DateTime             @default(now())
+  scan       Scan                 @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  records    EvidenceRecord[]
+
+  @@unique([scanId, scope, kind, url, sha256])
+  @@index([scanId, scope, kind])
+  @@index([sha256])
+}
+
+model EvidenceRecord {
+  id              String                     @id @default(cuid())
+  artifactId      String
+  evidenceType    String
+  exactText       String?
+  value           Json?
+  selector        String?
+  jsonPointer     String?
+  pageNumber      Int?
+  coordinates     Json?
+  contentHash     String
+  createdAt       DateTime                   @default(now())
+  artifact        EvidenceArtifact           @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  reviewLinks     ReviewEvidenceLink[]
+  verifierLinks   VerificationEvidenceLink[]
+  findingEvidence FindingEvidence[]
+
+  @@unique([artifactId, evidenceType, contentHash])
+  @@index([artifactId, evidenceType])
+  @@index([contentHash])
+}
+
+model ReviewRun {
+  id                String                 @id @default(cuid())
+  scanId            String
+  role              ReviewRunRole
+  provider          String
+  model             String
+  promptVersion     String
+  inputManifestHash String
+  status            ReviewRunStatus        @default(RUNNING)
+  configuration     Json                   @default("{}")
+  output            Json                   @default("{}")
+  usage             Json                   @default("{}")
+  error             String?
+  createdAt         DateTime               @default(now())
+  completedAt       DateTime?
+  scan              Scan                   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  observations      ReviewObservation[]
+  criticDecisions   AdjudicationDecision[] @relation("CriticReview")
+
+  @@index([scanId, role, createdAt])
+  @@index([inputManifestHash, promptVersion, model])
+}
+
+model ReviewObservation {
+  id                  String                 @id @default(cuid())
+  reviewRunId         String
+  issueKey            String
+  domain              AssertionDomain
+  category            String
+  riskTheme           String
+  classification      EvidenceClassification
+  conclusion          String
+  confidence          Float
+  materiality         ReviewMateriality
+  proposedSeverity    Severity?
+  humanReviewRequired Boolean                @default(false)
+  createdAt           DateTime               @default(now())
+  reviewRun           ReviewRun              @relation(fields: [reviewRunId], references: [id], onDelete: Cascade)
+  evidence            ReviewEvidenceLink[]
+  primaryDecisions    AdjudicationDecision[] @relation("PrimaryObservation")
+
+  @@unique([reviewRunId, issueKey])
+  @@index([issueKey, classification])
+}
+
+model ReviewEvidenceLink {
+  id               String                 @id @default(cuid())
+  observationId    String
+  evidenceRecordId String
+  role             ReviewEvidenceRole
+  classification   EvidenceClassification
+  rationale        String?
+  observation      ReviewObservation      @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  evidenceRecord   EvidenceRecord         @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([observationId, evidenceRecordId, role])
+  @@index([evidenceRecordId])
+}
+
+model VerificationAssertion {
+  id            String                     @id @default(cuid())
+  scanId        String
+  issueKey      String
+  factType      String
+  subjectId     String
+  state         VerificationState
+  value         Json                       @default("{}")
+  methodVersion String
+  createdAt     DateTime                   @default(now())
+  scan          Scan                       @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  evidence      VerificationEvidenceLink[]
+  decisions     AdjudicationDecision[]
+
+  @@unique([scanId, issueKey, methodVersion])
+  @@index([scanId, factType, state])
+}
+
+model VerificationEvidenceLink {
+  id                      String                @id @default(cuid())
+  verificationAssertionId String
+  evidenceRecordId        String
+  assertion               VerificationAssertion @relation(fields: [verificationAssertionId], references: [id], onDelete: Cascade)
+  evidenceRecord          EvidenceRecord        @relation(fields: [evidenceRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([verificationAssertionId, evidenceRecordId])
+  @@index([evidenceRecordId])
+}
+
+model AdjudicationDecision {
+  id                      String                 @id @default(cuid())
+  scanId                  String
+  issueKey                String
+  domain                  AssertionDomain
+  material                Boolean
+  outcome                 AdjudicationOutcome
+  reason                  String
+  scoreEligible           Boolean                @default(false)
+  primaryObservationId    String?
+  verificationAssertionId String?
+  criticRunId             String?
+  createdAt               DateTime               @default(now())
+  scan                    Scan                   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  primaryObservation      ReviewObservation?     @relation("PrimaryObservation", fields: [primaryObservationId], references: [id])
+  verificationAssertion   VerificationAssertion? @relation(fields: [verificationAssertionId], references: [id])
+  criticRun               ReviewRun?             @relation("CriticReview", fields: [criticRunId], references: [id])
+  finding                 Finding?
+
+  @@unique([scanId, issueKey])
+  @@index([scanId, outcome, scoreEligible])
 }
 
 enum MembershipRole {
@@ -868,6 +1031,73 @@ enum EvidenceKind {
   DOM
   SNAPSHOT
   DIFF
+}
+
+enum EvidenceScope {
+  MERCHANT_SITE
+  EXTERNAL_PUBLIC_WEB
+}
+
+enum EvidenceArtifactKind {
+  PAGE_SNAPSHOT
+  STRUCTURED_DATA
+  PUBLIC_API
+  IMAGE
+  SCREENSHOT
+  PDF
+  DOCUMENT_TEXT
+  CHECKOUT_STATE
+}
+
+enum EvidenceClassification {
+  ADVERSE
+  MITIGATING
+  NEUTRAL
+  INFORMATIONAL
+}
+
+enum ReviewRunRole {
+  PRIMARY
+  CRITIC
+  EXTERNAL
+}
+
+enum ReviewRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum AssertionDomain {
+  SEMANTIC_CONTEXT
+  OBJECTIVE_FACT
+  MIXED
+}
+
+enum ReviewMateriality {
+  MATERIAL
+  NON_MATERIAL
+}
+
+enum ReviewEvidenceRole {
+  PRIMARY
+  SUPPORTING
+  MITIGATING
+  CONTRADICTING
+}
+
+enum VerificationState {
+  VERIFIED
+  REFUTED
+  INCONCLUSIVE
+}
+
+enum AdjudicationOutcome {
+  ACCEPTED_LUNA
+  ACCEPTED_VERIFIER
+  ACCEPTED_CRITIC
+  REJECTED
+  NEEDS_REVIEW
 }
 
 enum AlertStatus {

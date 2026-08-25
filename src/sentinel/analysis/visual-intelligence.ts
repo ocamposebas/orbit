@@ -5,6 +5,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { getServerEnv } from "@/sentinel/config";
 import { getDatabase } from "@/sentinel/db";
 import { contentHash } from "@/sentinel/extraction/normalize";
+import { persistArtifactEvidence } from "@/sentinel/evidence/ledger";
 import { logger } from "@/sentinel/logger";
 import { validatePublicUrl } from "@/sentinel/security/ssrf";
 import { evidenceStorage } from "@/sentinel/storage";
@@ -16,7 +17,7 @@ export const VISUAL_PROMPT_VERSION = "sentinel-visual-v1";
 const visualObservationSchema = z.object({
   assetIndex: z.number().int().min(0).max(20),
   category: z.enum(["HUMAN_BODY", "BEFORE_AFTER", "WEIGHT_MANAGEMENT", "MUSCLE_PERFORMANCE", "DOSING_ADMINISTRATION", "MEDICAL_CLINICAL", "THERAPEUTIC_OUTCOME", "COGNITIVE_PERFORMANCE", "REPRODUCTIVE_SEXUAL", "RESEARCH_LABORATORY", "IMAGE_DISCLAIMER", "OTHER"]),
-  classification: z.enum(["ADVERSE", "MITIGATING", "NEUTRAL", "INFORMATIONAL", "CONTRADICTORY"]),
+  classification: z.enum(["ADVERSE", "MITIGATING", "NEUTRAL", "INFORMATIONAL"]),
   severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]),
   confidence: z.number().min(0).max(1),
   visibleText: z.string().max(2_000),
@@ -93,6 +94,7 @@ async function capturePageAssets(scanId: string, input: SemanticPageInput, maxim
     const hash = digest(bytes);
     const storageKey = `${scanId}/visual/${hash}.jpg`;
     await evidenceStorage().put(storageKey, bytes);
+    await persistArtifactEvidence({ scanId, kind: "SCREENSHOT", url: input.url, mimeType: "image/jpeg", storageKey, sha256: hash, metadata: { pageType: input.pageType, visualKind: kind, selector }, records: [{ evidenceType: kind, selector, value: { widthContext: "rendered-page", pageType: input.pageType } }] });
     assets.push({ pageUrl: input.url, pageType: input.pageType, kind, selector, hash, storageKey, mimeType: "image/jpeg", bytes });
   };
   try {
@@ -163,19 +165,22 @@ const titleByVisualCategory: Record<VisualAnalysis["observations"][number]["cate
 export function visualCandidates(page: SemanticPageInput, assets: VisualAsset[], analysis: VisualAnalysis, model: string): CandidateFinding[] {
   return analysis.observations.flatMap((observation) => {
     const asset = assets[observation.assetIndex];
-    if (!asset || !observation.humanReviewRequired || !observation.materialContext || observation.confidence < 0.7 || !["ADVERSE", "CONTRADICTORY"].includes(observation.classification)) return [];
+    if (!asset || !observation.humanReviewRequired || !observation.materialContext || observation.confidence < 0.7 || observation.classification !== "ADVERSE") return [];
     const severity = observation.severity === "CRITICAL" && !(observation.category === "DOSING_ADMINISTRATION" && observation.confidence >= 0.9) ? "HIGH" : observation.severity;
     return [{ ruleKey: `VISUAL-${observation.category}`, severity, confidence: observation.confidence, status: "NEEDS_REVIEW", category: "Visual positioning", title: titleByVisualCategory[observation.category], description: "A multimodal review identified material visual context requiring human review.", url: page.url, pageType: page.pageType, detectedText: observation.visibleText || observation.visualDescription, reason: observation.contextualExplanation, recommendedAction: "Review the cited visual in its complete page and commercial context.", scoreComponent: observation.category === "DOSING_ADMINISTRATION" ? "RESEARCH_CONTROLS" : "MARKETING_RISK", analysisSource: "SEMANTIC_PAGE", evidenceType: asset.kind, humanReviewRequired: true, modelVersion: model, provider: "openai-compatible-vision", semanticCategory: observation.category, semanticClassification: observation.classification, promptVersion: VISUAL_PROMPT_VERSION, evidenceClassification: observation.classification, prominence: ["PRODUCT_IMAGE", "HERO_BANNER", "CATEGORY_BANNER", "CHECKOUT"].includes(asset.kind) ? "PRIMARY_COMMERCIAL" : page.pageType === "ARTICLE" ? "EDITORIAL" : "SITEWIDE", domSelector: asset.selector, sourceKind: "VISUAL", assetStorageKey: asset.storageKey, assetHash: asset.hash } satisfies CandidateFinding];
   });
 }
 
-export async function runVisualIntelligence(scanId: string, pages: SemanticPageInput[]) {
+export async function runVisualIntelligence(scanId: string, pages: SemanticPageInput[], options: { analyzeSemantic?: boolean } = {}) {
   const env = getServerEnv();
   const selected = [...pages].filter((page) => page.httpStatus === undefined || page.httpStatus < 400).sort((left, right) => visualPagePriority(right) - visualPagePriority(left)).slice(0, env.AI_VISUAL_MAX_PAGES);
   const stats: VisualIntelligenceStats = { pagesSelected: selected.length, pagesAnalyzed: 0, assetsDiscovered: pages.reduce((sum, page) => sum + page.content.images.length, 0), assetsAnalyzed: 0, cacheHits: 0, failures: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
-  if (env.AI_PROVIDER !== "openai-compatible" || !env.AI_API_KEY || !selected.length) return { candidates: [] as CandidateFinding[], stats };
+  if (!selected.length) return { candidates: [] as CandidateFinding[], assets: [] as VisualAsset[], stats };
+  const analyzeSemantic = options.analyzeSemantic ?? true;
+  if (analyzeSemantic && (env.AI_PROVIDER !== "openai-compatible" || !env.AI_API_KEY)) return { candidates: [] as CandidateFinding[], assets: [] as VisualAsset[], stats };
   const browser = await secureVisualContext();
   const candidates: CandidateFinding[] = [];
+  const retainedAssets: VisualAsset[] = [];
   const seenHashes = new Set<string>();
   try {
     for (const page of selected) {
@@ -184,9 +189,11 @@ export async function runVisualIntelligence(scanId: string, pages: SemanticPageI
         const assets = captured.filter((asset) => !seenHashes.has(asset.hash));
         for (const asset of assets) seenHashes.add(asset.hash);
         if (!assets.length) continue;
-        const run = await callVisionModel(assets, page);
+        retainedAssets.push(...assets);
         stats.pagesAnalyzed++;
         stats.assetsAnalyzed += assets.length;
+        if (!analyzeSemantic) continue;
+        const run = await callVisionModel(assets, page);
         stats.cacheHits += Number(run.usage.cached);
         stats.inputTokens += run.usage.inputTokens;
         stats.outputTokens += run.usage.outputTokens;
@@ -199,5 +206,5 @@ export async function runVisualIntelligence(scanId: string, pages: SemanticPageI
     }
   } finally { await browser.close(); }
   stats.estimatedCostUsd = Number(stats.estimatedCostUsd.toFixed(6));
-  return { candidates, stats };
+  return { candidates, assets: retainedAssets, stats };
 }

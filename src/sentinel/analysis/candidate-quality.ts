@@ -1,5 +1,5 @@
 import type { CandidateFinding, SentinelSeverity } from "@/sentinel/types";
-import { analyzeContext } from "./contextual-signals";
+import { classifyEvidenceRecord, classifyTextEvidence, evidenceRiskTheme, type EvidenceClassification } from "./evidence-classification";
 
 const severityRank: Record<SentinelSeverity, number> = { INFO: 0, LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
 const baseClaimRules = new Set(["MKT-MEDICAL-001", "MKT-TESTIMONIAL-001", "MKT-CLAIM-001", "RSRCH-ADMIN-001"]);
@@ -13,22 +13,11 @@ function normalizedEvidence(finding: CandidateFinding) {
   return finding.assetHash ? `asset:${finding.assetHash}` : finding.detectedText?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
 }
 
-function riskTopic(text: string) {
-  if (/\b(?:cogniti\w*|memory|neuroprotect\w*|focus)\b/i.test(text)) return "COGNITIVE_NEUROLOGICAL";
-  if (/\b(?:muscle|hypertroph\w*|human performance|bodybuild\w*)\b/i.test(text)) return "MUSCLE_PERFORMANCE";
-  if (/\b(?:obesity|weight|appetite|adiposity|body[- ]?fat|metaboli\w*|fat[- ]?loss)\b/i.test(text)) return "WEIGHT_METABOLIC";
-  if (/\b(?:reproductive|fertility|fertile)\b/i.test(text)) return "REPRODUCTIVE_FERTILITY";
-  if (/\b(?:recovery|healing|injur\w*)\b/i.test(text)) return "RECOVERY_HEALING";
-  if (/\b(?:longevity|anti[- ]?aging|lifespan)\b/i.test(text)) return "LONGEVITY_AGING";
-  if (/\b(?:cosmetic|skin|beauty|topical)\b/i.test(text)) return "COSMETIC";
-  return "GENERAL";
-}
-
 export function materialRiskTheme(finding: CandidateFinding) {
   if (finding.riskTheme) return finding.riskTheme;
   const text = `${finding.detectedText ?? ""} ${finding.title} ${finding.category}`;
   const rule = finding.ruleKey;
-  const topic = riskTopic(text);
+  const topic = evidenceRiskTheme(text);
   if (/CONFLICT|CONTRADICTION|DECEPTIVE|INCONSISTENT/.test(rule) || finding.semanticCategory === "CONTRADICTION" || finding.semanticCategory === "DECEPTIVE_INCONSISTENT_POSITIONING") return `CONTRADICTION:${topic}`;
   if (/MEDICAL/.test(rule) || finding.semanticCategory === "MEDICAL_CLAIM") return `MEDICAL_CLAIM:${topic}`;
   if (/ADMIN|DOSING/.test(rule) || finding.semanticCategory === "DOSING_ADMINISTRATION") return `DOSING_ADMINISTRATION:${topic}`;
@@ -51,21 +40,50 @@ function evidenceKey(evidence: { url: string; text: string }) {
   return `${evidence.url}|${evidence.text.replace(/\s+/g, " ").trim().toLowerCase()}`;
 }
 
-function groupPageFindings(left: CandidateFinding, right: CandidateFinding, theme: string): CandidateFinding {
+function classifiedSupportingEvidence(item: NonNullable<CandidateFinding["supportingEvidence"]>[number]) {
+  return { ...item, classification: classifyEvidenceRecord({ text: item.text, evidenceType: item.evidenceType, proposedClassification: item.classification, sourceKind: item.sourceKind }) };
+}
+
+function groupThemeFindings(left: CandidateFinding, right: CandidateFinding, theme: string): CandidateFinding {
   const preferred = preferredFinding(left, right);
   const primaryKey = evidenceKey({ url: preferred.url, text: preferred.detectedText ?? preferred.title });
   const secondaryKey = preferred.secondaryEvidence ? evidenceKey(preferred.secondaryEvidence) : "";
   const evidence = [
     ...(left.detectedText ? [{ url: left.url, text: left.detectedText, role: "related-theme-evidence", evidenceType: left.evidenceType, sourceKind: left.sourceKind, assetStorageKey: left.assetStorageKey, assetHash: left.assetHash, domSelector: left.domSelector, classification: left.evidenceClassification }] : []),
     ...(right.detectedText ? [{ url: right.url, text: right.detectedText, role: "related-theme-evidence", evidenceType: right.evidenceType, sourceKind: right.sourceKind, assetStorageKey: right.assetStorageKey, assetHash: right.assetHash, domSelector: right.domSelector, classification: right.evidenceClassification }] : []),
-    ...(left.secondaryEvidence ? [{ ...left.secondaryEvidence, evidenceType: undefined }] : []),
-    ...(right.secondaryEvidence ? [{ ...right.secondaryEvidence, evidenceType: undefined }] : []),
+    ...(left.secondaryEvidence ? [{ ...left.secondaryEvidence, evidenceType: undefined, classification: classifyTextEvidence(left.secondaryEvidence.text) }] : []),
+    ...(right.secondaryEvidence ? [{ ...right.secondaryEvidence, evidenceType: undefined, classification: classifyTextEvidence(right.secondaryEvidence.text) }] : []),
     ...(left.supportingEvidence ?? []),
     ...(right.supportingEvidence ?? []),
-  ];
+  ].map(classifiedSupportingEvidence);
   const supportingEvidence = [...new Map(evidence.filter((item) => evidenceKey(item) !== primaryKey && evidenceKey(item) !== secondaryKey).map((item) => [evidenceKey(item), item])).values()];
   const affectedUrls = [...new Set([...(left.affectedUrls ?? [left.url]), ...(right.affectedUrls ?? [right.url])])];
-  return { ...preferred, riskTheme: theme, supportingEvidence, affectedUrls };
+  const uniqueAdverseEvidence = new Set([primaryKey, ...supportingEvidence.filter((item) => item.classification === "ADVERSE").map(evidenceKey)]).size;
+  const confidence = Number(Math.min(0.99, Math.max(left.confidence, right.confidence) + Math.min(0.03, Math.max(0, uniqueAdverseEvidence - 1) * 0.01)).toFixed(2));
+  return { ...preferred, riskTheme: theme, confidence, evidenceClassification: "ADVERSE", supportingEvidence, affectedUrls };
+}
+
+function isContextualClaimCandidate(finding: CandidateFinding) {
+  return finding.scoreComponent === "MARKETING_RISK" || /^(?:MKT-|RSRCH-ADMIN|RX-REVIEW|POSITION-CONFLICT|SEM-(?:PAGE|MERCHANT)-(?:INTENDED_USE|HUMAN_THERAPEUTIC_OUTCOME|MEDICAL_CLAIM|DOSING_ADMINISTRATION|PHARMACY_PRESCRIPTION|CONTRADICTION|DECEPTIVE_INCONSISTENT_POSITIONING))/.test(finding.ruleKey);
+}
+
+function primaryEvidenceClassification(finding: CandidateFinding): EvidenceClassification {
+  if (!finding.detectedText) return finding.evidenceClassification ?? "ADVERSE";
+  if (isContextualClaimCandidate(finding)) return classifyEvidenceRecord({
+    text: finding.detectedText,
+    evidenceType: finding.evidenceType,
+    proposedClassification: finding.evidenceClassification ?? (finding.ruleKey.startsWith("SEM-") ? "ADVERSE" : undefined),
+    sourceKind: finding.sourceKind,
+  });
+  return finding.evidenceClassification ?? "ADVERSE";
+}
+
+function classifyCandidate(finding: CandidateFinding): CandidateFinding | undefined {
+  const evidenceClassification = primaryEvidenceClassification(finding);
+  if (isContextualClaimCandidate(finding) && evidenceClassification !== "ADVERSE") return undefined;
+  const secondaryEvidence = finding.secondaryEvidence ? { ...finding.secondaryEvidence, classification: classifyTextEvidence(finding.secondaryEvidence.text) } : undefined;
+  const supportingEvidence = finding.supportingEvidence?.map(classifiedSupportingEvidence);
+  return { ...finding, evidenceClassification, secondaryEvidence, supportingEvidence };
 }
 
 function guardedSeverity(finding: CandidateFinding): SentinelSeverity {
@@ -75,6 +93,7 @@ function guardedSeverity(finding: CandidateFinding): SentinelSeverity {
 }
 
 export function isScorableCandidate(finding: CandidateFinding) {
+  if (finding.scoreEligible === false) return false;
   if (finding.status === "OPEN") return true;
   if (finding.severity === "CRITICAL" || finding.severity === "HIGH") return finding.confidence >= 0.86 && Boolean(finding.detectedText || finding.secondaryEvidence);
   if (finding.severity === "MEDIUM") return finding.confidence >= 0.82 && Boolean(finding.detectedText || finding.secondaryEvidence || finding.affectedUrls?.length);
@@ -92,8 +111,12 @@ export function isMaterialCandidate(finding: CandidateFinding) {
  * It removes duplicate manifestations of one signal without discarding affected URLs.
  */
 export function consolidateCandidates(input: CandidateFinding[]) {
-  const conflictEvidence = new Set(input.filter((finding) => finding.ruleKey === "POSITION-CONFLICT-001").map((finding) => `${finding.url}|${normalizedEvidence(finding)}`));
-  const withoutContradictionShadows = input.filter((finding) => !(baseClaimRules.has(finding.ruleKey) && conflictEvidence.has(`${finding.url}|${normalizedEvidence(finding)}`)));
+  const classifiedInput = input.flatMap((finding) => {
+    const classified = classifyCandidate(finding);
+    return classified ? [classified] : [];
+  });
+  const conflictEvidence = new Set(classifiedInput.filter((finding) => finding.ruleKey === "POSITION-CONFLICT-001").map((finding) => `${finding.url}|${normalizedEvidence(finding)}`));
+  const withoutContradictionShadows = classifiedInput.filter((finding) => !(baseClaimRules.has(finding.ruleKey) && conflictEvidence.has(`${finding.url}|${normalizedEvidence(finding)}`)));
   const deterministicEvidence = new Set(withoutContradictionShadows.filter((finding) => !finding.ruleKey.startsWith("SEM-") && normalizedEvidence(finding)).map((finding) => `${finding.scoreComponent}|${normalizedEvidence(finding)}`));
   const semanticByEvidence = new Map<string, CandidateFinding>();
   const withoutShadowFindings: CandidateFinding[] = [];
@@ -121,8 +144,7 @@ export function consolidateCandidates(input: CandidateFinding[]) {
   for (const original of withoutShadowFindings) {
     const finding = { ...original, severity: guardedSeverity(original) };
     const evidence = normalizedEvidence(finding);
-    const disclaimerEvidence = evidence && analyzeContext(evidence).type === "RESEARCH_RESTRICTION";
-    if (!evidence || (!evidenceScopedRule(finding.ruleKey) && !disclaimerEvidence)) {
+    if (!evidence || !evidenceScopedRule(finding.ruleKey)) {
       retained.push(finding);
       continue;
     }
@@ -155,9 +177,9 @@ export function consolidateCandidates(input: CandidateFinding[]) {
       continue;
     }
     const theme = materialRiskTheme(finding);
-    const key = `${finding.url}|${finding.scoreComponent}|${theme}`;
+    const key = `${finding.scoreComponent}|${theme}`;
     const current = groupedByPageAndTheme.get(key);
-    groupedByPageAndTheme.set(key, current ? groupPageFindings(current, finding, theme) : { ...finding, riskTheme: theme });
+    groupedByPageAndTheme.set(key, current ? groupThemeFindings(current, finding, theme) : { ...finding, riskTheme: theme, evidenceClassification: "ADVERSE", affectedUrls: finding.affectedUrls ?? [finding.url] });
   }
   return [...ungrouped, ...groupedByPageAndTheme.values()];
 }

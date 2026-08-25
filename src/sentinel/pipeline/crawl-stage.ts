@@ -4,6 +4,7 @@ import { crawlSite, type CrawledPage } from "@/sentinel/crawler/crawl";
 import { getDatabase } from "@/sentinel/db";
 import { advanceScanStatus, updateProgress } from "@/sentinel/services/progress";
 import { normalizedContentSchema, type SentinelPageType } from "@/sentinel/types";
+import { persistArtifactEvidence } from "@/sentinel/evidence/ledger";
 
 type StoredPage = {
   url: string;
@@ -52,6 +53,7 @@ async function persistCrawledPage(scanId: string, siteId: string, page: CrawledP
   const previous = page.hash ? await db.pageSnapshot.findFirst({ where: { scanPage: { siteId, url: page.url, scanId: { not: scanId } } }, orderBy: { capturedAt: "desc" } }) : null;
   const persistedPage = { canonicalUrl: page.canonicalUrl, httpStatus: page.status, contentType: page.contentType, title: page.title, metaDescription: page.description, robotsDirectives: page.robots, discoveredFrom: page.discoveredFrom, depth: page.depth, pageType: page.classification?.pageType ?? "OTHER", classificationConfidence: page.classification?.confidence ?? 0, classificationReasons: (page.classification?.reasons ?? []) as Prisma.InputJsonValue, normalizedContent: page.normalized as unknown as Prisma.InputJsonValue, contentHash: page.hash, inaccessibleReason: page.inaccessibleReason, lastSeenAt: new Date() };
   const scanPage = await db.scanPage.upsert({ where: { scanId_url: { scanId, url: page.url } }, update: persistedPage, create: { scanId, siteId, url: page.url, ...persistedPage } });
+  for (const response of page.publicData ?? []) await persistArtifactEvidence({ scanId, kind: "PUBLIC_API", url: response.url, parentUrl: page.url, mimeType: response.contentType, httpStatus: response.status, sha256: response.hash, metadata: { requestMethod: "GET", resourceType: "xhr/fetch", publicAnonymous: true }, records: [{ evidenceType: "PUBLIC_JSON", value: response.value, jsonPointer: "/" }] });
   if (!page.normalized || !page.hash) return scanPage;
 
   const existingSnapshot = await db.pageSnapshot.findFirst({ where: { scanPageId: scanPage.id, contentHash: page.hash }, orderBy: { capturedAt: "desc" } });

@@ -6,6 +6,7 @@ import { contentHash, normalizeText } from "@/sentinel/extraction/normalize";
 import { logger } from "@/sentinel/logger";
 import { safeFetchBinary } from "@/sentinel/security/ssrf";
 import { evidenceStorage } from "@/sentinel/storage";
+import { persistArtifactEvidence } from "@/sentinel/evidence/ledger";
 import type { CandidateFinding } from "@/sentinel/types";
 import type { SemanticPageInput } from "./hybrid-semantic";
 
@@ -13,7 +14,7 @@ export const DOCUMENT_PROMPT_VERSION = "sentinel-document-v1";
 
 const documentObservationSchema = z.object({
   category: z.enum(["VISIBLE_CLAIM", "DOCUMENT_INCONSISTENCY", "PRODUCT_MISMATCH", "DATE_OR_LOT_CONCERN", "LABORATORY_RESULT", "DOCUMENT_QUALIFICATION", "OTHER"]),
-  classification: z.enum(["ADVERSE", "MITIGATING", "NEUTRAL", "INFORMATIONAL", "CONTRADICTORY"]),
+  classification: z.enum(["ADVERSE", "MITIGATING", "NEUTRAL", "INFORMATIONAL"]),
   severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]),
   confidence: z.number().min(0).max(1),
   exactText: z.string().min(1).max(2_000),
@@ -131,14 +132,14 @@ function evidenceExists(document: ExtractedDocument, pageNumber: number, exactTe
 
 export function documentCandidates(document: ExtractedDocument, analysis: DocumentSemanticAnalysis, model: string): CandidateFinding[] {
   return analysis.observations.flatMap((observation) => {
-    if (!evidenceExists(document, observation.pageNumber, observation.exactText) || !observation.humanReviewRequired || observation.confidence < 0.7 || !["ADVERSE", "CONTRADICTORY"].includes(observation.classification)) return [];
+    if (!evidenceExists(document, observation.pageNumber, observation.exactText) || !observation.humanReviewRequired || observation.confidence < 0.7 || observation.classification !== "ADVERSE") return [];
     const criticalAllowed = observation.category === "VISIBLE_CLAIM" && /\b(?:diagnos|treat|cure|prevent|dose|inject)\w*\b/i.test(observation.exactText) && observation.confidence >= 0.9;
     const severity = observation.severity === "CRITICAL" && !criticalAllowed ? "HIGH" : observation.severity;
     return [{ ruleKey: `DOCUMENT-${observation.category}`, severity, confidence: observation.confidence, status: "NEEDS_REVIEW", category: "Document intelligence", title: observation.category === "DOCUMENT_INCONSISTENCY" || observation.category === "PRODUCT_MISMATCH" ? "Public document inconsistency requires review" : "Public document evidence requires review", description: "A public PDF or certificate contains evidence requiring contextual human review.", url: document.url, pageType: "COA", detectedText: observation.exactText, reason: observation.contextualExplanation, recommendedAction: "Compare the cited document evidence with the associated product, lot, dates, and public marketing.", scoreComponent: observation.category === "VISIBLE_CLAIM" ? "MARKETING_RISK" : "PRODUCT_INTEGRITY", analysisSource: "SEMANTIC_PAGE", evidenceType: `PDF_PAGE_${observation.pageNumber}`, humanReviewRequired: true, modelVersion: model, provider: "openai-compatible-document", semanticCategory: observation.category, semanticClassification: observation.classification, promptVersion: DOCUMENT_PROMPT_VERSION, evidenceClassification: observation.classification, prominence: "TECHNICAL", sourceKind: "DOCUMENT", assetStorageKey: document.storageKey, assetHash: document.hash, supportingEvidence: [{ url: document.sourcePageUrl, text: `Linked public ${document.documentType}: ${document.url}`, role: "document-source-link", evidenceType: "DOCUMENT_LINK" }] } satisfies CandidateFinding];
   });
 }
 
-export async function runDocumentIntelligence(scanId: string, pages: SemanticPageInput[]) {
+export async function runDocumentIntelligence(scanId: string, pages: SemanticPageInput[], options: { analyzeSemantic?: boolean } = {}) {
   const env = getServerEnv();
   const links = [...new Map(pages.flatMap((page) => page.content.embeddedDocuments.map((document) => ({ ...document, sourcePageUrl: page.url }))).filter((document) => /\.pdf(?:$|[?#])/i.test(document.url)).map((document) => [document.url, document])).values()].slice(0, env.AI_DOCUMENT_MAX_FILES);
   const stats: DocumentIntelligenceStats = { discovered: links.length, extracted: 0, semanticallyAnalyzed: 0, cacheHits: 0, failures: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
@@ -148,6 +149,8 @@ export async function runDocumentIntelligence(scanId: string, pages: SemanticPag
     try {
       const document = await extractPdfDocument({ url: link.url, sourcePageUrl: link.sourcePageUrl, documentType: link.documentType, scanId });
       documents.push(document); stats.extracted++;
+      await persistArtifactEvidence({ scanId, kind: "PDF", url: document.url, parentUrl: document.sourcePageUrl, mimeType: "application/pdf", storageKey: document.storageKey, sha256: document.hash, metadata: { documentType: document.documentType, pageCount: document.pageCount, extractedMetadata: document.metadata }, records: [{ evidenceType: "DOCUMENT_METADATA", value: document.metadata }, ...document.pages.filter((page) => page.text).map((page) => ({ evidenceType: "PDF_TEXT", exactText: page.text, pageNumber: page.pageNumber }))] });
+      if (options.analyzeSemantic === false) continue;
       const run = await analyzeDocument(document);
       if (!run) continue;
       stats.semanticallyAnalyzed++;

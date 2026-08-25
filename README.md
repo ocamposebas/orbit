@@ -41,9 +41,10 @@ Heavy scan-browser work is isolated in persistent workers. The web service uses 
 - product and policy entities with versioned snapshots;
 - contextual claim analysis with explicit negation handling and hash-based cache;
 - deterministic, contextual and contradiction signals;
-- immutable evidence records and selective high-severity screenshots;
-- prominence-ranked multimodal review of full-page, viewport, banner, product, editorial and checkout visuals;
-- bounded public-PDF extraction and strict document observations;
+- immutable, addressable evidence records for pages, metadata, structured data, public JSON, images, screenshots, public PDFs and read-only checkout states;
+- GPT-5.6 Luna holistic review across the retained first-party evidence manifest;
+- an independent deterministic verifier for URLs, policies, product counts, structured data, checkout controls, documents and exact duplicate content;
+- priority-based adjudication with a second Luna critic pass for material disagreements;
 - a persisted evidence graph grouping adverse, contradictory and mitigating records by unique material risk theme;
 - normalized content hashes, historical snapshots and sentence-level smart diff;
 - finding review, careful resolution and audit history;
@@ -92,12 +93,16 @@ docker compose --profile workers up -d --build
 | `DATABASE_URL` | PostgreSQL connection string |
 | `REDIS_URL` | Redis connection string for queues, throttling and health checks |
 | `APP_URL` | Canonical web origin used by mutation origin checks |
-| `AI_PROVIDER` | `deterministic` or `openai-compatible`; the latter enables both page and merchant LLM passes |
-| `AI_MODEL` | Provider model identifier recorded with semantic evidence |
-| `AI_VISION_MODEL` | Multimodal model used for rendered-page and image review |
-| `AI_DOCUMENT_MODEL` | Structured semantic model used after PDF text extraction |
+| `AI_PROVIDER` | `deterministic` or `openai-compatible`; the latter enables the Responses API review path |
+| `AI_MODEL` | Legacy semantic model identifier used only when dual review is off or shadowed |
+| `AI_REVIEW_MODEL` / `AI_CRITIC_MODEL` | Primary holistic reviewer and material-disagreement critic; both default to `gpt-5.6-luna` |
+| `AI_REVIEW_REASONING_EFFORT` | Luna reasoning effort for primary and critic passes |
+| `DUAL_REVIEW_MODE` | `off`, `shadow`, or `enforced`; enforced gates score eligibility through adjudication |
+| `AI_REVIEW_MAX_INPUT_CHARS` / `AI_REVIEW_MAX_RECORDS` | Deterministic evidence-manifest shard bounds |
+| `AI_REVIEW_MAX_IMAGES` | Maximum retained images/screenshots supplied to Luna per shard |
+| `AI_CRITIC_MAX_DISAGREEMENTS` | Maximum material disagreements sent to one critic pass |
 | `AI_API_KEY` | Required server-only credential when the remote semantic layer is enabled |
-| `AI_BASE_URL` | OpenAI-compatible API base URL; requests use `/chat/completions` with strict JSON Schema output |
+| `AI_BASE_URL` | OpenAI API base URL; dual review uses `/responses` with strict JSON Schema output |
 | `AI_TIMEOUT_MS` | Per semantic request timeout |
 | `AI_MAX_PAGE_CHARS` | Maximum retained evidence characters sent per page |
 | `AI_MAX_OUTPUT_TOKENS` | Maximum structured output tokens per semantic request |
@@ -108,6 +113,10 @@ docker compose --profile workers up -d --build
 | `AI_DOCUMENT_MAX_FILES` | Maximum public PDFs extracted per scan |
 | `AI_DOCUMENT_MAX_PAGES` | Maximum pages extracted from each public PDF |
 | `AI_DOCUMENT_MAX_CHARS` | Maximum document characters sent to semantic review |
+| `PUBLIC_API_MAX_RESPONSES` | Maximum anonymous same-origin JSON/XHR responses retained per rendered page |
+| `CHECKOUT_EXPLORATION_MODE` | `read_only` by default; `anonymous_cart` is reserved for isolated non-ordering exploration |
+| `EXTERNAL_VERIFICATION_ENABLED` | Enables separate public-web verification for material merchant claims requested by Luna |
+| `EXTERNAL_VERIFICATION_MAX_CLAIMS` | Maximum external claims checked per scan |
 | `AI_INPUT_COST_PER_MILLION` | Optional input-token price used for scan cost estimates |
 | `AI_OUTPUT_COST_PER_MILLION` | Optional output-token price used for scan cost estimates |
 | `AI_VISION_INPUT_COST_PER_MILLION` / `AI_VISION_OUTPUT_COST_PER_MILLION` | Optional vision-model rates; generic rates are the fallback |
@@ -133,9 +142,11 @@ Never expose server variables through `NEXT_PUBLIC_*`.
 2. A `QUEUED` scan and persistent progress record are created.
 3. BullMQ sends the scan to the crawler worker.
 4. The crawler validates DNS and every navigation target, discovers public URLs, renders pages and stores normalized snapshots.
-5. The analysis worker normalizes products and policies, evaluates deterministic rules, runs bounded page, visual and document observations, and performs one cross-source merchant pass.
-6. Validated evidence is consolidated into unique themes, persisted with source/model provenance and scored by deterministic code. High and critical findings also receive a reproduction screenshot.
-7. The frontend polls a lightweight endpoint and renders only persisted job state.
+5. The analysis worker retains a first-party evidence ledger, extracts images and public PDFs, and builds one versioned evidence manifest.
+6. GPT-5.6 Luna reviews that manifest holistically while the independent verifier derives objective assertions from the same records.
+7. Deterministic adjudication gives Luna priority for meaning and context, gives the verifier priority for objective facts, invokes a second critic for material conflicts, and marks unresolved conflicts `NEEDS_REVIEW` with `scoreEligible=false`.
+8. Only adjudicated, validated structured evidence reaches the deterministic ORBIT Health Score. Luna never receives or calculates the score.
+9. The frontend polls persisted job state. Authorized audit clients can read `/api/sentinel/scans/:scanId/evidence` and `/api/sentinel/scans/:scanId/review`.
 
 Jobs use exponential retry. Exhausted jobs enter a dead-letter queue and mark their scan failed. Worker liveness is stored in `WorkerHeartbeat`.
 
@@ -165,25 +176,23 @@ To add a ruleset or rule:
 
 Deterministic checks run first. A keyword can nominate a statement for contextual review, but a keyword by itself does not become a finding.
 
-## Semantic analyzer
+## Dual review
 
-Sentinel is hybrid and multimodal. The deterministic rule engine runs first and remains active for every scan. When `AI_PROVIDER=openai-compatible`, bounded typed page evidence, prominence-ranked rendered visual evidence and extracted public-document text receive separate strict JSON Schema observations at temperature zero. A final merchant pass compares text, checkout, visual and document observations across the merchant.
+In enforced mode, GPT-5.6 Luna is the primary semantic and contextual reviewer. It receives bounded deterministic shards when a manifest exceeds input limits, then performs merchant-wide synthesis. Every summary, uncertainty and observation must cite retained first-party `EvidenceRecord` IDs. ORBIT hydrates the actual text, value, URL or stored asset after the response; invented or external IDs are rejected. Luna returns only `ADVERSE`, `MITIGATING`, `NEUTRAL` or `INFORMATIONAL` observations and never returns merchant approval, legality, processor eligibility or an ORBIT score.
 
-LLM output is parsed with strict Zod schemas and rejected unless each exact evidence quote, URL and evidence type can be matched to the retained page input. Negations and controls remain observations but do not become risk findings. Validated risk observations are converted to `NEEDS_REVIEW` candidates; the LLM never receives or returns an approval or certification decision.
+The deterministic verifier independently derives objective `VerificationAssertion` records from the evidence ledger. `AdjudicationDecision` records make the authority explicit: semantic/context questions prioritize Luna, objective facts prioritize the verifier, material conflicts can trigger a separate critic `ReviewRun`, and unresolved conflicts are retained as `NEEDS_REVIEW` but excluded from score deductions.
 
-A second merchant-level pass compares validated page observations and deterministic findings. It must cite a primary item and at least one supporting item, enabling auditable RUO-versus-commercial-positioning contradictions. Deterministic findings shadow equivalent semantic observations, repeated semantic evidence is consolidated across templates, and distinct supported observations remain separate.
+Optional public-web verification runs only for material claim requests emitted by Luna. Search results must be cited by the provider and independently retrievable by ORBIT before they are retained. Those artifacts use the `EXTERNAL_PUBLIC_WEB` scope and are never mixed into the first-party merchant manifest.
 
-`SemanticAnalyzer` continues to provide local claim-level context. `WebsiteSemanticAnalyzer` provides the structured remote page and merchant passes. Both caches use content hash, prompt version, provider and model. Cache rows store structured results and request usage only—never hidden reasoning traces or credentials.
-
-Content, screenshot and document hashes suppress duplicated model work. Page importance limits visual review; document and page inputs are bounded; results are cached by content, prompt, provider and model. Combined semantic, visual and document cost estimates are written to scan intelligence and completion audit metadata when per-million-token rates are configured. Cache hits have zero incremental estimated cost.
+The older page, visual and document semantic analyzers remain available in `off` and `shadow` modes for migration comparison. Enforced mode reuses their collection and extraction components but disables their model judgments so Luna remains primary.
 
 ## Finding lifecycle
 
-Findings are fingerprinted by rule and evidence-bearing text, with site-wide identities for template-duplicated and semantic evidence. A repeated signal updates `lastDetectedAt`, retains affected URLs and appends evidence instead of replacing history. Semantic evidence metadata records source layer, evidence type, human-review requirement, provider, model, prompt version and confidence, and links to the immutable page snapshot. During a complete scan, a disappeared signal becomes `RESOLVED` with `resolvedAt` and `resolvedByScanId`; it is never deleted. Reviewer decisions create both a `FindingReview` and an append-only `AuditLog` record.
+Findings are fingerprinted by rule and evidence-bearing text, with site-wide identities for template-duplicated and semantic evidence. A repeated signal updates `lastDetectedAt`, retains affected URLs and appends evidence instead of replacing history. Dual-review findings link to both their `AdjudicationDecision` and retained `EvidenceRecord` rows. During a complete scan, a disappeared signal becomes `RESOLVED` with `resolvedAt` and `resolvedByScanId`; it is never deleted. Reviewer decisions create both a `FindingReview` and an append-only `AuditLog` record.
 
 ## Score engine
 
-`orbit-health-v8` applies deterministic deductions by unique material risk theme. Severity is adjusted by coded prominence, validated confidence and bounded mitigating controls. Additional pages add at most two 25% increments, capping repetition at 150%. Related text, visual and document evidence on one page cannot multiply score impact. Coverage is stored separately, and incomplete semantic, visual, document or checkout inspection lowers assessment certainty rather than silently passing. LLMs never calculate or decide the score.
+`orbit-health-v9` applies deterministic deductions once per unique material risk theme. Severity is adjusted by coded prominence, validated confidence and bounded mitigating controls; repeated template or page evidence remains auditable but cannot multiply the deduction. Coverage is stored separately, and incomplete semantic, visual, document or checkout inspection lowers assessment certainty rather than silently passing. Candidates with `scoreEligible=false` are filtered before scoring. LLMs never calculate or decide the score.
 
 ## Security model
 

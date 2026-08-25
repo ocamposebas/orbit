@@ -22,6 +22,24 @@ export interface CrawledPage {
   classification?: ClassifiedPage;
   hash?: string;
   inaccessibleReason?: string;
+  publicData?: PublicDataResponse[];
+}
+
+export interface PublicDataResponse {
+  url: string;
+  status: number;
+  contentType: string;
+  value: unknown;
+  hash: string;
+}
+
+const sensitiveJsonKey = /(?:authorization|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|session[_-]?id|csrf|cookie)/i;
+
+function sanitizePublicJson(value: unknown, depth = 0): unknown {
+  if (depth > 20) return "[TRUNCATED_DEPTH]";
+  if (Array.isArray(value)) return value.slice(0, 2_000).map((item) => sanitizePublicJson(item, depth + 1));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 5_000).map(([key, item]) => [key, sensitiveJsonKey.test(key) ? "[REDACTED]" : sanitizePublicJson(item, depth + 1)]));
+  return value;
 }
 
 export interface CrawlOptions {
@@ -114,6 +132,27 @@ export async function inspectSafeInteractiveStates(page: Page) {
 
 async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?: string, unsafeAllowPrivateTestTarget = false): Promise<CrawledPage> {
   const env = getServerEnv();
+  const publicData: PublicDataResponse[] = [];
+  const pendingResponses = new Set<Promise<void>>();
+  const captureResponse = (observed: import("playwright").Response) => {
+    if (publicData.length >= env.PUBLIC_API_MAX_RESPONSES) return;
+    const request = observed.request();
+    const contentType = observed.headers()["content-type"] ?? "";
+    const contentLength = Number(observed.headers()["content-length"] ?? 0);
+    if (request.method() !== "GET" || !["xhr", "fetch"].includes(request.resourceType()) || !/(?:application|text)\/(?:[^;]+\+)?json/i.test(contentType) || observed.status() >= 400 || (contentLength && contentLength > env.CRAWLER_RESPONSE_LIMIT_BYTES)) return;
+    const task = (async () => {
+      const responseUrl = new URL(observed.url());
+      if (responseUrl.origin !== new URL(page.url() || url).origin) return;
+      if (!unsafeAllowPrivateTestTarget) await validatePublicUrl(responseUrl);
+      const bytes = await observed.body();
+      if (!bytes.byteLength || bytes.byteLength > env.CRAWLER_RESPONSE_LIMIT_BYTES || publicData.length >= env.PUBLIC_API_MAX_RESPONSES) return;
+      const value = sanitizePublicJson(JSON.parse(bytes.toString("utf8")) as unknown);
+      publicData.push({ url: responseUrl.toString(), status: observed.status(), contentType, value, hash: contentHash(value) });
+    })().catch(() => undefined);
+    pendingResponses.add(task);
+    void task.finally(() => pendingResponses.delete(task));
+  };
+  page.on("response", captureResponse);
   try {
     let response = await page.goto(url, { waitUntil: "domcontentloaded" });
     if (response && (response.status() === 429 || response.status() >= 500)) {
@@ -128,7 +167,7 @@ async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?:
     while (request?.redirectedFrom()) { redirects.push(request.url()); request = request.redirectedFrom(); }
     if (redirects.length > 4) throw new Error("Redirect limit exceeded");
     const contentType = response?.headers()["content-type"] ?? "";
-    if (contentType && !/(?:text\/html|application\/xhtml\+xml)/i.test(contentType)) return { url: page.url(), discoveredFrom, depth, status: response?.status(), contentType, inaccessibleReason: "Non-HTML response was not analyzed" };
+    if (contentType && !/(?:text\/html|application\/xhtml\+xml)/i.test(contentType)) return { url: page.url(), discoveredFrom, depth, status: response?.status(), contentType, inaccessibleReason: "Non-HTML response was not analyzed", publicData };
     const html = await page.content();
     if (Buffer.byteLength(html) > env.CRAWLER_RESPONSE_LIMIT_BYTES) throw new Error("Rendered page exceeds the configured size limit");
     const finalUrl = page.url();
@@ -137,11 +176,14 @@ async function crawlOne(page: Page, url: string, depth: number, discoveredFrom?:
     const renderedVisibleText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
     const normalized = extractNormalizedContent(html, finalUrl, { originalUrl: url, renderedVisibleText, interactiveStates });
     const soft404Structure = `${normalized.title} ${normalized.headings.slice(0, 2).join(" ")}`.trim();
-    if (/\b(?:404|page not found|not found|page does not exist|nothing here)\b/i.test(soft404Structure) && soft404Structure.length < 300) return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType, title: normalized.title, description: metadata.description, robots: metadata.robots, inaccessibleReason: "Soft 404 page was not analyzed" };
+    if (/\b(?:404|page not found|not found|page does not exist|nothing here)\b/i.test(soft404Structure) && soft404Structure.length < 300) return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType, title: normalized.title, description: metadata.description, robots: metadata.robots, inaccessibleReason: "Soft 404 page was not analyzed", publicData };
     const classification = classifyPage(finalUrl, normalized);
-    return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType, title: normalized.title, description: metadata.description, robots: metadata.robots, normalized, classification, hash: contentHash(normalized) };
+    return { url: finalUrl, canonicalUrl: metadata.canonical, discoveredFrom, depth, status: response?.status(), contentType, title: normalized.title, description: metadata.description, robots: metadata.robots, normalized, classification, hash: contentHash(normalized), publicData };
   } catch (error) {
-    return { url, discoveredFrom, depth, inaccessibleReason: error instanceof Error ? error.message.slice(0, 500) : "Unknown crawl error" };
+    return { url, discoveredFrom, depth, inaccessibleReason: error instanceof Error ? error.message.slice(0, 500) : "Unknown crawl error", publicData };
+  } finally {
+    await Promise.allSettled([...pendingResponses]);
+    page.off("response", captureResponse);
   }
 }
 

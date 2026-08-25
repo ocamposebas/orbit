@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { EvidenceClassification } from "@/sentinel/analysis/evidence-classification";
 
 export const pageTypes = ["HOME", "PRODUCT", "COLLECTION", "CATEGORY", "POLICY", "TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT", "FAQ", "CHECKOUT", "CART", "ACCOUNT", "BLOG", "ARTICLE", "LANDING", "COA", "OTHER"] as const;
 export type SentinelPageType = (typeof pageTypes)[number];
@@ -71,6 +72,19 @@ export interface ClassifiedPage {
   reasons: string[];
 }
 
+export interface CandidateEvidenceReference {
+  url: string;
+  text: string;
+  role: string;
+  evidenceType?: string;
+  sourceKind?: "TEXT" | "VISUAL" | "DOCUMENT" | "INTERACTIVE";
+  assetStorageKey?: string;
+  assetHash?: string;
+  domSelector?: string;
+  classification?: EvidenceClassification;
+  evidenceRecordId?: string;
+}
+
 export interface CandidateFinding {
   ruleKey: string;
   severity: SentinelSeverity;
@@ -85,8 +99,8 @@ export interface CandidateFinding {
   reason: string;
   recommendedAction: string;
   scoreComponent: ScoreComponentKey;
-  secondaryEvidence?: { url: string; text: string; role: string };
-  supportingEvidence?: Array<{ url: string; text: string; role: string; evidenceType?: string; sourceKind?: "TEXT" | "VISUAL" | "DOCUMENT" | "INTERACTIVE"; assetStorageKey?: string; assetHash?: string; domSelector?: string; classification?: "ADVERSE" | "NEUTRAL" | "MITIGATING" | "CONTRADICTORY" | "INFORMATIONAL" }>;
+  secondaryEvidence?: CandidateEvidenceReference;
+  supportingEvidence?: CandidateEvidenceReference[];
   affectedUrls?: string[];
   analysisSource?: "DETERMINISTIC" | "SEMANTIC_PAGE" | "SEMANTIC_MERCHANT";
   evidenceType?: string;
@@ -97,13 +111,16 @@ export interface CandidateFinding {
   semanticClassification?: string;
   promptVersion?: string;
   riskTheme?: string;
-  evidenceClassification?: "ADVERSE" | "NEUTRAL" | "MITIGATING" | "CONTRADICTORY" | "INFORMATIONAL";
+  evidenceClassification?: EvidenceClassification;
   prominence?: "PRIMARY_COMMERCIAL" | "PRODUCT_DESCRIPTION" | "SITEWIDE" | "NAVIGATION" | "EDITORIAL" | "TECHNICAL";
   domSelector?: string;
   sourceKind?: "TEXT" | "VISUAL" | "DOCUMENT" | "INTERACTIVE";
   assetStorageKey?: string;
   assetHash?: string;
-  mitigatingEvidence?: Array<{ url: string; text: string; role: string; evidenceType?: string }>;
+  mitigatingEvidence?: CandidateEvidenceReference[];
+  evidenceRecordIds?: string[];
+  adjudicationId?: string;
+  scoreEligible?: boolean;
 }
 
 export type ScoreComponentKey = "POLICY_COVERAGE" | "PRODUCT_INTEGRITY" | "RESEARCH_CONTROLS" | "MARKETING_RISK" | "SITE_CONTROLS" | "OPERATIONAL_CONSISTENCY";

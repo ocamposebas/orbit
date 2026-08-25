@@ -32,9 +32,7 @@ export function calculateHealthScore(findings: CandidateFinding[], assessmentCov
       const hasMitigation = themedFindings.some((finding) => (finding.mitigatingEvidence?.length ?? 0) > 0);
       const mitigationMultiplier = hasMitigation && !theme.startsWith("CONTRADICTION:") ? 0.9 : 1;
       const adjustedBase = Math.max(base ? 1 : 0, Math.round(base * prominence * confidenceMultiplier * mitigationMultiplier));
-      const incrementalOccurrences = Math.min(2, Math.max(0, occurrenceUrls.size - 1));
-      const incremental = Math.min(Math.round(adjustedBase * 0.5), incrementalOccurrences * Math.ceil(adjustedBase * 0.25));
-      return { ruleKey: theme, severity: primary.severity, points: adjustedBase + incremental, title: occurrenceUrls.size > 1 ? `${primary.title} (${occurrenceUrls.size} pages; repeat impact capped)` : primary.title };
+      return { ruleKey: theme, severity: primary.severity, points: adjustedBase, title: occurrenceUrls.size > 1 ? `${primary.title} (${occurrenceUrls.size} pages; one theme deduction)` : primary.title };
     });
     const observedScore = Math.max(0, 100 - deductionRows.reduce((sum, row) => sum + row.points, 0));
     const coverage = Math.max(0, Math.min(100, assessmentCoverage[key] ?? 100));
@@ -45,5 +43,5 @@ export function calculateHealthScore(findings: CandidateFinding[], assessmentCov
     return { key, label: labels[key], score, observedScore, assessmentCoverage: coverage, deductions: deductionRows };
   });
   const total = Math.round(components.reduce((sum, component) => sum + component.score * weights[component.key], 0));
-  return { total, formulaVersion: "orbit-health-v8", components, explanation: { basis: "Internal ORBIT score derived from unique material risk themes, severity, validated confidence, deterministic prominence, mitigating controls, capped repetition, and observed coverage.", scale: { minimum: 0, maximum: 100, higherIsBetter: true }, weights, assessmentCoverage, uncertaintyFloor: 70, repeatedThemeCap: 1.5, prominenceMultipliers: prominenceMultiplier, note: "Each unique material risk theme receives one prominence- and confidence-adjusted deduction. Evidence on additional pages adds at most two 25% increments, capped at 150% of that theme deduction. Related evidence on one page does not multiply score impact. Mitigating evidence can reduce a non-contradiction theme by at most 10%. Model output supplies observations only; deterministic code calculates the score." } };
+  return { total, formulaVersion: "orbit-health-v9", components, explanation: { basis: "Internal ORBIT score derived from unique material risk themes, severity, validated confidence, deterministic prominence, mitigating controls, deduplicated repetition, and observed coverage.", scale: { minimum: 0, maximum: 100, higherIsBetter: true }, weights, assessmentCoverage, uncertaintyFloor: 70, repeatedThemeCap: 1, prominenceMultipliers: prominenceMultiplier, note: "Each unique material risk theme receives one prominence- and confidence-adjusted deduction. Repeated evidence across templates, navigation, cards, headings, or pages is retained for audit and may slightly increase capped confidence, but never adds another score deduction. Mitigating evidence can reduce a non-contradiction theme by at most 10%. Model output supplies observations only; deterministic code calculates the score." } };
 }
