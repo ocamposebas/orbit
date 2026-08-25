@@ -2,6 +2,8 @@ import type { Prisma } from "@/generated/prisma/client";
 import { getServerEnv } from "@/sentinel/config";
 import { getDatabase } from "@/sentinel/db";
 import type { EvidenceManifest, EvidenceManifestRecord } from "@/sentinel/evidence/schema";
+import { ImageValidationSession, type ImageValidationResult } from "@/sentinel/evidence/image-validation";
+import { markVisualUnavailable } from "@/sentinel/evidence/ledger";
 import { contentHash } from "@/sentinel/extraction/normalize";
 import { logger, sanitizeLogText, serializeErrorForLog } from "@/sentinel/logger";
 import { evidenceStorage } from "@/sentinel/storage";
@@ -102,6 +104,42 @@ function wait(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function invalidImageRequest(error: unknown) {
+  return error instanceof LunaApiRequestError
+    && error.httpStatus === 400
+    && error.openaiErrorCode === "invalid_value"
+    && /image data[\s\S]*valid image|invalid image/i.test(error.message);
+}
+
+export async function isolateInvalidImageCandidates<T>(candidates: T[], probe: (candidateGroup: T[]) => Promise<boolean>): Promise<{ valid: T[]; invalid: T[] }> {
+  const valid: T[] = [];
+  const invalid: T[] = [];
+  const inspectKnownFailingGroup = async (group: T[]): Promise<void> => {
+    if (group.length === 1) {
+      invalid.push(group[0]);
+      return;
+    }
+    const midpoint = Math.ceil(group.length / 2);
+    for (const half of [group.slice(0, midpoint), group.slice(midpoint)]) {
+      if (!half.length) continue;
+      if (await probe(half)) valid.push(...half);
+      else await inspectKnownFailingGroup(half);
+    }
+  };
+  await inspectKnownFailingGroup(candidates);
+  return { valid, invalid };
+}
+
+function lunaImageLogFields(record: EvidenceManifestRecord, result: ImageValidationResult) {
+  return {
+    imageEvidenceId: record.id,
+    detectedMime: result.detectedMime,
+    byteSize: result.byteSize,
+    validationResult: result.validationResult,
+    skipReason: result.skipReason ?? null,
+  };
+}
+
 function safeDiagnosticText(value: unknown, apiKey: string) {
   if (value === undefined || value === null) return null;
   const text = typeof value === "string" ? value : String(value);
@@ -176,6 +214,7 @@ export interface LunaReviewerConfig {
   maxInputChars: number;
   maxRecords: number;
   maxImages: number;
+  maxImageBytes: number;
 }
 
 function responseText(response: ResponsesOutput) {
@@ -250,6 +289,7 @@ function validateReviewEvidence(manifest: EvidenceManifest, review: LunaMerchant
 
 export class LunaMerchantReviewer {
   readonly provider = "openai-responses";
+  private readonly visuallyUnavailableArtifactIds = new Set<string>();
 
   constructor(private readonly config: LunaReviewerConfig, private readonly request: typeof fetch = fetch) {}
 
@@ -269,56 +309,104 @@ export class LunaMerchantReviewer {
     let responseBodyPromise: Promise<string | undefined> | undefined;
     let apiReviewCompleted = false;
     try {
-      const imageContent: Array<Record<string, unknown>> = [];
-      for (const record of input.imageRecords ?? []) {
-        if (!record.storageKey || !record.mimeType?.startsWith("image/")) continue;
-        const bytes = await evidenceStorage().get(record.storageKey);
-        if (!bytes) continue;
-        imageContent.push({ type: "input_text", text: `Retained image evidenceRecordId: ${record.id}` }, { type: "input_image", image_url: `data:${record.mimeType};base64,${Buffer.from(bytes).toString("base64")}`, detail: "high" });
+      type PreparedLunaImage = { record: EvidenceManifestRecord; validation: ImageValidationResult; content: Array<Record<string, unknown>> };
+      const preparedImages: PreparedLunaImage[] = [];
+      let imageSkipped = 0;
+      const validator = new ImageValidationSession(this.config.maxImageBytes);
+      const markUnavailable = async (record: EvidenceManifestRecord, result: ImageValidationResult) => {
+        this.visuallyUnavailableArtifactIds.add(record.artifactId);
+        await markVisualUnavailable({ artifactId: record.artifactId, artifactMetadata: record.artifactMetadata, evidenceRecordId: record.id, detectedMime: result.detectedMime, byteSize: result.byteSize, validationResult: result.validationResult, skipReason: result.skipReason ?? "VISUAL_UNAVAILABLE" }).catch(() => undefined);
+        logger.warn(lunaImageLogFields(record, result), "Image evidence excluded from Luna visual payload");
+      };
+      try {
+        for (const record of input.imageRecords ?? []) {
+          if (this.visuallyUnavailableArtifactIds.has(record.artifactId)) {
+            imageSkipped++;
+            continue;
+          }
+          if (!record.storageKey) continue;
+          const bytes = await evidenceStorage().get(record.storageKey);
+          const validation = bytes
+            ? await validator.validate(bytes)
+            : { ok: false, detectedMime: null, byteSize: 0, validationResult: "REJECTED", skipReason: "STORED_IMAGE_UNAVAILABLE" } as ImageValidationResult;
+          if (!validation.ok || !validation.outputBytes || !validation.outputMime) {
+            imageSkipped++;
+            await markUnavailable(record, validation);
+            continue;
+          }
+          logger.info(lunaImageLogFields(record, validation), "Image evidence validated for Luna visual payload");
+          preparedImages.push({ record, validation, content: [{ type: "input_text", text: `Retained image evidenceRecordId: ${record.id}` }, { type: "input_image", image_url: `data:${validation.outputMime};base64,${Buffer.from(validation.outputBytes).toString("base64")}`, detail: "high" }] });
+        }
+      } finally {
+        await validator.close();
       }
       const payloadText = JSON.stringify(input.payload);
-      logger.info(lunaRequestLogFields({
-        model: this.config.model,
-        evidenceRecordCount: input.evidenceRecordCount,
-        imageCount: imageContent.length / 2,
-        approximateInputCharacters: input.systemPrompt.length + payloadText.length,
-        maxOutputTokens: this.config.maxOutputTokens,
-        reasoningEffort: this.config.reasoningEffort,
-        timeoutMs: this.config.timeoutMs,
-      }), "Sending primary Luna Responses API request");
-      response = await this.request(`${this.config.baseUrl.replace(/\/$/, "")}/responses`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: { authorization: `Bearer ${this.config.apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          model: this.config.model,
-          store: false,
-          safety_identifier: input.safetyIdentifier,
-          reasoning: { effort: this.config.reasoningEffort, context: "current_turn" },
-          max_output_tokens: this.config.maxOutputTokens,
-          instructions: input.systemPrompt,
-          input: [{ role: "user", content: [{ type: "input_text", text: payloadText }, ...imageContent] }],
-          text: { format: { type: "json_schema", name: "orbit_luna_merchant_review", strict: true, schema: lunaMerchantReviewJsonSchema } },
-        }),
-      });
-      try {
-        responseBodyPromise = response.clone().text().catch(() => undefined);
-      } catch {
-        responseBodyPromise = undefined;
-      }
-      phase = "response_parsing";
-      raw = await response.json() as ResponsesOutput;
-      if (!response.ok) {
+      const send = async (images: PreparedLunaImage[]) => {
         phase = "request";
-        const message = raw.error?.message || `Luna Responses API returned HTTP ${response.status}.`;
-        throw new LunaApiRequestError(
-          message,
-          response.status,
-          raw.error?.type,
-          raw.error?.code,
-          response.status === 429 ? rateLimitDelayMs(response, message) : undefined,
-        );
+        raw = undefined;
+        responseBodyPromise = undefined;
+        logger.info(lunaRequestLogFields({
+          model: this.config.model,
+          evidenceRecordCount: input.evidenceRecordCount,
+          imageCount: images.length,
+          approximateInputCharacters: input.systemPrompt.length + payloadText.length,
+          maxOutputTokens: this.config.maxOutputTokens,
+          reasoningEffort: this.config.reasoningEffort,
+          timeoutMs: this.config.timeoutMs,
+        }), "Sending primary Luna Responses API request");
+        logger.info({ imagesSent: images.length, imagesSkipped: imageSkipped }, "Luna visual payload prepared");
+        response = await this.request(`${this.config.baseUrl.replace(/\/$/, "")}/responses`, {
+          method: "POST",
+          signal: controller.signal,
+          headers: { authorization: `Bearer ${this.config.apiKey}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            model: this.config.model,
+            store: false,
+            safety_identifier: input.safetyIdentifier,
+            reasoning: { effort: this.config.reasoningEffort, context: "current_turn" },
+            max_output_tokens: this.config.maxOutputTokens,
+            instructions: input.systemPrompt,
+            input: [{ role: "user", content: [{ type: "input_text", text: payloadText }, ...images.flatMap((image) => image.content)] }],
+            text: { format: { type: "json_schema", name: "orbit_luna_merchant_review", strict: true, schema: lunaMerchantReviewJsonSchema } },
+          }),
+        });
+        try {
+          responseBodyPromise = response.clone().text().catch(() => undefined);
+        } catch {
+          responseBodyPromise = undefined;
+        }
+        phase = "response_parsing";
+        raw = await response.json() as ResponsesOutput;
+        if (!response.ok) {
+          phase = "request";
+          const message = raw.error?.message || `Luna Responses API returned HTTP ${response.status}.`;
+          throw new LunaApiRequestError(message, response.status, raw.error?.type, raw.error?.code, response.status === 429 ? rateLimitDelayMs(response, message) : undefined);
+        }
+      };
+      let images = preparedImages;
+      try {
+        await send(images);
+      } catch (error) {
+        if (!invalidImageRequest(error) || !images.length) throw error;
+        const isolated = await isolateInvalidImageCandidates(images, async (candidateGroup) => {
+          try {
+            await send(candidateGroup);
+            return true;
+          } catch (probeError) {
+            if (invalidImageRequest(probeError)) return false;
+            throw probeError;
+          }
+        });
+        for (const invalid of isolated.invalid) {
+          const validation: ImageValidationResult = { ...invalid.validation, ok: false, outputMime: undefined, outputBytes: undefined, validationResult: "REJECTED", skipReason: "OPENAI_INVALID_IMAGE" };
+          await markUnavailable(invalid.record, validation);
+        }
+        imageSkipped += isolated.invalid.length;
+        images = isolated.valid;
+        logger.warn({ imagesSent: images.length, imagesSkipped: imageSkipped, isolatedInvalidImages: isolated.invalid.length }, "OpenAI rejected image data; retrying Luna shard with isolated valid images");
+        await send(images);
       }
+      if (!raw || !response) throw new Error("Luna Responses API returned no response.");
       const text = responseText(raw);
       if (!text) throw new Error("Luna Responses API returned no structured output text.");
       const parsed = JSON.parse(text);
@@ -377,6 +465,7 @@ export class LunaMerchantReviewer {
   async review(input: { scanId: string; merchantId: string; merchantName: string; merchantDescription: string; manifest: EvidenceManifest }) {
     const records = input.manifest.records.filter((record) => record.scope === "MERCHANT_SITE");
     if (!records.length) throw new Error("Luna review requires retained first-party evidence.");
+    const visuallyUnavailableArtifactIds = new Set([...this.visuallyUnavailableArtifactIds, ...records.filter((record) => record.evidenceType === "VISUAL_UNAVAILABLE").map((record) => record.artifactId)]);
     const partitions = partitionRecords(records, lunaPartitionCharacterLimit(this.config.maxInputChars), this.config.maxRecords);
     const safetyIdentifier = contentHash(`orbit-merchant:${input.merchantId}`);
     const shardReviews: LunaMerchantReview[] = [];
@@ -386,7 +475,7 @@ export class LunaMerchantReviewer {
     for (let index = 0; index < partitions.length;) {
       const partition = partitions[index];
       const payload = { scanId: input.scanId, merchant: { name: input.merchantName, description: input.merchantDescription }, shard: { index: index + 1, total: partitions.length }, inventory: inventory(partition), evidence: partition.map(compactRecord) };
-      const imageRecords = [...new Map(partition.filter((record) => (record.artifactKind === "IMAGE" || record.artifactKind === "SCREENSHOT") && record.storageKey).map((record) => [record.artifactId, record])).values()].slice(0, this.config.maxImages);
+      const imageRecords = [...new Map(partition.filter((record) => (record.artifactKind === "IMAGE" || record.artifactKind === "SCREENSHOT") && record.storageKey && !visuallyUnavailableArtifactIds.has(record.artifactId)).map((record) => [record.artifactId, record])).values()].slice(0, this.config.maxImages);
       let result: Awaited<ReturnType<LunaMerchantReviewer["call"]>>;
       try {
         result = await this.call({ promptVersion: partitions.length === 1 ? LUNA_REVIEW_PROMPT_VERSION : LUNA_INDEX_PROMPT_VERSION, systemPrompt: partitions.length === 1 ? holisticSystemPrompt : indexingSystemPrompt, payload, safetyIdentifier, evidenceRecordCount: partition.length, imageRecords });
@@ -433,7 +522,7 @@ export function configuredLunaReviewer() {
     logger.warn("Dual review is enabled without AI_API_KEY; the deterministic verifier will continue and model review coverage will be incomplete");
     return undefined;
   }
-  return new LunaMerchantReviewer({ apiKey: env.AI_API_KEY, baseUrl: env.AI_BASE_URL, model: env.AI_REVIEW_MODEL, reasoningEffort: env.AI_REVIEW_REASONING_EFFORT, timeoutMs: env.AI_TIMEOUT_MS, maxOutputTokens: env.AI_MAX_OUTPUT_TOKENS, maxInputChars: env.AI_REVIEW_MAX_INPUT_CHARS, maxRecords: env.AI_REVIEW_MAX_RECORDS, maxImages: env.AI_REVIEW_MAX_IMAGES });
+  return new LunaMerchantReviewer({ apiKey: env.AI_API_KEY, baseUrl: env.AI_BASE_URL, model: env.AI_REVIEW_MODEL, reasoningEffort: env.AI_REVIEW_REASONING_EFFORT, timeoutMs: env.AI_TIMEOUT_MS, maxOutputTokens: env.AI_MAX_OUTPUT_TOKENS, maxInputChars: env.AI_REVIEW_MAX_INPUT_CHARS, maxRecords: env.AI_REVIEW_MAX_RECORDS, maxImages: env.AI_REVIEW_MAX_IMAGES, maxImageBytes: env.AI_VISUAL_MAX_IMAGE_BYTES });
 }
 
 export async function persistLunaObservations(runId: string, review: LunaMerchantReview) {

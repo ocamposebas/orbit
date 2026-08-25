@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import { getServerEnv } from "@/sentinel/config";
+import { contentHash } from "@/sentinel/extraction/normalize";
+import { ImageValidationSession, type ImageValidationResult } from "@/sentinel/evidence/image-validation";
+import { logger } from "@/sentinel/logger";
 import { safeFetchBinary } from "@/sentinel/security/ssrf";
 import { evidenceStorage } from "@/sentinel/storage";
 import type { NormalizedContent, SentinelPageType } from "@/sentinel/types";
@@ -13,8 +16,21 @@ function extension(contentType: string) {
   if (/png/i.test(contentType)) return "png";
   if (/webp/i.test(contentType)) return "webp";
   if (/gif/i.test(contentType)) return "gif";
-  if (/svg/i.test(contentType)) return "svg";
   return "jpg";
+}
+
+function unavailableHash(image: { src: string; parentUrl: string; alt?: string; title?: string }) {
+  return contentHash({ status: "VISUAL_UNAVAILABLE", url: image.src, parentUrl: image.parentUrl, alt: image.alt, title: image.title });
+}
+
+function validationLog(artifactId: string, result: ImageValidationResult) {
+  return {
+    imageEvidenceId: artifactId,
+    detectedMime: result.detectedMime,
+    byteSize: result.byteSize,
+    validationResult: result.validationResult,
+    skipReason: result.skipReason ?? null,
+  };
 }
 
 export async function collectMerchantImages(scanId: string, pages: Array<{ url: string; pageType: SentinelPageType; content: NormalizedContent }>) {
@@ -23,18 +39,53 @@ export async function collectMerchantImages(scanId: string, pages: Array<{ url: 
   const references = [...new Map(ranked.flatMap((page) => page.content.images.map((image) => ({ ...image, parentUrl: page.url, pageType: page.pageType }))).filter((image) => /^https?:/i.test(image.src)).map((image) => [image.src, image])).values()].slice(0, env.AI_REVIEW_MAX_IMAGES);
   let retained = 0;
   let failed = 0;
-  for (const image of references) {
-    try {
-      const response = await safeFetchBinary(image.src, { maxBytes: env.AI_VISUAL_MAX_IMAGE_BYTES, timeoutMs: env.AI_TIMEOUT_MS, accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/svg+xml" });
-      if (response.status >= 400 || !response.contentType.toLowerCase().startsWith("image/")) throw new Error("Image URL did not return a supported public image");
-      const sha256 = hash(response.bytes);
-      const storageKey = `${scanId}/images/${sha256}.${extension(response.contentType)}`;
-      await evidenceStorage().put(storageKey, response.bytes);
-      await persistArtifactEvidence({ scanId, kind: "IMAGE", url: response.url.toString(), parentUrl: image.parentUrl, mimeType: response.contentType, httpStatus: response.status, storageKey, sha256, metadata: { pageType: image.pageType, filename: image.filename, alt: image.alt, title: image.title }, records: [{ evidenceType: "IMAGE_FILE", exactText: [image.alt, image.title].filter(Boolean).join(" | ") || undefined, value: { filename: image.filename, alt: image.alt, title: image.title } }] });
-      retained++;
-    } catch {
-      failed++;
+  let rasterized = 0;
+  const validator = new ImageValidationSession(env.AI_VISUAL_MAX_IMAGE_BYTES);
+  try {
+    for (const image of references) {
+      let response: Awaited<ReturnType<typeof safeFetchBinary>> | undefined;
+      let inspectedValidation: ImageValidationResult | undefined;
+      try {
+        response = await safeFetchBinary(image.src, { maxBytes: env.AI_VISUAL_MAX_IMAGE_BYTES, timeoutMs: env.AI_TIMEOUT_MS, accept: "image/avif,image/webp,image/png,image/jpeg,image/gif,image/svg+xml" });
+        const originalHash = hash(response.bytes);
+        const inspected = await validator.validate(response.bytes);
+        const validation = response.status >= 400
+          ? { ...inspected, ok: false, outputMime: undefined, outputBytes: undefined, validationResult: "REJECTED", skipReason: inspected.detectedMime === "text/html" ? "HTML_ERROR_RESPONSE" : "HTTP_ERROR" } as ImageValidationResult
+          : inspected;
+        inspectedValidation = validation;
+        if (!validation.ok || !validation.outputBytes || !validation.outputMime) {
+          const artifact = await persistArtifactEvidence({
+            scanId,
+            kind: "IMAGE",
+            url: response.url.toString(),
+            parentUrl: image.parentUrl,
+            mimeType: validation.detectedMime ?? undefined,
+            httpStatus: response.status,
+            sha256: originalHash,
+            metadata: { pageType: image.pageType, filename: image.filename, alt: image.alt, title: image.title, requestedUrl: image.src, declaredContentType: response.contentType, detectedMime: validation.detectedMime, byteSize: validation.byteSize, validationResult: validation.validationResult, visualAvailability: "VISUAL_UNAVAILABLE", skipReason: validation.skipReason },
+            records: [{ evidenceType: "VISUAL_UNAVAILABLE", exactText: [image.alt, image.title].filter(Boolean).join(" | ") || undefined, value: { filename: image.filename, alt: image.alt, title: image.title, detectedMime: validation.detectedMime, byteSize: validation.byteSize, reason: validation.skipReason } }],
+          });
+          logger.warn(validationLog(artifact.id, validation), "Merchant image excluded from Luna visual payload");
+          failed++;
+          continue;
+        }
+        const storedHash = hash(validation.outputBytes);
+        const storageKey = `${scanId}/images/${storedHash}.${extension(validation.outputMime)}`;
+        await evidenceStorage().put(storageKey, validation.outputBytes);
+        const artifact = await persistArtifactEvidence({ scanId, kind: "IMAGE", url: response.url.toString(), parentUrl: image.parentUrl, mimeType: validation.outputMime, httpStatus: response.status, storageKey, sha256: originalHash, metadata: { pageType: image.pageType, filename: image.filename, alt: image.alt, title: image.title, requestedUrl: image.src, declaredContentType: response.contentType, detectedMime: validation.detectedMime, byteSize: validation.byteSize, width: validation.width, height: validation.height, validationResult: validation.validationResult, originalHash, storedHash, visualAvailability: "AVAILABLE" }, records: [{ evidenceType: "IMAGE_FILE", exactText: [image.alt, image.title].filter(Boolean).join(" | ") || undefined, value: { filename: image.filename, alt: image.alt, title: image.title, detectedMime: validation.detectedMime, validationResult: validation.validationResult } }] });
+        logger.info(validationLog(artifact.id, validation), "Merchant image validated for Luna visual payload");
+        retained++;
+        rasterized += Number(validation.validationResult === "RASTERIZED");
+      } catch (error) {
+        const skipReason = error instanceof Error && /size limit/i.test(error.message) ? "IMAGE_TOO_LARGE" : "FETCH_OR_STORAGE_FAILED";
+        const validation: ImageValidationResult = { ...inspectedValidation, ok: false, detectedMime: inspectedValidation?.detectedMime ?? null, byteSize: inspectedValidation?.byteSize ?? response?.bytes.byteLength ?? 0, outputMime: undefined, outputBytes: undefined, validationResult: "REJECTED", skipReason };
+        const artifact = await persistArtifactEvidence({ scanId, kind: "IMAGE", url: response?.url.toString() ?? image.src, parentUrl: image.parentUrl, mimeType: validation.detectedMime ?? undefined, httpStatus: response?.status, sha256: response ? hash(response.bytes) : unavailableHash(image), metadata: { pageType: image.pageType, filename: image.filename, alt: image.alt, title: image.title, requestedUrl: image.src, declaredContentType: response?.contentType, detectedMime: validation.detectedMime, byteSize: validation.byteSize, validationResult: validation.validationResult, visualAvailability: "VISUAL_UNAVAILABLE", skipReason }, records: [{ evidenceType: "VISUAL_UNAVAILABLE", exactText: [image.alt, image.title].filter(Boolean).join(" | ") || undefined, value: { filename: image.filename, alt: image.alt, title: image.title, detectedMime: validation.detectedMime, byteSize: validation.byteSize, reason: skipReason } }] }).catch(() => undefined);
+        logger.warn({ ...validationLog(artifact?.id ?? contentHash(image.src), validation) }, "Merchant image could not be retained for Luna visual payload");
+        failed++;
+      }
     }
+  } finally {
+    await validator.close();
   }
-  return { discovered: references.length, retained, failed };
+  return { discovered: references.length, retained, failed, rasterized, coveragePercent: references.length ? Math.round(retained / references.length * 100) : 100 };
 }

@@ -164,3 +164,35 @@ export async function persistArtifactEvidence(input: {
   }
   return artifact;
 }
+
+export async function markVisualUnavailable(input: {
+  artifactId: string;
+  artifactMetadata?: unknown;
+  evidenceRecordId: string;
+  detectedMime: string | null;
+  byteSize: number;
+  validationResult: string;
+  skipReason: string;
+}) {
+  const metadata = input.artifactMetadata && typeof input.artifactMetadata === "object" && !Array.isArray(input.artifactMetadata)
+    ? input.artifactMetadata as Record<string, unknown>
+    : {};
+  const value = {
+    status: "VISUAL_UNAVAILABLE",
+    sourceEvidenceRecordId: input.evidenceRecordId,
+    detectedMime: input.detectedMime,
+    byteSize: input.byteSize,
+    validationResult: input.validationResult,
+    reason: input.skipReason,
+  };
+  const hash = recordHash({ evidenceType: "VISUAL_UNAVAILABLE", value });
+  const db = getDatabase();
+  await db.$transaction([
+    db.evidenceArtifact.update({ where: { id: input.artifactId }, data: { metadata: jsonValue({ ...metadata, visualAvailability: value }) } }),
+    db.evidenceRecord.upsert({
+      where: { artifactId_evidenceType_contentHash: { artifactId: input.artifactId, evidenceType: "VISUAL_UNAVAILABLE", contentHash: hash } },
+      update: { value: jsonValue(value) },
+      create: { artifactId: input.artifactId, evidenceType: "VISUAL_UNAVAILABLE", value: jsonValue(value), contentHash: hash },
+    }),
+  ]);
+}
