@@ -3,7 +3,7 @@ import { contentHash } from "@/sentinel/extraction/normalize";
 import { getDatabase } from "@/sentinel/db";
 import { analyzeContext } from "./contextual-signals";
 
-export const LOCAL_SEMANTIC_VERSION = "local-semantic-v4";
+export const LOCAL_SEMANTIC_VERSION = "local-semantic-v5";
 
 export function analyzeClaim(input: string): SemanticResult {
   const text = input.trim();
@@ -13,6 +13,7 @@ export function analyzeClaim(input: string): SemanticResult {
   if (context.type === "SCIENTIFIC_DISCUSSION") return semanticResultSchema.parse({ classification: "research_context", risk: "none", confidence: context.confidence, consumerDirected: false, researchContext: true, reason: context.rationale, evidenceSpan: text, signalType: context.type });
   if (context.type === "HUMAN_ADMINISTRATION") return semanticResultSchema.parse({ classification: "administration_instruction", risk: context.confidence >= 0.95 ? "critical" : "high", confidence: context.confidence, consumerDirected: true, researchContext: context.researchContext, reason: context.rationale, evidenceSpan: text, signalType: context.type });
   if (["HUMAN_OUTCOME", "MEDICAL_CLAIM", "HUMAN_TESTIMONIAL", "BEFORE_AFTER_OUTCOME"].includes(context.type)) return semanticResultSchema.parse({ classification: "consumer_claim", risk: context.type === "MEDICAL_CLAIM" ? "critical" : "high", confidence: context.confidence, consumerDirected: true, researchContext: false, reason: context.rationale, evidenceSpan: text, signalType: context.type });
+  if (context.type === "COMMERCIAL_INTENDED_USE") return semanticResultSchema.parse({ classification: "needs_review", risk: "high", confidence: context.confidence, consumerDirected: false, researchContext: false, reason: context.rationale, evidenceSpan: text, signalType: context.type });
   if (context.type === "PRESCRIPTION_SIGNAL" || context.type === "AMBIGUOUS") return semanticResultSchema.parse({ classification: "needs_review", risk: context.type === "PRESCRIPTION_SIGNAL" ? "medium" : "low", confidence: context.confidence, consumerDirected: false, researchContext: context.researchContext, reason: context.rationale, evidenceSpan: text, signalType: context.type });
   return semanticResultSchema.parse({ classification: "neutral", risk: "none", confidence: context.confidence, consumerDirected: false, researchContext: context.researchContext, reason: context.rationale, evidenceSpan: text, signalType: context.type });
 }
@@ -27,7 +28,7 @@ export interface SemanticAnalyzer {
 export class LocalSemanticAnalyzer implements SemanticAnalyzer {
   readonly provider = "local";
   readonly model = LOCAL_SEMANTIC_VERSION;
-  readonly promptVersion = "claim-intent-v4";
+  readonly promptVersion = "claim-intent-v5";
   async analyze(text: string) { return analyzeClaim(text); }
 }
 

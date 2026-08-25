@@ -20,6 +20,14 @@ function candidate(input: Omit<CandidateFinding, "url" | "pageType">, page: Page
   return { ...input, url: page.url, pageType: page.pageType };
 }
 
+function isPrimaryPageEvidence(content: NormalizedContent, evidence: string) {
+  const normalized = evidence.replace(/\s+/g, " ").trim().toLowerCase();
+  const primaryText = [content.title, ...content.headings, ...content.paragraphs, content.productName, ...content.images.flatMap((image) => [image.alt, image.title]), ...Object.values(content.metadata)]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.replace(/\s+/g, " ").trim().toLowerCase());
+  return primaryText.includes(normalized) || JSON.stringify(content.structuredData).toLowerCase().includes(normalized);
+}
+
 export async function evaluatePage(page: PageInput, analyzer: SemanticAnalyzer): Promise<CandidateFinding[]> {
   const findings: CandidateFinding[] = [];
   if (page.httpStatus !== undefined && page.httpStatus >= 400) return findings;
@@ -27,15 +35,19 @@ export async function evaluatePage(page: PageInput, analyzer: SemanticAnalyzer):
   let materialConsumerClaim = false;
   for (const claim of claimBearingPage ? page.content.claims : []) {
     const analysis = await analyzer.analyze(claim);
+    const primaryPageEvidence = isPrimaryPageEvidence(page.content, claim);
     if (analysis.classification === "administration_instruction") {
-      materialConsumerClaim = true;
+      materialConsumerClaim ||= primaryPageEvidence;
       const severity = analysis.risk === "critical" && analysis.confidence >= 0.9 ? "CRITICAL" as const : "HIGH" as const;
       findings.push(candidate({ ruleKey: "RSRCH-ADMIN-001", severity, confidence: analysis.confidence, status: "NEEDS_REVIEW", category: "Claims & intended use", title: severity === "CRITICAL" ? "Explicit human administration instruction" : "Potential administration instruction", description: severity === "CRITICAL" ? "The page pairs an administration action with a dose, frequency or route." : "Language on the page may describe how a product is administered.", detectedText: analysis.evidenceSpan, reason: analysis.reason, recommendedAction: "Review the complete sentence and its product context; remove consumer administration guidance if it conflicts with the declared research-only model.", scoreComponent: "RESEARCH_CONTROLS" }, page));
     } else if (analysis.classification === "consumer_claim") {
-      materialConsumerClaim = true;
+      materialConsumerClaim ||= primaryPageEvidence;
       const medical = analysis.signalType === "MEDICAL_CLAIM"; const testimonial = analysis.signalType === "HUMAN_TESTIMONIAL" || analysis.signalType === "BEFORE_AFTER_OUTCOME";
       const severity = medical && analysis.confidence >= 0.9 ? "CRITICAL" as const : "HIGH" as const;
       findings.push(candidate({ ruleKey: medical ? "MKT-MEDICAL-001" : testimonial ? "MKT-TESTIMONIAL-001" : "MKT-CLAIM-001", severity, confidence: analysis.confidence, status: "NEEDS_REVIEW", category: medical ? "Medical claim" : testimonial ? "Human outcome evidence" : "Marketing claim", title: medical ? "Explicit medical or disease claim" : testimonial ? "Potential human outcome testimonial" : "Potential consumer-directed outcome claim", description: medical ? "The page directly associates a product-facing statement with treatment, prevention, diagnosis or cure of a health condition." : testimonial ? "The page presents a human outcome, transformation or first-person result." : "Language on the page presents or implies a consumer-oriented outcome.", detectedText: analysis.evidenceSpan, reason: analysis.reason, recommendedAction: "Review the exact statement, its product association, substantiation and consistency with the declared business model.", scoreComponent: "MARKETING_RISK" }, page));
+    } else if (analysis.classification === "needs_review" && analysis.signalType === "COMMERCIAL_INTENDED_USE") {
+      materialConsumerClaim ||= primaryPageEvidence;
+      findings.push(candidate({ ruleKey: "MKT-INTENDED-USE-001", severity: "HIGH", confidence: analysis.confidence, status: "NEEDS_REVIEW", category: "Claims & intended use", title: "Commercial physiological intended-use signal", description: "A public product, collection, category, navigation, heading, title, or description associates the catalog with a physiological or therapeutic outcome.", detectedText: analysis.evidenceSpan, reason: analysis.reason, recommendedAction: "Review the commercial label and its surrounding product context; do not rely on the word research alone to qualify an outcome-oriented intended use.", scoreComponent: "MARKETING_RISK" }, page));
     } else if (analysis.classification === "needs_review" && analysis.signalType === "PRESCRIPTION_SIGNAL") {
       findings.push(candidate({ ruleKey: "RX-REVIEW-001", severity: "MEDIUM", confidence: analysis.confidence, status: "NEEDS_REVIEW", category: "Business-model signal", title: "Prescription or pharmacy context requires review", description: "The page contains an explicit prescription, pharmacy or medical-service signal.", detectedText: analysis.evidenceSpan, reason: analysis.reason, recommendedAction: "Verify the business model and the role of this language. Do not infer a pharmacy operation from the keyword alone.", scoreComponent: "OPERATIONAL_CONSISTENCY" }, page));
     }

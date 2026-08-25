@@ -40,7 +40,7 @@ export const semanticResultSchema = z.object({
   researchContext: z.boolean(),
   reason: z.string().min(1),
   evidenceSpan: z.string(),
-  signalType: z.enum(["RESEARCH_RESTRICTION", "SCIENTIFIC_DISCUSSION", "HUMAN_ADMINISTRATION", "HUMAN_OUTCOME", "MEDICAL_CLAIM", "HUMAN_TESTIMONIAL", "BEFORE_AFTER_OUTCOME", "PRESCRIPTION_SIGNAL", "AMBIGUOUS", "NONE"]).optional(),
+  signalType: z.enum(["RESEARCH_RESTRICTION", "SCIENTIFIC_DISCUSSION", "HUMAN_ADMINISTRATION", "HUMAN_OUTCOME", "MEDICAL_CLAIM", "HUMAN_TESTIMONIAL", "BEFORE_AFTER_OUTCOME", "COMMERCIAL_INTENDED_USE", "PRESCRIPTION_SIGNAL", "AMBIGUOUS", "NONE"]).optional(),
 });
 
 export type SemanticResult = z.infer<typeof semanticResultSchema>;

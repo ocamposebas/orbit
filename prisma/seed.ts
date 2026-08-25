@@ -39,6 +39,7 @@ async function seed() {
     ["MKT-CLAIM-001", "Potential consumer-directed efficacy claim", "Marketing", "HIGH", "SEMANTIC", "PRODUCT"],
     ["MKT-MEDICAL-001", "Explicit medical or disease claim", "Medical claim", "CRITICAL", "SEMANTIC", "PRODUCT"],
     ["MKT-TESTIMONIAL-001", "Potential human outcome testimonial", "Human outcome evidence", "HIGH", "SEMANTIC", null],
+    ["MKT-INTENDED-USE-001", "Commercial physiological intended-use signal", "Claims & intended use", "HIGH", "SEMANTIC", null],
     ["MKT-SLUG-001", "Consumer-oriented URL requires context review", "Navigation language", "MEDIUM", "DETERMINISTIC", null],
     ["RX-REVIEW-001", "Prescription or pharmacy context requires review", "Business-model signal", "MEDIUM", "SEMANTIC", null],
     ["RSRCH-ADMIN-001", "Potential administration instruction", "Research positioning", "HIGH", "SEMANTIC", "PRODUCT"],

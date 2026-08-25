@@ -30,6 +30,26 @@ describe("scanner false-positive and safety gates", () => {
     expect(await evaluatePage(policy, new LocalSemanticAnalyzer())).toEqual([]);
   });
 
+  it("creates reviewable intended-use findings for public commercial research categories", async () => {
+    const category = page("https://example.test/collections/research", "COLLECTION", "<main><h1>Obesity Research Products</h1><p>Muscle Growth Research Products</p><p>Cognitive Research Products</p><p>Reproductive Research Products</p><p>Recovery Research Products</p></main>");
+    const findings = await evaluatePage(category, new LocalSemanticAnalyzer());
+    expect(findings.filter((finding) => finding.ruleKey === "MKT-INTENDED-USE-001")).toHaveLength(5);
+    expect(findings.every((finding) => finding.scoreComponent === "MARKETING_RISK")).toBe(true);
+  });
+
+  it("uses navigation as claim evidence without treating a repeated nav label as a product-page disclosure failure", async () => {
+    const product = page("https://example.test/products/alpha", "PRODUCT", '<nav><a href="/collections/obesity">Obesity Research Products</a></nav><main><h1>Reference Alpha</h1><p>$30.00</p><button>Add to cart</button></main>');
+    const findings = await evaluatePage(product, new LocalSemanticAnalyzer());
+    expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "MKT-INTENDED-USE-001" })]));
+    expect(findings.some((finding) => finding.ruleKey === "PROD-DISC-001")).toBe(false);
+  });
+
+  it("uses a product title intended-use signal for the nearby-disclosure review", async () => {
+    const product = page("https://example.test/products/obesity", "PRODUCT", '<main><h1>Obesity Research Product</h1><p>$30.00</p><button>Add to cart</button></main>');
+    const findings = await evaluatePage(product, new LocalSemanticAnalyzer());
+    expect(findings).toEqual(expect.arrayContaining([expect.objectContaining({ ruleKey: "MKT-INTENDED-USE-001" }), expect.objectContaining({ ruleKey: "PROD-DISC-001" })]));
+  });
+
   it("does not demand a product disclaimer for neutral scientific copy", async () => {
     const product = page("https://example.test/products/reference", "PRODUCT", '<main><h1>Reference compound</h1><p>$30.00</p><button>Add to cart</button><p>Studied in preclinical models of metabolic signaling.</p></main>');
     const findings = await evaluatePage(product, new LocalSemanticAnalyzer());

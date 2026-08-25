@@ -95,5 +95,11 @@ describe("cross-page contradictions and finding lifecycle", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].ruleKey).toBe("POSITION-CONFLICT-001");
   });
+  it("deduplicates the same copied disclaimer across pages and retains affected URLs", () => {
+    const shared = { ruleKey: "MKT-CLAIM-001", severity: "HIGH" as const, confidence: 0.92, status: "NEEDS_REVIEW" as const, category: "Marketing", title: "Claim", description: "Observed", pageType: "HOME" as const, detectedText: "We are not a pharmacy.", reason: "Reason", recommendedAction: "Review", scoreComponent: "MARKETING_RISK" as const };
+    const findings = consolidateCandidates([{ ...shared, url: "https://example.test/" }, { ...shared, url: "https://example.test/products/alpha" }]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].affectedUrls).toEqual(["https://example.test/", "https://example.test/products/alpha"]);
+  });
   it("resolves only signals absent from the new complete scan", () => { const active = [{ id: "keep", fingerprint: "a" }, { id: "resolve", fingerprint: "b" }]; expect(findingsToResolve(active, new Set(["a"]))).toEqual([{ id: "resolve", fingerprint: "b" }]); });
 });

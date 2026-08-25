@@ -14,6 +14,21 @@ describe("page intelligence", () => {
     expect(classifyPage("https://example.test/catalog/reference-alpha", content).pageType).toBe("PRODUCT");
   });
 
+  it("extracts commercial intended-use evidence from titles, navigation, headings, descriptions, and structured catalog names", () => {
+    const html = `<!doctype html><html><head><title>Longevity Research Products</title><meta name="description" content="Appetite Research Collection"><script type="application/ld+json">[{"@type":"Product","name":"Fertility Research Product","description":"Recovery Research Formula"},{"@type":"CollectionPage","name":"Metabolic Outcomes Research Collection"}]</script></head><body><nav><a href="/collections/obesity">Obesity Research Products</a></nav><main><h1>Muscle Growth Research Products</h1><p>Cognitive Research Products</p></main></body></html>`;
+    const content = extractNormalizedContent(html, "https://example.test/collections/research");
+    expect(content.claims).toEqual(expect.arrayContaining([
+      "Longevity Research Products",
+      "Appetite Research Collection",
+      "Obesity Research Products",
+      "Muscle Growth Research Products",
+      "Cognitive Research Products",
+      "Fertility Research Product",
+      "Recovery Research Formula",
+      "Metabolic Outcomes Research Collection",
+    ]));
+  });
+
   it("detects multiple policies on a combined legal page", () => {
     const url = "https://example.test/pages/legal-and-policies";
     const content = extractNormalizedContent(`<main><h1>Legal policies</h1><section><h2>Privacy policy</h2><p>Personal information we collect and how we use your data.</p></section><section><h2>Terms of service</h2><p>These terms of service include a limitation of liability.</p></section><section><h2>Returns and refunds</h2><p>Our return policy provides a 30-day return window.</p></section><section><h2>Shipping and delivery</h2><p>Estimated delivery times and shipping rates are shown here.</p></section><section><h2>Contact us</h2><p>Send us a message through customer support.</p></section></main>`, url);

@@ -13,9 +13,13 @@ describe("explainable scoring and smart diff", () => {
     expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
     expect(score.explanation.scale).toEqual({ minimum: 0, maximum: 100, higherIsBetter: true });
   });
-  it("deducts a repeated rule only once per page even when evidence snippets differ", () => {
+  it("scores distinct claim evidence separately even when it appears on one page", () => {
     const second = { ...finding, detectedText: "A second claim on the same page" };
     const score = calculateHealthScore([{ ...finding, detectedText: "First claim" }, second]);
+    expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(2);
+  });
+  it("deducts identical claim evidence only once when copied across pages", () => {
+    const score = calculateHealthScore([{ ...finding, detectedText: "Obesity Research Products" }, { ...finding, url: "https://example.test/other", detectedText: "Obesity Research Products" }]);
     expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
   });
   it("does not award a perfect score to material assessment areas that were not inspected", () => {

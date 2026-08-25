@@ -2,12 +2,23 @@ import * as cheerio from "cheerio";
 import { normalizedContentSchema, type NormalizedContent } from "@/sentinel/types";
 import { normalizeText, splitSentences, stableUnique } from "./normalize";
 
-const claimTerms = /\b(weight loss|fat loss|burn(?:s|ing)? fat|metabolism|treat|cure|heal|diagnos|dose|dosage|inject|injection|consume|consumption|swallow|sublingual|oral use|topical use|apply topically|serving size|take (?:one|two|three|\d+)|(?:once|twice) (?:daily|weekly)|daily use|for human use|personal use|patient|prescription|pharmacy|telemedicine|before and after|transformation|appetite|anti-aging|performance|body transformation|reconstitut|bacteriostatic|syringe|needle)\b/i;
-const disclaimerTerms = /\b(not intended|research use only|for research|research purposes only|laboratory (?:use|research|analysis)|analytical (?:use|reference)|disclaimer|not for human|do not (?:consume|ingest|inject|use on humans?)|does not (?:provide|make|support|authorize|endorse|claim)|do not constitute|must not be used|nothing .{0,100}(?:interpreted|construed)|consult|results may vary)\b/i;
+const claimTerms = /\b(weight[- ]?loss|fat[- ]?loss|burn(?:s|ing)? fat|metaboli(?:sm|c)|adiposity|obesity|appetite|muscle (?:growth|gain)|cognitive(?: (?:enhancement|performance|function))?|memory enhancement|reproductive(?: (?:health|function|outcomes?))?|fertility|recovery|longevity|anti[- ]aging|body composition|treat\w*|cur(?:e|es|ed|ing)|heal\w*|diagnos\w*|prevent\w*|mitigat\w*|dose|dosage|inject|injection|consume|consumption|swallow|sublingual|oral use|topical use|apply topically|serving size|take (?:one|two|three|\d+)|(?:once|twice) (?:daily|weekly)|daily use|for human use|personal use|patient|prescription|pharmacy|telemedicine|before and after|transformation|performance|body transformation|reconstitut|bacteriostatic|syringe|needle)\b/i;
+const disclaimerTerms = /\b(not intended|research use only|for research|research purposes only|laboratory (?:use|research|analysis)|analytical (?:use|reference)|disclaimer|not for human|not (?:a|an) (?:pharmacy|medical provider)|do not (?:consume|ingest|inject|use on humans?)|does not (?:provide|make|support|authorize|endorse|claim)|do not constitute|must not be used|nothing .{0,100}(?:interpreted|construed)|consult|results may vary)\b/i;
 
 function toAbsolute(value: string | undefined, baseUrl: string): string {
   if (!value) return "";
   try { return new URL(value, baseUrl).toString(); } catch { return ""; }
+}
+
+function structuredCommercialText(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(structuredCommercialText);
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const type = Array.isArray(record["@type"]) ? record["@type"].join(" ") : String(record["@type"] ?? "");
+  const own = /product|collection|itemlist|listitem/i.test(type)
+    ? [record.name, record.description].filter((item): item is string => typeof item === "string")
+    : [];
+  return [...own, ...Object.values(record).flatMap(structuredCommercialText)];
 }
 
 export function extractNormalizedContent(html: string, url: string): NormalizedContent {
@@ -60,7 +71,20 @@ export function extractNormalizedContent(html: string, url: string): NormalizedC
   const metadataPrices = $("meta[property='product:price:amount'],meta[itemprop='price'],[itemprop='price']").map((_, element) => $(element).attr("content") || $(element).attr("value") || $(element).text()).get();
   const schemaPrices = JSON.stringify(structuredData).match(/"price"\s*:\s*"?(\d{1,7}(?:\.\d{1,2})?)/gi)?.map((value) => value.replace(/^.*:\s*"?/, "")) ?? [];
   const prices = stableUnique([...visiblePrices, ...metadataPrices, ...schemaPrices]);
-  const claims = stableUnique([...sentences, ...images.map((image) => image.alt).filter(Boolean)]).filter((sentence) => claimTerms.test(sentence));
+  const commercialEvidence = [
+    title,
+    ...headings,
+    ...sentences,
+    ...linkRecords.map((link) => link.text),
+    ...breadcrumbs,
+    ...images.flatMap((image) => [image.alt, image.title]),
+    metadata.title,
+    metadata.description,
+    metadata.openGraphTitle,
+    metadata.openGraphDescription,
+    ...structuredData.flatMap(structuredCommercialText),
+  ];
+  const claims = stableUnique(commercialEvidence).filter((text) => claimTerms.test(text));
   const disclaimers = sentences.filter((sentence) => disclaimerTerms.test(sentence));
   const productSchema = structuredData.flatMap((entry) => Array.isArray(entry) ? entry : [entry]).find((entry) => typeof entry === "object" && entry && String((entry as Record<string, unknown>)["@type"]).toLowerCase().includes("product")) as Record<string, unknown> | undefined;
   const productName = typeof productSchema?.name === "string" ? productSchema.name : $("h1").first().text();

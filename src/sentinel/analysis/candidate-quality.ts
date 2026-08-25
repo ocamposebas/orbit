@@ -1,8 +1,9 @@
 import type { CandidateFinding, SentinelSeverity } from "@/sentinel/types";
+import { analyzeContext } from "./contextual-signals";
 
 const severityRank: Record<SentinelSeverity, number> = { INFO: 0, LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
 const baseClaimRules = new Set(["MKT-MEDICAL-001", "MKT-TESTIMONIAL-001", "MKT-CLAIM-001", "RSRCH-ADMIN-001"]);
-const repeatedEvidenceRules = new Set([...baseClaimRules, "POSITION-CONFLICT-001"]);
+const repeatedEvidenceRules = new Set([...baseClaimRules, "MKT-INTENDED-USE-001", "POSITION-CONFLICT-001"]);
 
 function normalizedEvidence(finding: CandidateFinding) {
   return finding.detectedText?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
@@ -40,7 +41,8 @@ export function consolidateCandidates(input: CandidateFinding[]) {
   for (const original of withoutShadowFindings) {
     const finding = { ...original, severity: guardedSeverity(original) };
     const evidence = normalizedEvidence(finding);
-    if (!evidence || !repeatedEvidenceRules.has(finding.ruleKey)) {
+    const disclaimerEvidence = evidence && analyzeContext(evidence).type === "RESEARCH_RESTRICTION";
+    if (!evidence || (!repeatedEvidenceRules.has(finding.ruleKey) && !disclaimerEvidence)) {
       retained.push(finding);
       continue;
     }
@@ -60,7 +62,8 @@ export function consolidateCandidates(input: CandidateFinding[]) {
 
   const byRuleAndPage = new Map<string, CandidateFinding>();
   for (const finding of [...retained, ...repeatedEvidence.values()]) {
-    const key = `${finding.ruleKey}|${finding.url}`;
+    const evidence = normalizedEvidence(finding);
+    const key = evidence && repeatedEvidenceRules.has(finding.ruleKey) ? `${finding.ruleKey}|${evidence}` : `${finding.ruleKey}|${finding.url}`;
     const current = byRuleAndPage.get(key);
     if (!current || severityRank[finding.severity] > severityRank[current.severity] || (finding.severity === current.severity && finding.confidence > current.confidence)) byRuleAndPage.set(key, finding);
   }

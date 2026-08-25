@@ -9,7 +9,8 @@ export function calculateHealthScore(findings: CandidateFinding[], assessmentCov
   const components = keys.map((key) => {
     const seen = new Set<string>();
     const relevant = findings.filter((finding) => finding.scoreComponent === key && finding.status !== undefined).filter((finding) => {
-      const identity = `${finding.ruleKey}|${finding.url}`;
+      const evidence = finding.detectedText?.replace(/\s+/g, " ").trim().toLowerCase();
+      const identity = `${finding.ruleKey}|${evidence || finding.url}`;
       if (seen.has(identity)) return false;
       seen.add(identity);
       return true;
@@ -24,5 +25,5 @@ export function calculateHealthScore(findings: CandidateFinding[], assessmentCov
     return { key, label: labels[key], score, observedScore, assessmentCoverage: coverage, deductions: deductionRows };
   });
   const total = Math.round(components.reduce((sum, component) => sum + component.score * weights[component.key], 0));
-  return { total, formulaVersion: "orbit-health-v5", components, explanation: { basis: "Internal ORBIT score derived from material, deduplicated website signals and the evidence coverage achieved by each assessment area.", scale: { minimum: 0, maximum: 100, higherIsBetter: true }, weights, assessmentCoverage, uncertaintyFloor: 70, note: "Uninspected scope cannot create a violation, but it prevents an unsupported perfect score. Repeated evidence is consolidated across pages, and a restriction or disclaimer is not treated as promotion. This score is decision support, not a certification." } };
+  return { total, formulaVersion: "orbit-health-v6", components, explanation: { basis: "Internal ORBIT score derived from material, deduplicated website signals and the evidence coverage achieved by each assessment area.", scale: { minimum: 0, maximum: 100, higherIsBetter: true }, weights, assessmentCoverage, uncertaintyFloor: 70, note: "Uninspected scope cannot create a violation, but it prevents an unsupported perfect score. Repeated evidence is consolidated across pages, distinct claim and intended-use signals are scored separately, and a restriction or disclaimer is not treated as promotion. This score is decision support, not a certification." } };
 }
