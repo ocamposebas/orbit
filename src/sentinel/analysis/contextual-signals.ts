@@ -58,7 +58,7 @@ const explicitDenial = [
   /\bnothing\b.{0,160}\b(?:should|shall|may|can)?\s*(?:be\s+)?(?:interpreted|construed|understood|relied upon)\b/i,
   /\b(?:has|have|had)\s+not\s+been\s+(?:evaluated|approved|cleared|authorized|verified|validated)\b/i,
   /\b(?:not|never)\s+(?:for|intended for|approved for|authorized for)\b/i,
-  /\b(?:we|this (?:company|business|site|website)|the (?:company|business|site|website))\s+(?:are|is)\s+not\s+(?:a|an)\s+(?:pharmacy|medical provider|telemedicine provider)\b/i,
+  /\b(?:we|this (?:company|business|site|website)|the (?:company|business|site|website))\s+(?:are|is)\s+not\s+(?:a|an)\s+(?:(?:compounding|retail)\s+)?(?:pharmacy|medical provider|telemedicine provider)\b/i,
 ];
 
 function result(input: Omit<ContextualSignal, "evidence">, evidence: string): ContextualSignal {

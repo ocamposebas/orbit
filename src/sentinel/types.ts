@@ -66,7 +66,16 @@ export interface CandidateFinding {
   recommendedAction: string;
   scoreComponent: ScoreComponentKey;
   secondaryEvidence?: { url: string; text: string; role: string };
+  supportingEvidence?: Array<{ url: string; text: string; role: string; evidenceType?: string }>;
   affectedUrls?: string[];
+  analysisSource?: "DETERMINISTIC" | "SEMANTIC_PAGE" | "SEMANTIC_MERCHANT";
+  evidenceType?: string;
+  humanReviewRequired?: boolean;
+  modelVersion?: string;
+  provider?: string;
+  semanticCategory?: string;
+  semanticClassification?: string;
+  promptVersion?: string;
 }
 
 export type ScoreComponentKey = "POLICY_COVERAGE" | "PRODUCT_INTEGRITY" | "RESEARCH_CONTROLS" | "MARKETING_RISK" | "SITE_CONTROLS" | "OPERATIONAL_CONSISTENCY";

@@ -5,6 +5,10 @@ const severityRank: Record<SentinelSeverity, number> = { INFO: 0, LOW: 1, MEDIUM
 const baseClaimRules = new Set(["MKT-MEDICAL-001", "MKT-TESTIMONIAL-001", "MKT-CLAIM-001", "RSRCH-ADMIN-001"]);
 const repeatedEvidenceRules = new Set([...baseClaimRules, "MKT-INTENDED-USE-001", "POSITION-CONFLICT-001"]);
 
+function evidenceScopedRule(ruleKey: string) {
+  return repeatedEvidenceRules.has(ruleKey) || ruleKey.startsWith("SEM-");
+}
+
 function normalizedEvidence(finding: CandidateFinding) {
   return finding.detectedText?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
 }
@@ -34,7 +38,28 @@ export function isMaterialCandidate(finding: CandidateFinding) {
  */
 export function consolidateCandidates(input: CandidateFinding[]) {
   const conflictEvidence = new Set(input.filter((finding) => finding.ruleKey === "POSITION-CONFLICT-001").map((finding) => `${finding.url}|${normalizedEvidence(finding)}`));
-  const withoutShadowFindings = input.filter((finding) => !(baseClaimRules.has(finding.ruleKey) && conflictEvidence.has(`${finding.url}|${normalizedEvidence(finding)}`)));
+  const withoutContradictionShadows = input.filter((finding) => !(baseClaimRules.has(finding.ruleKey) && conflictEvidence.has(`${finding.url}|${normalizedEvidence(finding)}`)));
+  const deterministicEvidence = new Set(withoutContradictionShadows.filter((finding) => !finding.ruleKey.startsWith("SEM-") && normalizedEvidence(finding)).map((finding) => `${finding.scoreComponent}|${normalizedEvidence(finding)}`));
+  const semanticByEvidence = new Map<string, CandidateFinding>();
+  const withoutShadowFindings: CandidateFinding[] = [];
+  for (const finding of withoutContradictionShadows) {
+    const evidence = normalizedEvidence(finding);
+    if (!finding.ruleKey.startsWith("SEM-") || !evidence) {
+      withoutShadowFindings.push(finding);
+      continue;
+    }
+    const key = `${finding.scoreComponent}|${evidence}`;
+    if (deterministicEvidence.has(key)) continue;
+    const current = semanticByEvidence.get(key);
+    if (!current) {
+      semanticByEvidence.set(key, finding);
+      continue;
+    }
+    const affectedUrls = [...new Set([...(current.affectedUrls ?? [current.url]), ...(finding.affectedUrls ?? [finding.url])])];
+    if (severityRank[finding.severity] > severityRank[current.severity] || (finding.severity === current.severity && finding.confidence > current.confidence)) semanticByEvidence.set(key, { ...finding, affectedUrls });
+    else semanticByEvidence.set(key, { ...current, affectedUrls });
+  }
+  withoutShadowFindings.push(...semanticByEvidence.values());
   const repeatedEvidence = new Map<string, CandidateFinding>();
   const retained: CandidateFinding[] = [];
 
@@ -42,7 +67,7 @@ export function consolidateCandidates(input: CandidateFinding[]) {
     const finding = { ...original, severity: guardedSeverity(original) };
     const evidence = normalizedEvidence(finding);
     const disclaimerEvidence = evidence && analyzeContext(evidence).type === "RESEARCH_RESTRICTION";
-    if (!evidence || (!repeatedEvidenceRules.has(finding.ruleKey) && !disclaimerEvidence)) {
+    if (!evidence || (!evidenceScopedRule(finding.ruleKey) && !disclaimerEvidence)) {
       retained.push(finding);
       continue;
     }
@@ -63,7 +88,7 @@ export function consolidateCandidates(input: CandidateFinding[]) {
   const byRuleAndPage = new Map<string, CandidateFinding>();
   for (const finding of [...retained, ...repeatedEvidence.values()]) {
     const evidence = normalizedEvidence(finding);
-    const key = evidence && repeatedEvidenceRules.has(finding.ruleKey) ? `${finding.ruleKey}|${evidence}` : `${finding.ruleKey}|${finding.url}`;
+    const key = evidence && evidenceScopedRule(finding.ruleKey) ? `${finding.ruleKey}|${evidence}` : `${finding.ruleKey}|${finding.url}`;
     const current = byRuleAndPage.get(key);
     if (!current || severityRank[finding.severity] > severityRank[current.severity] || (finding.severity === current.severity && finding.confidence > current.confidence)) byRuleAndPage.set(key, finding);
   }

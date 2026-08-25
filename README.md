@@ -87,9 +87,16 @@ docker compose --profile workers up -d --build
 | `DATABASE_URL` | PostgreSQL connection string |
 | `REDIS_URL` | Redis connection string for queues, throttling and health checks |
 | `APP_URL` | Canonical web origin used by mutation origin checks |
-| `AI_PROVIDER` | Semantic-analyzer provider selector |
-| `AI_MODEL` | Semantic-analyzer model selector |
-| `AI_API_KEY` | Optional server-only analyzer credential |
+| `AI_PROVIDER` | `deterministic` or `openai-compatible`; the latter enables both page and merchant LLM passes |
+| `AI_MODEL` | Provider model identifier recorded with semantic evidence |
+| `AI_API_KEY` | Required server-only credential when the remote semantic layer is enabled |
+| `AI_BASE_URL` | OpenAI-compatible API base URL; requests use `/chat/completions` with strict JSON Schema output |
+| `AI_TIMEOUT_MS` | Per semantic request timeout |
+| `AI_MAX_PAGE_CHARS` | Maximum retained evidence characters sent per page |
+| `AI_MAX_OUTPUT_TOKENS` | Maximum structured output tokens per semantic request |
+| `AI_PAGE_CONCURRENCY` | Concurrent page-level semantic requests, capped at eight |
+| `AI_INPUT_COST_PER_MILLION` | Optional input-token price used for scan cost estimates |
+| `AI_OUTPUT_COST_PER_MILLION` | Optional output-token price used for scan cost estimates |
 | `SCREENSHOT_STORAGE` | Development evidence-storage directory |
 | `CRAWLER_MAX_PAGES` | Hard per-scan page limit |
 | `CRAWLER_MAX_DEPTH` | Internal-link discovery depth |
@@ -145,17 +152,23 @@ Deterministic checks run first. A keyword can nominate a statement for contextua
 
 ## Semantic analyzer
 
-`SemanticAnalyzer` is provider-independent. `LocalSemanticAnalyzer` supplies the first contextual implementation. `CachedSemanticAnalyzer` stores Zod-validated results by content hash, prompt version, provider and model.
+Sentinel is hybrid. The deterministic rule engine runs first and remains active for every scan. When `AI_PROVIDER=openai-compatible`, a second engine sends bounded, typed page evidence to an LLM using temperature zero and strict JSON Schema output. Page results classify intended use, human outcomes, research positioning, contradictions, disclaimers, pharmacy/prescription context, dosing, medical claims, qualification and checkout controls, policy coverage, and inconsistent positioning.
 
-To add an analyzer, implement the interface, validate output with `semanticResultSchema`, wrap it in the cache decorator and store only the structured result and short reason. Do not store hidden reasoning traces.
+LLM output is parsed with strict Zod schemas and rejected unless each exact evidence quote, URL and evidence type can be matched to the retained page input. Negations and controls remain observations but do not become risk findings. Validated risk observations are converted to `NEEDS_REVIEW` candidates; the LLM never receives or returns an approval or certification decision.
+
+A second merchant-level pass compares validated page observations and deterministic findings. It must cite a primary item and at least one supporting item, enabling auditable RUO-versus-commercial-positioning contradictions. Deterministic findings shadow equivalent semantic observations, repeated semantic evidence is consolidated across templates, and distinct supported observations remain separate.
+
+`SemanticAnalyzer` continues to provide local claim-level context. `WebsiteSemanticAnalyzer` provides the structured remote page and merchant passes. Both caches use content hash, prompt version, provider and model. Cache rows store structured results and request usage only—never hidden reasoning traces or credentials.
+
+Cost estimates are written to `scan.completed` audit metadata when per-million-token rates are configured. The estimate is `input tokens × AI_INPUT_COST_PER_MILLION / 1,000,000 + output tokens × AI_OUTPUT_COST_PER_MILLION / 1,000,000`; cache hits have zero incremental estimated cost.
 
 ## Finding lifecycle
 
-Findings are fingerprinted by rule, URL and evidence-bearing text. A repeated signal updates `lastDetectedAt` and appends evidence instead of replacing history. During a complete scan, a disappeared signal becomes `RESOLVED` with `resolvedAt` and `resolvedByScanId`; it is never deleted. Reviewer decisions create both a `FindingReview` and an append-only `AuditLog` record.
+Findings are fingerprinted by rule and evidence-bearing text, with site-wide identities for template-duplicated and semantic evidence. A repeated signal updates `lastDetectedAt`, retains affected URLs and appends evidence instead of replacing history. Semantic evidence metadata records source layer, evidence type, human-review requirement, provider, model, prompt version and confidence, and links to the immutable page snapshot. During a complete scan, a disappeared signal becomes `RESOLVED` with `resolvedAt` and `resolvedByScanId`; it is never deleted. Reviewer decisions create both a `FindingReview` and an append-only `AuditLog` record.
 
 ## Score engine
 
-`orbit-health-v1` starts each component at 100 and applies disclosed per-finding deductions. The total is a fixed weighted sum. Stored scores include formula version, weights, component results and each deduction. ORBIT Health is an internal decision-support measure, not a legal conclusion or external approval metric.
+`orbit-health-v6` starts each component at 100 and applies disclosed per-finding deductions. Only semantic observations that pass schema, exact-evidence, confidence and human-review gates enter the existing candidate-quality and deterministic score pipeline. Deterministic findings remain authoritative when the same evidence is observed by both layers. The total is a fixed weighted sum. Stored scores include formula version, weights, component results and each deduction. ORBIT Health is an internal decision-support measure, not a legal conclusion or external approval metric.
 
 ## Security model
 

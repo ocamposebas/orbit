@@ -10,6 +10,7 @@ describe("contextual claim analysis", () => {
     ["Inject 2mg twice weekly.", "administration_instruction", true],
     ["Not intended for injection.", "neutral", false],
     ["We are not a pharmacy.", "neutral", false],
+    ["We are not a compounding pharmacy.", "neutral", false],
     ["Products are not intended to diagnose, treat, cure, or prevent disease.", "neutral", false],
     ["Obesity Research Products", "needs_review", false],
     ["Muscle Growth Research Products", "needs_review", false],

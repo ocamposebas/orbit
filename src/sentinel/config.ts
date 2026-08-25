@@ -1,15 +1,23 @@
 import { z } from "zod";
 
 const int = (fallback: number) => z.coerce.number().int().positive().default(fallback);
+const nonNegative = (fallback: number) => z.coerce.number().min(0).default(fallback);
 const optionalNonEmpty = z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().trim().min(1).optional());
 
 const serverEnvSchema = z.object({
   DATABASE_URL: z.string().default("postgresql://orbit:orbit@localhost:5432/orbit?schema=public"),
   REDIS_URL: z.string().default("redis://localhost:6379"),
   APP_URL: z.string().url().default("http://localhost:3000"),
-  AI_PROVIDER: z.string().default("deterministic"),
+  AI_PROVIDER: z.enum(["deterministic", "openai-compatible"]).default("deterministic"),
   AI_MODEL: z.string().default("local-context-v1"),
-  AI_API_KEY: z.string().optional(),
+  AI_API_KEY: optionalNonEmpty,
+  AI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
+  AI_TIMEOUT_MS: int(45_000),
+  AI_MAX_PAGE_CHARS: int(24_000),
+  AI_MAX_OUTPUT_TOKENS: int(3_000),
+  AI_PAGE_CONCURRENCY: int(3).transform((value) => Math.min(value, 8)),
+  AI_INPUT_COST_PER_MILLION: nonNegative(0),
+  AI_OUTPUT_COST_PER_MILLION: nonNegative(0),
   SCREENSHOT_STORAGE: z.string().default("./storage/evidence"),
   CRAWLER_MAX_PAGES: int(250),
   CRAWLER_MAX_DEPTH: int(4),

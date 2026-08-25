@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { hashPassword } from "../src/sentinel/auth/password";
+import { semanticCategories } from "../src/sentinel/analysis/semantic-schema";
 
 const databaseUrl = process.env.DATABASE_URL ?? "postgresql://orbit:orbit@localhost:5432/orbit?schema=public";
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
@@ -35,6 +36,10 @@ async function seed() {
   }
   await db.healthScore.upsert({ where: { merchantId_scanId: { merchantId: merchant.id, scanId: scan.id } }, update: {}, create: { merchantId: merchant.id, scanId: scan.id, total: 86, formulaVersion: "orbit-health-v1", explanation: { demo: true, basis: "Illustrative score for the seeded demo workspace." }, components: { create: [{ key: "POLICY_COVERAGE", label: "Policy coverage", score: 92, deductions: [{ points: 8, title: "Age policy needs review" }] }, { key: "PRODUCT_INTEGRITY", label: "Product integrity", score: 100, deductions: [] }, { key: "RESEARCH_CONTROLS", label: "Research controls", score: 100, deductions: [] }, { key: "MARKETING_RISK", label: "Marketing risk", score: 84, deductions: [{ points: 16, title: "Potential consumer-directed efficacy claim" }] }, { key: "SITE_CONTROLS", label: "Checkout controls", score: 100, deductions: [] }, { key: "OPERATIONAL_CONSISTENCY", label: "Operational consistency", score: 100, deductions: [] }] } } });
   const general = await db.ruleSet.upsert({ where: { code_version: { code: "ORBIT-GENERAL", version: 1 } }, update: {}, create: { code: "ORBIT-GENERAL", version: 1, name: "ORBIT General", description: "Baseline website intelligence and policy-coverage signals." } });
+  const semanticRuleDefinitions = semanticCategories.flatMap((category) => ([
+    [`SEM-PAGE-${category}`, `Page semantic observation: ${category.replaceAll("_", " ").toLowerCase()}`, "Semantic observation", "MEDIUM", "SEMANTIC", null],
+    [`SEM-MERCHANT-${category}`, `Merchant semantic observation: ${category.replaceAll("_", " ").toLowerCase()}`, "Semantic observation", "MEDIUM", "CONTRADICTION", null],
+  ] as const));
   const ruleDefinitions = [
     ["MKT-CLAIM-001", "Potential consumer-directed efficacy claim", "Marketing", "HIGH", "SEMANTIC", "PRODUCT"],
     ["MKT-MEDICAL-001", "Explicit medical or disease claim", "Medical claim", "CRITICAL", "SEMANTIC", "PRODUCT"],
@@ -63,6 +68,7 @@ async function seed() {
     ["POSITION-CONFLICT-001", "Research and consumer positioning conflict", "Positioning conflict", "HIGH", "CONTRADICTION", null],
     ["POSITION-COSMETIC-001", "Cosmetic positioning conflict", "Positioning conflict", "HIGH", "CONTRADICTION", "PRODUCT"],
     ["PRODUCT-CONCENTRATION-001", "Potential concentration mismatch", "Product consistency", "MEDIUM", "CONTRADICTION", "PRODUCT"],
+    ...semanticRuleDefinitions,
   ] as const;
   for (const [key, name, category, severity, evaluationType, appliesTo] of ruleDefinitions) {
     const rule = await db.rule.upsert({ where: { ruleSetId_key: { ruleSetId: general.id, key } }, update: {}, create: { ruleSetId: general.id, key } });
