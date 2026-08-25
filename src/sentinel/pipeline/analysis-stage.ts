@@ -14,7 +14,8 @@ import { buildProductIntelligence } from "@/sentinel/analysis/product-intelligen
 import { evaluateWebsiteLegitimacy } from "@/sentinel/analysis/legitimacy";
 import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
 import { consolidateCandidates, isScorableCandidate } from "@/sentinel/analysis/candidate-quality";
-import { looksLikeProductUrl } from "@/sentinel/classification/classifier";
+import { hasProductEvidence, isEditorialUrl, looksLikeProductUrl, verifiedCanonicalProductUrl } from "@/sentinel/classification/classifier";
+import { coverageForAssessment, surfaceCoverage, weightedCoverage } from "@/sentinel/analysis/coverage";
 import { getServerEnv } from "@/sentinel/config";
 import { merchantSemanticCandidates, runHybridSemanticAnalysis, runMerchantSemanticPass, type HybridSemanticStats } from "@/sentinel/analysis/hybrid-semantic";
 import { configuredWebsiteSemanticAnalyzer } from "@/sentinel/analysis/website-semantic";
@@ -63,7 +64,7 @@ export async function runAnalysisStage(scanId: string) {
   await updateProgress(scanId, { stage: "analyzing", message: "Evaluating page context and site coverage", stageProcessed: 0, stageTotal: scan.pages.length });
   const pages = scan.pages.flatMap((page) => {
     const parsed = normalizedContentSchema.safeParse(page.normalizedContent);
-    return parsed.success ? [{ id: page.id, snapshotId: page.snapshots[0]?.id, url: page.url, httpStatus: page.httpStatus ?? undefined, pageType: page.pageType as SentinelPageType, content: parsed.data }] : [];
+    return parsed.success ? [{ id: page.id, snapshotId: page.snapshots[0]?.id, url: page.url, canonicalUrl: page.canonicalUrl ?? page.url, httpStatus: page.httpStatus ?? undefined, pageType: page.pageType as SentinelPageType, content: parsed.data }] : [];
   });
   if (!pages.length) throw new Error("The crawl completed without any valid normalized pages to analyze.");
   await persistPageEvidenceLedger(scanId, pages);
@@ -138,11 +139,12 @@ export async function runAnalysisStage(scanId: string) {
   const presentPolicyTypes = new Set<PolicySignalType>();
   for (const page of pages) {
     if (page.httpStatus !== undefined && page.httpStatus >= 400) continue;
-    if (page.pageType === "PRODUCT" && page.content.productName) {
-      const intelligence = buildProductIntelligence(page.content, page.url, scan.merchant.businessName);
+    if (page.pageType === "PRODUCT" && page.content.productName && hasProductEvidence(page.content, page.url) && !isEditorialUrl(page.url)) {
+      const canonicalUrl = verifiedCanonicalProductUrl(page.url, page.canonicalUrl);
+      const intelligence = buildProductIntelligence(page.content, canonicalUrl, scan.merchant.businessName);
       const numericPrice = page.content.prices[0]?.replace(/[^\d.,]/g, "").replace(",", ".");
       const availability = page.content.stockText.map((item) => item.text).join(" | ").slice(0, 500) || undefined;
-      const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl: page.url } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl: page.url, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers } });
+      const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers } });
       const productSnapshotPayload = { content: page.content, intelligence };
       const productSnapshotData = { data: productSnapshotPayload as unknown as Prisma.InputJsonValue, hash: contentHash(productSnapshotPayload) };
       const existingProductSnapshot = await db.productSnapshot.findFirst({ where: { productId: product.id, scanId }, select: { id: true } });
@@ -164,7 +166,8 @@ export async function runAnalysisStage(scanId: string) {
     }
   }
   const policiesDetected = presentPolicyTypes.size;
-  const productsDiscovered = scan.pages.filter((page) => looksLikeProductUrl(page.url)).length;
+  const productCandidates = scan.pages.filter((page) => !isEditorialUrl(page.url) && (page.pageType === "PRODUCT" || looksLikeProductUrl(page.url)));
+  const productsDiscovered = productCandidates.length;
   const variantsScanned = pages.reduce((sum, page) => sum + (page.pageType === "PRODUCT" ? Math.max(page.content.variants.length, page.content.productVariations.length) : 0), 0);
   const imagesDiscovered = pages.reduce((sum, page) => sum + page.content.images.length, 0);
   const imagesAnalyzed = visual.stats.assetsAnalyzed;
@@ -172,13 +175,27 @@ export async function runAnalysisStage(scanId: string) {
   const checkoutFlowsInspected = pages.filter((page) => page.pageType === "CART" || isReviewableCheckout(page)).length;
   const checkoutStatesInspected = pages.filter((page) => page.pageType === "CART" || page.pageType === "CHECKOUT").reduce((sum, page) => sum + Math.max(1, page.content.interactiveStates.length), 0);
   const pageCoveragePercent = Math.min(100, Math.round((pages.length / Math.max(scan.pagesDiscovered, pages.length, 1)) * 100));
-  const productCoveragePercent = productsDiscovered > 0 ? Math.min(100, Math.round((productsDetected / productsDiscovered) * 100)) : 100;
   const semanticCoveragePercent = lunaResult ? 100 : websiteAnalyzer ? Math.round((semanticPageAnalyses.length / Math.max(pages.length, 1)) * 100) : 0;
-  const visualCoveragePercent = visual.stats.pagesSelected ? Math.round((visual.stats.pagesAnalyzed / visual.stats.pagesSelected) * 100) : 100;
-  const documentCoveragePercent = documents.stats.discovered ? Math.round((documents.stats.extracted / documents.stats.discovered) * 100) : 100;
-  const checkoutCoveragePercent = productsDiscovered ? (checkoutFlowsInspected > 0 ? 100 : 0) : 100;
   const inaccessibleAreas = scan.pages.filter((page) => Boolean(page.inaccessibleReason) || (page.httpStatus ?? 0) >= 400).length;
-  const scanCoveragePercent = Math.round(pageCoveragePercent * 0.4 + productCoveragePercent * 0.15 + semanticCoveragePercent * 0.15 + visualCoveragePercent * 0.1 + documentCoveragePercent * 0.1 + checkoutCoveragePercent * 0.1);
+  const commerceApplicable = productsDiscovered > 0 || pages.some((page) => page.pageType === "CART" || page.pageType === "CHECKOUT");
+  const coverageSurfaces = {
+    pages: surfaceCoverage({ inspected: pages.length, expected: Math.max(scan.pagesDiscovered, pages.length, 1) }),
+    products: surfaceCoverage({ inspected: productsDetected, expected: productsDiscovered, applicable: productsDiscovered > 0, known: analysisCoverageRatio >= 0.65 }),
+    semantic: surfaceCoverage({ inspected: lunaResult ? pages.length : semanticPageAnalyses.length, expected: pages.length }),
+    visual: surfaceCoverage({ inspected: visual.stats.pagesAnalyzed, expected: visual.stats.pagesSelected, applicable: visual.stats.pagesSelected > 0 }),
+    documents: surfaceCoverage({ inspected: documents.stats.extracted, expected: documents.stats.discovered, applicable: documents.stats.discovered > 0 }),
+    checkout: surfaceCoverage({ inspected: checkoutStatesInspected, expected: commerceApplicable ? 1 : 0, applicable: commerceApplicable, known: analysisCoverageRatio >= 0.65 }),
+  };
+  const visualCoveragePercent = coverageSurfaces.visual.percent ?? 0;
+  const documentCoveragePercent = coverageSurfaces.documents.percent ?? 0;
+  const scanCoveragePercent = weightedCoverage([
+    { weight: 0.4, coverage: coverageSurfaces.pages },
+    { weight: 0.15, coverage: coverageSurfaces.products },
+    { weight: 0.15, coverage: coverageSurfaces.semantic },
+    { weight: 0.1, coverage: coverageSurfaces.visual },
+    { weight: 0.1, coverage: coverageSurfaces.documents },
+    { weight: 0.1, coverage: coverageSurfaces.checkout },
+  ]);
   const coveragePolicyTypes = ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
   const expectedPolicyTypes = requiredPolicyTypes(pages).filter((type): type is (typeof coveragePolicyTypes)[number] => coveragePolicyTypes.includes(type as (typeof coveragePolicyTypes)[number]));
   if (analysisCoverageRatio >= 0.65) for (const type of expectedPolicyTypes) if (!presentPolicyTypes.has(type)) {
@@ -253,23 +270,23 @@ export async function runAnalysisStage(scanId: string) {
   const researchCoveredProducts = productPages.filter((page) => page.content.disclaimers.some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
   const researchRestrictionPagesObserved = pages.filter((page) => [...page.content.disclaimers, ...page.content.paragraphs].some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
   const disclaimerPagesObserved = pages.filter((page) => /\bdisclaimer\b/i.test(`${new URL(page.url).pathname} ${page.content.title} ${page.content.headings.join(" ")}`) && page.content.disclaimers.length > 0).length;
-  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesDiscovered, imagesAnalyzed, screenshotsAnalyzed: visual.stats.assetsAnalyzed, visualPagesAnalyzed: visual.stats.pagesAnalyzed, visualCoveragePercent, certificatesDiscovered, certificatesAnalyzed: documents.stats.extracted, documentsDiscovered: documents.stats.discovered, documentsAnalyzed: documents.stats.extracted, documentCoveragePercent, checkoutFlowsInspected, checkoutStatesInspected, semanticPagesAnalyzed: lunaResult ? pages.length : semanticPageAnalyses.length, semanticCoveragePercent, inaccessibleAreas, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
+  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesDiscovered, imagesAnalyzed, screenshotsAnalyzed: visual.stats.assetsAnalyzed, visualPagesAnalyzed: visual.stats.pagesAnalyzed, visualCoveragePercent, certificatesDiscovered, certificatesAnalyzed: documents.stats.extracted, documentsDiscovered: documents.stats.discovered, documentsAnalyzed: documents.stats.extracted, documentCoveragePercent, checkoutFlowsInspected, checkoutStatesInspected, semanticPagesAnalyzed: lunaResult ? pages.length : semanticPageAnalyses.length, semanticCoveragePercent, inaccessibleAreas, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, coverageStates: Object.fromEntries(Object.entries(coverageSurfaces).map(([key, value]) => [key, value.state])), policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
   await advanceScanStatus(scanId, "SCORING");
   const requiredPoliciesFound = expectedPolicyTypes.filter((type) => presentPolicyTypes.has(type)).length;
   const assessmentCoverage = {
     POLICY_COVERAGE: Math.round(pageCoveragePercent * 0.6 + (requiredPoliciesFound / Math.max(expectedPolicyTypes.length, 1)) * 40),
-    PRODUCT_INTEGRITY: Math.round(productCoveragePercent * 0.55 + visualCoveragePercent * 0.2 + documentCoveragePercent * 0.25),
+    PRODUCT_INTEGRITY: Math.round(coverageForAssessment(coverageSurfaces.products) * 0.55 + coverageForAssessment(coverageSurfaces.visual) * 0.2 + coverageForAssessment(coverageSurfaces.documents) * 0.25),
     RESEARCH_CONTROLS: productsDiscovered ? Math.round((researchCoveredProducts / Math.max(productsDiscovered, 1)) * 70 + semanticCoveragePercent * 0.3) : semanticCoveragePercent,
     MARKETING_RISK: Math.round(pageCoveragePercent * 0.45 + semanticCoveragePercent * 0.3 + visualCoveragePercent * 0.25),
-    SITE_CONTROLS: checkoutCoveragePercent,
-    OPERATIONAL_CONSISTENCY: Math.round(pageCoveragePercent * 0.5 + semanticCoveragePercent * 0.25 + documentCoveragePercent * 0.25),
+    SITE_CONTROLS: coverageForAssessment(coverageSurfaces.checkout),
+    OPERATIONAL_CONSISTENCY: Math.round(pageCoveragePercent * 0.5 + semanticCoveragePercent * 0.25 + coverageForAssessment(coverageSurfaces.documents) * 0.25),
   } as const;
   const score = calculateHealthScore([...candidates, ...retainedForScore].filter(isScorableCandidate), assessmentCoverage);
   const evidenceGraph = buildEvidenceGraph(candidates, pageRestrictions);
   const lunaEstimatedCostUsd = lunaResult ? lunaResult.usage.inputTokens * env.AI_INPUT_COST_PER_MILLION / 1_000_000 + lunaResult.usage.outputTokens * env.AI_OUTPUT_COST_PER_MILLION / 1_000_000 : 0;
   const estimatedCostUsd = Number(((semanticStats?.estimatedCostUsd ?? 0) + lunaEstimatedCostUsd + visual.stats.estimatedCostUsd + documents.stats.estimatedCostUsd).toFixed(6));
   const dualReview = { mode: env.DUAL_REVIEW_MODE, evidenceManifestVersion: manifest.version, retainedFirstPartyEvidenceRecords: manifest.records.filter((record) => record.scope === "MERCHANT_SITE").length, verifierAssertions: verifierFacts.length, luna: lunaResult ? { model: env.AI_REVIEW_MODEL, promptVersion: "orbit-luna-holistic-v1", reviewRunId: lunaResult.runId, runIds: lunaResult.runIds, usage: lunaResult.usage } : null, externalPublicWeb: externalVerification ? { reviewRunId: externalVerification.runId, resultCount: externalVerification.result.results.length, evidenceScope: "EXTERNAL_PUBLIC_WEB" } : null, materialDisagreements, criticRunId: criticRunId ?? null, scoreAuthority: "deterministic" };
-  const intelligence = { version: "orbit-dual-review-v1", riskScore: 100 - score.total, healthScore: score.total, coverage: { overall: scanCoveragePercent, pages: pageCoveragePercent, products: productCoveragePercent, semantic: semanticCoveragePercent, visual: visualCoveragePercent, documents: documentCoveragePercent, checkout: checkoutCoveragePercent, inaccessibleAreas }, evidenceGraph, dualReview, visual: { ...visual.stats, merchantImages: collectedImages }, documents: { stats: documents.stats, records: documents.documents.map((document) => ({ url: document.url, sourcePageUrl: document.sourcePageUrl, documentType: document.documentType, hash: document.hash, storageKey: document.storageKey, pageCount: document.pageCount, metadata: document.metadata })) }, model: { semantic: semanticStats, estimatedCostUsd, fallbackIncomplete: env.DUAL_REVIEW_MODE === "enforced" ? !lunaResult : !websiteAnalyzer || Boolean((semanticStats?.failures ?? 0) + visual.stats.failures + documents.stats.failures) }, methodologyLimitations: [...(env.DUAL_REVIEW_MODE === "enforced" && !lunaResult ? ["Primary holistic Luna review was unavailable; semantic signals were retained as NEEDS_REVIEW and excluded from scoring."] : []), ...(visual.stats.failures ? [`${visual.stats.failures} visual evidence collection attempt(s) failed.`] : []), ...(documents.stats.failures ? [`${documents.stats.failures} public document extraction attempt(s) failed.`] : []), ...(collectedImages.failed ? [`${collectedImages.failed} public image retrieval attempt(s) failed.`] : []), ...(checkoutCoveragePercent < 100 ? ["A populated public checkout state was not observable without an explicitly enabled anonymous cart action."] : [])] };
+  const intelligence = { version: "orbit-dual-review-v1", riskScore: 100 - score.total, healthScore: score.total, coverage: { overall: scanCoveragePercent, surfaces: coverageSurfaces, inaccessibleAreas }, evidenceGraph, dualReview, visual: { ...visual.stats, merchantImages: collectedImages }, documents: { stats: documents.stats, records: documents.documents.map((document) => ({ url: document.url, sourcePageUrl: document.sourcePageUrl, documentType: document.documentType, hash: document.hash, storageKey: document.storageKey, pageCount: document.pageCount, metadata: document.metadata })) }, model: { semantic: semanticStats, estimatedCostUsd, fallbackIncomplete: env.DUAL_REVIEW_MODE === "enforced" ? !lunaResult : !websiteAnalyzer || Boolean((semanticStats?.failures ?? 0) + visual.stats.failures + documents.stats.failures) }, methodologyLimitations: [...(env.DUAL_REVIEW_MODE === "enforced" && !lunaResult ? ["Primary holistic Luna review was unavailable; semantic signals were retained as NEEDS_REVIEW and excluded from scoring."] : []), ...(visual.stats.failures ? [`${visual.stats.failures} visual evidence collection attempt(s) failed.`] : []), ...(documents.stats.failures ? [`${documents.stats.failures} public document extraction attempt(s) failed.`] : []), ...(collectedImages.failed ? [`${collectedImages.failed} public image retrieval attempt(s) failed.`] : []), ...(["NOT_OBSERVED", "UNKNOWN"].includes(coverageSurfaces.checkout.state) ? ["A populated public checkout state was not observable without an explicitly enabled anonymous cart action."] : [])] };
   await db.scan.update({ where: { id: scanId }, data: { intelligence: intelligence as unknown as Prisma.InputJsonValue } });
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
   const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));

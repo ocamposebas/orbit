@@ -25,4 +25,11 @@ describe("recoverable scan progress", () => {
     expect(progress.stage).toBe("failed");
     expect(progress.message).toBe("Analysis failed");
   });
+
+  it("allows recalculated coverage to decrease instead of retaining a stale perfect value", () => {
+    const current = { ...initialProgress(), stage: "scoring" as const, scanCoveragePercent: 100, semanticCoveragePercent: 100 };
+    const progress = mergeProgress(current, { scanCoveragePercent: 62, semanticCoveragePercent: 0 });
+    expect(progress.scanCoveragePercent).toBe(62);
+    expect(progress.semanticCoveragePercent).toBe(0);
+  });
 });

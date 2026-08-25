@@ -155,6 +155,7 @@ export interface ScanProgress {
   researchRestrictionPagesObserved: number;
   researchCoveredProducts: number;
   scanCoveragePercent: number;
+  coverageStates?: Record<string, "OBSERVED" | "NOT_OBSERVED" | "UNKNOWN" | "NOT_APPLICABLE">;
   policiesDetected: number;
   claimsInspected: number;
   findings: number;

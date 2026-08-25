@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import { spawnSync } from "node:child_process";
 import { getDatabase } from "@/sentinel/db";
 import { evidenceStorage } from "@/sentinel/storage";
+import { isEditorialUrl } from "@/sentinel/classification/classifier";
 
 const activeStatuses = ["OPEN", "NEEDS_REVIEW", "CONFIRMED", "ACCEPTED_RISK"] as const;
 const severityRank: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
@@ -42,12 +43,91 @@ export async function loadMerchantReport(merchantId: string, organizationId: str
         where: { status: { in: [...activeStatuses] } },
         orderBy: [{ severity: "asc" }, { lastDetectedAt: "desc" }],
         take: 12,
-        include: { evidence: { orderBy: { createdAt: "asc" }, take: 16 } },
+        include: { evidence: { orderBy: { createdAt: "asc" }, take: 16 }, adjudication: true },
       },
       policies: { orderBy: { type: "asc" } },
-      products: { orderBy: { lastSeenAt: "desc" }, take: 30, include: { variants: true } },
+      products: { orderBy: { lastSeenAt: "desc" }, take: 30, include: { variants: true, snapshots: { orderBy: { createdAt: "desc" }, take: 1 } } },
       _count: { select: { products: true } },
     },
+  });
+}
+
+type MerchantReport = NonNullable<Awaited<ReturnType<typeof loadMerchantReport>>>;
+type ReportFinding = MerchantReport["findings"][number];
+type ReportEvidence = ReportFinding["evidence"][number];
+type ReportProduct = MerchantReport["products"][number];
+
+type EvidenceSection = "ADVERSE" | "MITIGATING" | "CONTEXT";
+
+function evidenceSection(item: ReportEvidence): EvidenceSection {
+  const metadata = jsonRecord(item.metadata);
+  const classification = String(metadata.evidenceClassification ?? "").toUpperCase();
+  const role = String(metadata.role ?? "").toLowerCase();
+  const quote = `${item.evidenceSnippet ?? item.normalizedText ?? ""}`;
+  const restriction = /\b(?:research use only|not for human consumption|not (?:a )?compounding pharmacy|not intended for|not evaluated by|compliance|compliant|prohibited|laboratory research only)\b/i.test(quote);
+  const independentAdverseContext = /\b(?:dose|dosage|take|inject|apply (?:daily|to (?:your|the) skin)|wrinkles?|skin firmness|heal(?:ing|s)?|treats?|cures?|prevents?)\b/i.test(quote);
+  if (restriction && !independentAdverseContext) return "MITIGATING";
+  if (classification === "ADVERSE") return "ADVERSE";
+  if (classification === "MITIGATING" || /mitigat|restriction|disclaimer|compliance/.test(role)) return "MITIGATING";
+  return "CONTEXT";
+}
+
+function evidenceAuditBlock(item: ReportEvidence) {
+  const metadata = jsonRecord(item.metadata);
+  const recordId = item.evidenceRecordId ?? item.id;
+  const provenance = [metadata.sourceKind ?? item.kind, metadata.evidenceType, metadata.role, item.modelVersion].filter(Boolean).join(" · ");
+  return `<blockquote><b>Evidence ID: ${escapeHtml(recordId)}</b><br>&ldquo;${escapeHtml(item.evidenceSnippet ?? item.normalizedText ?? "Evidence retained from the observed page.")}&rdquo;<small><b>URL:</b> ${escapeHtml(item.pageUrl)}<br><b>Provenance:</b> ${escapeHtml(provenance || item.kind)}</small></blockquote>`;
+}
+
+function evidenceGroup(title: string, evidence: ReportEvidence[]) {
+  return `<div class="evidence-group"><label>${escapeHtml(title)}</label>${evidence.length ? evidence.map(evidenceAuditBlock).join("") : '<p class="empty">None retained for this classification.</p>'}</div>`;
+}
+
+function normalizedFindingText(finding: ReportFinding, evidence: ReportEvidence[]) {
+  return [finding.title, finding.category, finding.reason, finding.detectedText, ...evidence.map((item) => item.evidenceSnippet ?? item.normalizedText)].filter(Boolean).join(" ");
+}
+
+function evidenceExcerpt(finding: ReportFinding, evidence: ReportEvidence[]) {
+  const value = finding.detectedText ?? evidence.find((item) => evidenceSection(item) === "ADVERSE")?.evidenceSnippet;
+  if (!value) return undefined;
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > 180 ? `${compact.slice(0, 177)}...` : compact;
+}
+
+export function findingSpecificRemediation(finding: ReportFinding, evidence: ReportEvidence[] = finding.evidence) {
+  const text = normalizedFindingText(finding, evidence);
+  const excerpt = evidenceExcerpt(finding, evidence);
+  const location = finding.url;
+  if (/POLICY-(?:PRIVACY|TERMS|CONTACT|REFUND|SHIPPING)|policy (?:not found|coverage)/i.test(`${finding.title} ${finding.category} ${jsonRecord(evidence[0]?.metadata).ruleKey ?? ""}`)) {
+    const policy = finding.title.replace(/\s*(?:policy|page)?\s*not found.*/i, "").trim() || finding.category;
+    return `Create the missing ${policy.toLowerCase()} page and link it permanently from site navigation or the footer; verify that the public link is reachable in the next scan.`;
+  }
+  if (/checkout|terms presentation|acknowledgement/i.test(text)) {
+    return `At ${location}, add the specifically missing checkout control identified by the evidence (for example, visible terms presentation or an explicit acknowledgement) before order submission, then retain a testable public checkout state.`;
+  }
+  if (/administration|dosing|dosage|timing|application instruction|\b(?:dose|inject|take daily|apply daily)\b/i.test(text)) {
+    return `On ${location}, remove or rewrite the cited consumer-style dosing, timing, route, or application instruction${excerpt ? ` (“${excerpt}”)` : ""} as neutral laboratory methodology without human-use direction.`;
+  }
+  if (/cosmetic|anti-aging|wrinkles?|skin firmness|daily-use/i.test(text)) {
+    return `On ${location}, remove the cited consumer cosmetic or anti-aging benefit language${excerpt ? ` (“${excerpt}”)` : ""}; retain only neutral research or mechanistic description supported by the page evidence.`;
+  }
+  if (/disease|medical claim|treat|cure|prevent|diagnos/i.test(text)) {
+    return `On ${location}, remove or rewrite the cited disease, treatment, prevention, diagnosis, or cure wording${excerpt ? ` (“${excerpt}”)` : ""} so the page states only the evidence-supported research context.`;
+  }
+  if (/research positioning|positioning conflict|storefront restriction|commercial physiological|intended.use|cognitive|recovery|healing/i.test(text)) {
+    return `On ${location}, revise the cited commercial title, category, article, or merchandising wording${excerpt ? ` (“${excerpt}”)` : ""} to neutral research/mechanistic language and align it with the retained research-only restrictions.`;
+  }
+  const existing = finding.recommendedAction.trim();
+  const generic = /review (?:the )?cited|complete merchant context|remediate the supported issue|review .* in (?:its )?(?:complete|full).*context/i.test(existing);
+  if (existing && !generic) return existing;
+  return `On ${location}, revise the specific cited wording${excerpt ? ` (“${excerpt}”)` : ""} so it no longer supports the validated ${finding.category.toLowerCase()} finding; verify the changed page against the same retained evidence.`;
+}
+
+function productForFinding(finding: ReportFinding, products: ReportProduct[]) {
+  if (finding.pageType !== "PRODUCT" || isEditorialUrl(finding.url)) return undefined;
+  return products.find((product) => product.canonicalUrl === finding.url) ?? products.find((product) => {
+    try { return new URL(product.canonicalUrl).pathname === new URL(finding.url).pathname; }
+    catch { return false; }
   });
 }
 
@@ -79,7 +159,7 @@ export async function renderMerchantReportPdf(report: NonNullable<Awaited<Return
   }
 }
 
-function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMerchantReport>>>, visualData = new Map<string, string>()) {
+export function merchantReportHtml(report: MerchantReport, visualData = new Map<string, string>()) {
   const health = report.healthScores[0];
   const scan = health?.scan;
   const score = health?.total;
@@ -101,14 +181,28 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
     ? `${findings.length} evidence-backed observation${findings.length === 1 ? " remains" : "s remain"} open for review.`
     : "No material open finding was produced from the evidence reviewed in the latest completed assessment.";
   const intelligence = jsonRecord(scan?.intelligence);
+  const coverageRecord = jsonRecord(intelligence.coverage);
+  const coverageSurfaces = jsonRecord(coverageRecord.surfaces);
+  const checkoutSurface = jsonRecord(coverageSurfaces.checkout);
+  const checkoutState = typeof checkoutSurface.state === "string" ? checkoutSurface.state : checkoutStates > 0 ? "OBSERVED" : "UNKNOWN";
   const graph = jsonRecord(intelligence.evidenceGraph);
   const themes = Array.isArray(graph.themes) ? graph.themes.map(jsonRecord).slice(0, 12) : [];
   const limitations = Array.isArray(intelligence.methodologyLimitations) ? intelligence.methodologyLimitations.filter((item): item is string => typeof item === "string") : [];
   const themeRows = themes.length ? themes.map((theme) => `<tr><td>${escapeHtml(theme.riskTheme)}</td><td>${escapeHtml(theme.severity)}</td><td>${Array.isArray(theme.evidence) ? theme.evidence.length : 0}</td><td>${Array.isArray(theme.mitigatingEvidence) ? theme.mitigatingEvidence.length : 0}</td></tr>`).join("") : '<tr><td colspan="4">No material risk theme was retained.</td></tr>';
   const limitationRows = limitations.length ? `<ul>${limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : "<p>No model or surface-specific failure was recorded.</p>";
-  const productRows = report.products.length ? report.products.map((product) => `<tr><td>${escapeHtml(product.name)}</td><td>${escapeHtml(product.sku ?? "â€”")}</td><td>${product.variants.length}</td><td>${escapeHtml(new URL(product.canonicalUrl).pathname)}</td></tr>`).join("") : '<tr><td colspan="4">No normalized product record was retained.</td></tr>';
+  const products = report.products.filter((product) => !isEditorialUrl(product.canonicalUrl) && (!scan || product.snapshots.some((snapshot) => snapshot.scanId === scan.id)));
+  const productRows = products.length ? products.map((product) => {
+    const variationDetails = product.variants.length
+      ? product.variants.map((variant) => `${escapeHtml(variant.name)}${variant.sku ? ` · SKU ${escapeHtml(variant.sku)}` : ""}`).join("<br>")
+      : "No variations observed";
+    return `<tr><td><b>${escapeHtml(product.name)}</b><small class="product-url">${escapeHtml(product.canonicalUrl)}</small></td><td>${escapeHtml(product.sku ? `SKU: ${product.sku}` : "SKU: Not observed")}</td><td>${variationDetails}</td><td class="canonical-url">${escapeHtml(product.canonicalUrl)}</td></tr>`;
+  }).join("") : '<tr><td colspan="4">No verified product record was retained for this assessment.</td></tr>';
 
-  const componentRows = health?.components.map((component) => `<div class="component"><div class="component-head"><span>${escapeHtml(component.label)}</span><b>${component.score}</b></div><div class="track"><i style="width:${Math.max(0, Math.min(100, component.score))}%"></i></div></div>`).join("") ?? '<p class="empty">Component scoring will appear after a completed assessment.</p>';
+  const componentRows = health?.components.map((component) => {
+    const checkoutUnobserved = component.key === "SITE_CONTROLS" && checkoutState !== "OBSERVED";
+    const value = component.key === "SITE_CONTROLS" && checkoutState === "NOT_APPLICABLE" ? "NOT APPLICABLE" : checkoutUnobserved ? `${component.score} · ${checkoutState.replaceAll("_", " ")}` : String(component.score);
+    return `<div class="component"><div class="component-head"><span>${escapeHtml(component.label)}</span><b>${escapeHtml(value)}</b></div>${component.key === "SITE_CONTROLS" && checkoutState === "NOT_APPLICABLE" ? "" : `<div class="track"><i style="width:${Math.max(0, Math.min(100, component.score))}%"></i></div>`}</div>`;
+  }).join("") ?? '<p class="empty">Component scoring will appear after a completed assessment.</p>';
   const policyRows = expectedPolicies.map((type) => {
     const policy = policyMap.get(type as typeof report.policies[number]["type"]);
     const found = policy?.coverage === "FOUND";
@@ -116,10 +210,21 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
   }).join("");
   const findingRows = findings.length ? findings.map((finding, index) => {
     const evidence = [...new Map(finding.evidence.filter((item) => item.kind === "TEXT").map((item) => [`${item.pageUrl}|${item.evidenceSnippet ?? item.normalizedText ?? ""}`, item])).values()];
-    const evidenceBlocks = evidence.map((item, evidenceIndex) => `<blockquote><b>Evidence ${String.fromCharCode(65 + evidenceIndex)}</b><br>“${escapeHtml(item.evidenceSnippet ?? item.normalizedText ?? "Evidence retained from the observed page.")}”<small>${escapeHtml(item.pageUrl)}</small></blockquote>`).join("");
+    const adverse = evidence.filter((item) => evidenceSection(item) === "ADVERSE");
+    const mitigating = evidence.filter((item) => evidenceSection(item) === "MITIGATING");
+    const context = evidence.filter((item) => evidenceSection(item) === "CONTEXT");
+    const evidenceBlocks = `${evidenceGroup("ADVERSE EVIDENCE", adverse)}${evidenceGroup("MITIGATING EVIDENCE", mitigating)}${evidenceGroup("NEUTRAL / SUPPORTING CONTEXT", context)}`;
     const visual = finding.evidence.find((item) => item.kind === "SCREENSHOT" && item.storageKey && visualData.has(item.storageKey));
-    const visualBlock = visual?.storageKey ? `<figure class="visual-evidence"><img src="${visualData.get(visual.storageKey)}"><figcaption>Retained visual evidence Â· ${escapeHtml(visual.pageUrl)}</figcaption></figure>` : "";
-    return `<article class="finding avoid-break"><div class="finding-index">${String(index + 1).padStart(2, "0")}</div><div><div class="finding-meta"><span class="severity ${finding.severity.toLowerCase()}">${escapeHtml(finding.severity)}</span><span>${Math.round(finding.confidence * 100)}% confidence</span><span>${escapeHtml(finding.status.replaceAll("_", " "))}</span></div><h3>${escapeHtml(finding.title)}</h3><p>${escapeHtml(finding.description)}</p><div class="finding-grid"><div><label>Why it was flagged</label><p>${escapeHtml(finding.reason)}</p></div><div><label>Recommended action</label><p>${escapeHtml(finding.recommendedAction)}</p></div></div>${evidenceBlocks}${visualBlock}</div></article>`;
+    const visualBlock = visual?.storageKey ? `<figure class="visual-evidence"><img src="${visualData.get(visual.storageKey)}"><figcaption>Evidence ID: ${escapeHtml(visual.evidenceRecordId ?? visual.id)} · ${escapeHtml(visual.pageUrl)}</figcaption></figure>` : "";
+    const metadata = evidence.map((item) => jsonRecord(item.metadata));
+    const riskTheme = metadata.map((item) => item.riskTheme).find((item) => typeof item === "string") ?? finding.category;
+    const product = productForFinding(finding, products);
+    const editorial = finding.pageType === "ARTICLE" || finding.pageType === "BLOG" || isEditorialUrl(finding.url);
+    const adjudicationStatus = finding.adjudication?.outcome ?? finding.status;
+    const identity = editorial
+      ? `<div><label>Content type</label><p><b>Editorial / Article</b></p></div>`
+      : `<div><label>Affected page / product</label><p>${escapeHtml(product?.name ?? finding.title)}</p></div>`;
+    return `<article class="finding avoid-break"><div class="finding-index">${String(index + 1).padStart(2, "0")}</div><div><div class="finding-meta"><span class="severity ${finding.severity.toLowerCase()}">${escapeHtml(finding.severity)}</span><span>${Math.round(finding.confidence * 100)}% confidence</span><span>Adjudication: ${escapeHtml(adjudicationStatus.replaceAll("_", " "))}</span></div><h3>${escapeHtml(finding.title)}</h3><p>${escapeHtml(finding.description)}</p><div class="audit-grid">${identity}<div><label>Risk theme</label><p>${escapeHtml(riskTheme)}</p></div><div><label>Verified product SKU</label><p>${escapeHtml(editorial ? "Not applicable" : product?.sku ? `SKU: ${product.sku}` : "SKU: Not observed")}</p></div><div><label>Canonical URL</label><p class="canonical-url">${escapeHtml(product?.canonicalUrl ?? finding.url)}</p></div></div><div class="finding-grid"><div><label>Why it was flagged</label><p>${escapeHtml(finding.reason)}</p></div><div class="remediation"><label>RECOMMENDED REMEDIATION</label><p>${escapeHtml(findingSpecificRemediation(finding, evidence))}</p></div></div>${evidenceBlocks}${visualBlock}</div></article>`;
   }).join("") : '<div class="clean-state"><span>✓</span><div><b>No open findings</b><p>No material issue was observed in the evidence reviewed for the latest completed assessment.</p></div></div>';
 
   return `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -146,10 +251,12 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
     .score-layout { display: grid; grid-template-columns: 45mm 1fr; gap: 10mm; align-items: start; } .score-panel { background: #0d0f13; color: #fff; padding: 8mm; min-height: 48mm; } .score-panel strong { font-size: 40px; line-height: 1; font-weight: 400; } .score-panel p { color: #8f949e; margin: 5px 0 0; }
     .component { margin-bottom: 4mm; } .component-head { display: flex; justify-content: space-between; color: #555a63; } .component-head b { color: #1e2024; } .track { height: 2px; background: #e8e9ec; margin-top: 2mm; } .track i { height: 100%; display: block; background: #7477e5; }
     .signal-grid { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid #dfe1e5; margin-top: 6mm; } .signal { padding: 4mm; border-right: 1px solid #dfe1e5; } .signal:last-child { border: 0; } .signal b { display: block; font-size: 18px; font-weight: 500; } .signal span { color: #777c85; font-size: 8px; }
-    table { width: 100%; border-collapse: collapse; } th { color: #787d86; font-size: 7px; letter-spacing: 1px; text-align: left; padding: 2.5mm; border-bottom: 1px solid #dfe1e5; } td { padding: 3mm 2.5mm; border-bottom: 1px solid #eceef0; } .status { font-size: 7px; letter-spacing: .8px; } .found { color: #247356; } .missing { color: #9b6f24; }
+    table { width: 100%; border-collapse: collapse; } th { color: #787d86; font-size: 7px; letter-spacing: 1px; text-align: left; padding: 2.5mm; border-bottom: 1px solid #dfe1e5; } td { padding: 3mm 2.5mm; border-bottom: 1px solid #eceef0; vertical-align: top; } .status { font-size: 7px; letter-spacing: .8px; } .found { color: #247356; } .missing { color: #9b6f24; }
+    .product-url { display: block; margin-top: 1mm; color: #777c85; word-break: break-all; } .canonical-url { word-break: break-all; color: #50556a; }
     .finding { display: grid; grid-template-columns: 10mm 1fr; gap: 5mm; padding: 5mm 0 7mm; border-bottom: 1px solid #dfe1e5; } .finding-index { color: #a1a5ad; font-size: 8px; } .finding-meta { display: flex; gap: 8px; color: #8a8e96; font-size: 7px; letter-spacing: .5px; text-transform: uppercase; } .severity { font-weight: 700; } .critical, .high { color: #a74646; } .medium { color: #9b7029; } .low { color: #4e699a; }
-    .finding h3 { margin: 2mm 0 1mm; font-size: 14px; font-weight: 500; } .finding p { margin: 0; color: #5c616a; } .finding-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; margin-top: 4mm; } .finding-grid label { display: block; margin-bottom: 1mm; color: #8588e5; font-size: 7px; letter-spacing: 1px; text-transform: uppercase; }
-    blockquote { margin: 4mm 0 0; padding: 3mm 4mm; border-left: 2px solid #8588e5; background: #f5f5f7; color: #444850; font-size: 9px; } blockquote small { display: block; margin-top: 2mm; color: #888d95; word-break: break-all; }
+    .finding h3 { margin: 2mm 0 1mm; font-size: 14px; font-weight: 500; } .finding p { margin: 0; color: #5c616a; } .finding-grid, .audit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm 8mm; margin-top: 4mm; } .finding-grid label, .audit-grid label, .evidence-group > label { display: block; margin-bottom: 1mm; color: #8588e5; font-size: 7px; letter-spacing: 1px; text-transform: uppercase; } .audit-grid { padding: 3mm; background: #f7f7f9; } .remediation { padding: 3mm; border: 1px solid #d9dafa; background: #f8f8ff; }
+    .evidence-group { margin-top: 4mm; padding-top: 3mm; border-top: 1px solid #e3e4e8; } .evidence-group:nth-of-type(1) > label { color: #a74646; } .evidence-group:nth-of-type(2) > label { color: #247356; }
+    blockquote { margin: 2mm 0 0; padding: 3mm 4mm; border-left: 2px solid #8588e5; background: #f5f5f7; color: #444850; font-size: 9px; } blockquote small { display: block; margin-top: 2mm; color: #888d95; word-break: break-all; }
     .visual-evidence { margin: 4mm 0 0; padding: 3mm; background: #f5f5f7; } .visual-evidence img { display: block; width: 100%; max-height: 95mm; object-fit: contain; } .visual-evidence figcaption { margin-top: 2mm; color: #777c85; font-size: 8px; word-break: break-all; }
     .clean-state { display: flex; gap: 5mm; padding: 8mm; background: #f2f7f4; border: 1px solid #d7e7dd; } .clean-state > span { color: #237351; font-size: 18px; } .clean-state b { font-size: 13px; } .clean-state p { margin: 2px 0 0; color: #5f6862; }
     .method { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; } .method div { border-top: 1px solid #dfe1e5; padding-top: 3mm; } .method b { font-size: 9px; } .method p { color: #676c74; margin: 2mm 0 0; }
@@ -157,10 +264,10 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
     .avoid-break { break-inside: avoid; }
   </style></head><body>
     <section class="cover"><div class="brand"><span class="brand-mark"></span>ORBIT <span style="color:#6e727c;font-weight:400;letter-spacing:2px">SENTINEL</span></div><div class="cover-main"><p class="eyebrow">Merchant intelligence report</p><h1>${escapeHtml(report.businessName)}</h1><p class="cover-copy">A point-in-time view of observed website risk, policy coverage and review-ready evidence.</p><div class="cover-score"><div class="score-number">${scoreDisplay}<small>/100</small></div><div><div class="score-label">${escapeHtml(state.label)}</div><div class="score-note">ORBIT internal health score · 0 is weakest, 100 is strongest</div></div></div></div><div class="cover-foot"><div><label>Website</label><b>${escapeHtml(report.sites[0]?.hostname ?? "Not configured")}</b></div><div><label>Assessment completed</label><b>${escapeHtml(formatDate(scan?.completedAt))}</b></div><div><label>Report generated</label><b>${escapeHtml(formatDate(generatedAt))}</b></div></div></section>
-    <main class="page"><section class="section"><div class="section-head"><h2>Executive assessment</h2><span class="section-no">01</span></div><p class="lead">${escapeHtml(assessment)} This assessment reflects public evidence successfully reached within the discovered scan boundary and should be interpreted with the coverage notes below.</p><div class="meta-grid"><div class="meta"><label>Pages reviewed</label><b>${scan?.pagesProcessed ?? 0}</b></div><div class="meta"><label>Products mapped</label><b>${scan?.productsDetected ?? report._count.products}</b></div><div class="meta"><label>Open findings</label><b>${findings.length}</b></div><div class="meta"><label>Observed coverage</label><b>${coverage}%</b></div></div><div class="score-layout"><div class="score-panel"><strong>${scoreDisplay}</strong><p>${escapeHtml(state.label)}</p><p>Formula ${escapeHtml(health?.formulaVersion ?? "not calculated")}</p></div><div>${componentRows}</div></div></section>
-    <section class="section"><div class="section-head"><h2>Observed surface</h2><span class="section-no">02</span></div><div class="signal-grid"><div class="signal"><b>${scan?.pagesDiscovered ?? 0}</b><span>URLs discovered</span></div><div class="signal"><b>${visualPages}</b><span>Pages visually analyzed</span></div><div class="signal"><b>${documentsReviewed}</b><span>Documents extracted</span></div><div class="signal"><b>${checkoutStates}</b><span>Checkout states inspected</span></div></div><p class="lead" style="margin-top:5mm">Coverage describes successfully observed public content, not an assertion that every possible URL, image, document, private account area or dynamic state was verified.</p></section>
+    <main class="page"><section class="section"><div class="section-head"><h2>Executive assessment</h2><span class="section-no">01</span></div><p class="lead">${escapeHtml(assessment)} This assessment reflects public evidence successfully reached within the discovered scan boundary and should be interpreted with the coverage notes below.</p><div class="meta-grid"><div class="meta"><label>Pages reviewed</label><b>${scan?.pagesProcessed ?? 0}</b></div><div class="meta"><label>Products mapped</label><b>${products.length}</b></div><div class="meta"><label>Open findings</label><b>${findings.length}</b></div><div class="meta"><label>Observed coverage</label><b>${coverage}%</b></div></div><div class="score-layout"><div class="score-panel"><strong>${scoreDisplay}</strong><p>${escapeHtml(state.label)}</p><p>Formula ${escapeHtml(health?.formulaVersion ?? "not calculated")}</p></div><div>${componentRows}</div></div></section>
+    <section class="section"><div class="section-head"><h2>Observed surface</h2><span class="section-no">02</span></div><div class="signal-grid"><div class="signal"><b>${scan?.pagesDiscovered ?? 0}</b><span>URLs discovered</span></div><div class="signal"><b>${visualPages}</b><span>Pages visually analyzed</span></div><div class="signal"><b>${documentsReviewed}</b><span>Documents extracted</span></div><div class="signal"><b>${checkoutStates}</b><span>Checkout states inspected · ${escapeHtml(checkoutState.replaceAll("_", " "))}</span></div></div><table style="margin-top:5mm"><thead><tr><th>SURFACE</th><th>STATE</th><th>INSPECTED</th><th>EXPECTED</th><th>COVERAGE</th></tr></thead><tbody>${Object.entries(coverageSurfaces).map(([name, raw]) => { const surface = jsonRecord(raw); return `<tr><td>${escapeHtml(name.toUpperCase())}</td><td>${escapeHtml(String(surface.state ?? "UNKNOWN").replaceAll("_", " "))}</td><td>${escapeHtml(surface.inspected ?? 0)}</td><td>${escapeHtml(surface.expected ?? 0)}</td><td>${surface.percent === null || surface.percent === undefined ? "—" : `${escapeHtml(surface.percent)}%`}</td></tr>`; }).join("")}</tbody></table><p class="lead" style="margin-top:5mm">Coverage describes successfully observed public content, not an assertion that every possible URL, image, document, private account area or dynamic state was verified. Coverage and Health Score are reported separately.</p></section>
     <section class="section"><div class="section-head"><h2>Key risk themes</h2><span class="section-no">03</span></div><table><thead><tr><th>THEME</th><th>SEVERITY</th><th>EVIDENCE</th><th>MITIGATING</th></tr></thead><tbody>${themeRows}</tbody></table></section>
-    <section class="section"><div class="section-head"><h2>Products reviewed</h2><span class="section-no">04</span></div><table><thead><tr><th>PRODUCT</th><th>SKU</th><th>VARIANTS</th><th>PUBLIC PATH</th></tr></thead><tbody>${productRows}</tbody></table></section>
+    <section class="section"><div class="section-head"><h2>Products reviewed</h2><span class="section-no">04</span></div><table><thead><tr><th>PRODUCT</th><th>VERIFIED SKU</th><th>VARIATION / SKU INFORMATION</th><th>CANONICAL PRODUCT URL</th></tr></thead><tbody>${productRows}</tbody></table></section>
     <section class="section"><div class="section-head"><h2>Policy coverage</h2><span class="section-no">03</span></div><table><thead><tr><th>POLICY AREA</th><th>OBSERVED STATUS</th><th>PUBLIC PATH</th></tr></thead><tbody>${policyRows}</tbody></table><div class="meta-grid"><div class="meta"><label>Research-use policy</label><b>${policyMap.has("RESEARCH_USE") ? "Observed" : "Not observed"}</b></div><div class="meta"><label>Explicit disclaimer pages</label><b>${disclaimerPages}</b></div><div class="meta"><label>Pages with restrictions</label><b>${researchRestrictionPages}</b></div><div class="meta"><label>Product disclosure coverage</label><b>${researchCoveredProducts}/${scan?.productsDetected ?? 0}</b></div></div><p class="lead">Positive controls are reported as observed evidence, not used as permission to ignore a separate material contradiction. A restriction that merely names a prohibited activity is never treated as promotion.</p></section>
     <section class="section"><div class="section-head"><h2>Open findings</h2><span class="section-no">04 · ${findings.length} TOTAL</span></div><div class="signal-grid" style="margin:0 0 5mm"><div class="signal"><b>${severityCounts.CRITICAL ?? 0}</b><span>Critical</span></div><div class="signal"><b>${severityCounts.HIGH ?? 0}</b><span>High</span></div><div class="signal"><b>${severityCounts.MEDIUM ?? 0}</b><span>Medium</span></div><div class="signal"><b>${severityCounts.LOW ?? 0}</b><span>Low</span></div></div>${findingRows}</section>
     <section class="section"><div class="section-head"><h2>Method & limitations</h2><span class="section-no">06</span></div><div class="method"><div><b>Evidence-led multimodal screening</b><p>Findings are produced from retained page, image, document, checkout, contextual-rule and merchant-level evidence. Confidence indicates signal strength, not a legal conclusion.</p></div><div><b>Point-in-time result</b><p>Websites change continuously. This report reflects the latest completed assessment shown on the cover and may not describe later changes.</p></div><div><b>Human review</b><p>Open observations should be reviewed in context. Model output supplies observations only and never decides approval, certification or final score.</p></div><div><b>Internal health score</b><p>The ORBIT Health Score is a deterministic internal prioritization measure and is reported separately from scan coverage.</p></div></div><div class="lead">${limitationRows}</div><div class="disclaimer">ORBIT provides software for compliance monitoring and risk intelligence. This report is informational screening based on observed evidence. It is not legal advice, a compliance certification, or a guarantee of approval or continued service by any third party.</div></section></main>

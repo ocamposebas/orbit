@@ -53,7 +53,7 @@ export async function evaluatePage(page: PageInput, analyzer: SemanticAnalyzer):
     }
   }
 
-  if (page.pageType === "PRODUCT" && hasProductEvidence(page.content) && page.content.prices.length === 0) {
+  if (page.pageType === "PRODUCT" && hasProductEvidence(page.content, page.url) && page.content.prices.length === 0) {
     findings.push(candidate({ ruleKey: "PROD-PRICE-001", severity: "LOW", confidence: 0.77, status: "NEEDS_REVIEW", category: "Product integrity", title: "Product price was not detected", description: "The product page did not expose a recognizable price in its rendered content.", reason: "A price could not be extracted from the rendered product page.", recommendedAction: "Confirm that price and purchase terms are clear before a visitor commits to an order.", scoreComponent: "PRODUCT_INTEGRITY" }, page));
   }
   if (page.pageType === "PRODUCT" && page.content.disclaimers.length === 0 && materialConsumerClaim) {
@@ -74,7 +74,7 @@ export async function evaluatePage(page: PageInput, analyzer: SemanticAnalyzer):
 export function requiredPolicyTypes(pages: PageInput[]): PolicySignalType[] {
   const usablePages = pages.filter((page) => page.httpStatus === undefined || page.httpStatus < 400);
   const siteText = usablePages.map((page) => page.content.visibleText).join(" ");
-  const commerceObserved = usablePages.some((page) => ["PRODUCT", "CART", "CHECKOUT"].includes(page.pageType) && hasProductEvidence(page.content));
+  const commerceObserved = usablePages.some((page) => ["CART", "CHECKOUT"].includes(page.pageType) || (page.pageType === "PRODUCT" && hasProductEvidence(page.content, page.url)));
   const explicitlyDigitalOrService = /\b(?:digital download|downloadable|software|saas|online course|consulting|consultation|professional services?|subscription software)\b/i.test(siteText);
   return ["PRIVACY", "TERMS", "CONTACT", ...(commerceObserved ? ["REFUND"] : []), ...(commerceObserved && !explicitlyDigitalOrService ? ["SHIPPING"] : [])] as PolicySignalType[];
 }
