@@ -13,9 +13,23 @@ describe("explainable scoring and smart diff", () => {
     expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
     expect(score.explanation.scale).toEqual({ minimum: 0, maximum: 100, higherIsBetter: true });
   });
-  it("scores distinct claim evidence separately even when it appears on one page", () => {
+  it("scores related claim evidence on one page as one material theme", () => {
     const second = { ...finding, detectedText: "A second claim on the same page" };
     const score = calculateHealthScore([{ ...finding, detectedText: "First claim" }, second]);
+    expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(1);
+  });
+  it("caps twenty repeated high-risk theme occurrences at one-and-a-half deductions", () => {
+    const repeated = Array.from({ length: 20 }, (_, index) => ({ ...finding, url: `https://example.test/article-${index}`, detectedText: `Muscle growth and hypertrophy evidence ${index}` }));
+    const score = calculateHealthScore(repeated);
+    const marketing = score.components.find((item) => item.key === "MARKETING_RISK");
+    expect(marketing?.deductions).toHaveLength(1);
+    expect(marketing?.deductions[0].points).toBe(24);
+    expect(marketing?.score).toBe(76);
+  });
+  it("keeps materially different claim types as separate scoring themes", () => {
+    const medical = { ...finding, ruleKey: "MKT-MEDICAL-001", detectedText: "Treats cognitive disease." };
+    const testimonial = { ...finding, ruleKey: "MKT-TESTIMONIAL-001", detectedText: "My memory improved." };
+    const score = calculateHealthScore([medical, testimonial]);
     expect(score.components.find((item) => item.key === "MARKETING_RISK")?.deductions).toHaveLength(2);
   });
   it("deducts identical claim evidence only once when copied across pages", () => {

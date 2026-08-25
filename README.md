@@ -168,7 +168,7 @@ Findings are fingerprinted by rule and evidence-bearing text, with site-wide ide
 
 ## Score engine
 
-`orbit-health-v6` starts each component at 100 and applies disclosed per-finding deductions. Only semantic observations that pass schema, exact-evidence, confidence and human-review gates enter the existing candidate-quality and deterministic score pipeline. Deterministic findings remain authoritative when the same evidence is observed by both layers. The total is a fixed weighted sum. Stored scores include formula version, weights, component results and each deduction. ORBIT Health is an internal decision-support measure, not a legal conclusion or external approval metric.
+`orbit-health-v7` starts each component at 100 and applies disclosed deductions by unique material risk theme. Related evidence on one page is grouped into one finding, and additional pages add at most two 25% increments, capping a repeated theme at 150% of its base deduction. Only semantic observations that pass schema, exact-evidence, contextual, confidence and human-review gates enter the score pipeline. Deterministic findings remain authoritative when the same evidence is observed by both layers. The total is a fixed weighted sum. Stored scores include formula version, weights, component results and each deduction. ORBIT Health is an internal decision-support measure, not a legal conclusion or external approval metric.
 
 ## Security model
 

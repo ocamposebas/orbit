@@ -76,6 +76,7 @@ export interface CandidateFinding {
   semanticCategory?: string;
   semanticClassification?: string;
   promptVersion?: string;
+  riskTheme?: string;
 }
 
 export type ScoreComponentKey = "POLICY_COVERAGE" | "PRODUCT_INTEGRITY" | "RESEARCH_CONTROLS" | "MARKETING_RISK" | "SITE_CONTROLS" | "OPERATIONAL_CONSISTENCY";

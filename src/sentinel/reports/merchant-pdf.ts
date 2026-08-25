@@ -37,7 +37,7 @@ export async function loadMerchantReport(merchantId: string, organizationId: str
         where: { status: { in: [...activeStatuses] } },
         orderBy: { lastDetectedAt: "desc" },
         take: 40,
-        include: { evidence: { where: { kind: "TEXT" }, orderBy: { createdAt: "asc" }, take: 2 } },
+        include: { evidence: { where: { kind: "TEXT" }, orderBy: { createdAt: "asc" }, take: 8 } },
       },
       policies: { orderBy: { type: "asc" } },
       _count: { select: { products: true } },
@@ -96,8 +96,9 @@ function merchantReportHtml(report: NonNullable<Awaited<ReturnType<typeof loadMe
     return `<tr><td>${escapeHtml(type.replaceAll("_", " "))}</td><td><span class="status ${found ? "found" : "missing"}">${found ? "FOUND" : "NOT OBSERVED"}</span></td><td>${policy?.url ? escapeHtml(new URL(policy.url).pathname) : "—"}</td></tr>`;
   }).join("");
   const findingRows = findings.length ? findings.map((finding, index) => {
-    const evidence = finding.evidence[0];
-    return `<article class="finding avoid-break"><div class="finding-index">${String(index + 1).padStart(2, "0")}</div><div><div class="finding-meta"><span class="severity ${finding.severity.toLowerCase()}">${escapeHtml(finding.severity)}</span><span>${Math.round(finding.confidence * 100)}% confidence</span><span>${escapeHtml(finding.status.replaceAll("_", " "))}</span></div><h3>${escapeHtml(finding.title)}</h3><p>${escapeHtml(finding.description)}</p><div class="finding-grid"><div><label>Why it was flagged</label><p>${escapeHtml(finding.reason)}</p></div><div><label>Recommended action</label><p>${escapeHtml(finding.recommendedAction)}</p></div></div>${evidence ? `<blockquote>“${escapeHtml(evidence.evidenceSnippet ?? evidence.normalizedText ?? "Evidence retained from the observed page.")}”<small>${escapeHtml(evidence.pageUrl)}</small></blockquote>` : ""}</div></article>`;
+    const evidence = [...new Map(finding.evidence.map((item) => [`${item.pageUrl}|${item.evidenceSnippet ?? item.normalizedText ?? ""}`, item])).values()];
+    const evidenceBlocks = evidence.map((item, evidenceIndex) => `<blockquote><b>Evidence ${String.fromCharCode(65 + evidenceIndex)}</b><br>“${escapeHtml(item.evidenceSnippet ?? item.normalizedText ?? "Evidence retained from the observed page.")}”<small>${escapeHtml(item.pageUrl)}</small></blockquote>`).join("");
+    return `<article class="finding avoid-break"><div class="finding-index">${String(index + 1).padStart(2, "0")}</div><div><div class="finding-meta"><span class="severity ${finding.severity.toLowerCase()}">${escapeHtml(finding.severity)}</span><span>${Math.round(finding.confidence * 100)}% confidence</span><span>${escapeHtml(finding.status.replaceAll("_", " "))}</span></div><h3>${escapeHtml(finding.title)}</h3><p>${escapeHtml(finding.description)}</p><div class="finding-grid"><div><label>Why it was flagged</label><p>${escapeHtml(finding.reason)}</p></div><div><label>Recommended action</label><p>${escapeHtml(finding.recommendedAction)}</p></div></div>${evidenceBlocks}</div></article>`;
   }).join("") : '<div class="clean-state"><span>✓</span><div><b>No open findings</b><p>No material issue was observed in the evidence reviewed for the latest completed assessment.</p></div></div>';
 
   return `<!doctype html><html><head><meta charset="utf-8"><style>

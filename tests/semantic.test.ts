@@ -17,6 +17,12 @@ describe("contextual claim analysis", () => {
     ["Cognitive Research Products", "needs_review", false],
     ["Reproductive Research Products", "needs_review", false],
     ["Recovery Research Products", "needs_review", false],
+    ["Peptides marketed for anti-aging, muscle building, or other health benefits have claims that lack sufficient evidence.", "research_context", false],
+    ["Clear labeling stating research-only use is required.", "neutral", false],
+    ["Can muscle growth research materials be used for human testing?", "needs_review", false],
+    ["What animal models are typically used for muscle growth research?", "needs_review", false],
+    ["Supports memory enhancement.", "consumer_claim", true],
+    ["Provides neuroprotection.", "consumer_claim", true],
   ])("classifies %s", (text, classification, consumerDirected) => {
     const result = analyzeClaim(text);
     expect(result.classification).toBe(classification);

@@ -13,6 +13,61 @@ function normalizedEvidence(finding: CandidateFinding) {
   return finding.detectedText?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
 }
 
+function riskTopic(text: string) {
+  if (/\b(?:cogniti\w*|memory|neuroprotect\w*|focus)\b/i.test(text)) return "COGNITIVE_NEUROLOGICAL";
+  if (/\b(?:muscle|hypertroph\w*|human performance|bodybuild\w*)\b/i.test(text)) return "MUSCLE_PERFORMANCE";
+  if (/\b(?:obesity|weight|appetite|adiposity|body[- ]?fat|metaboli\w*|fat[- ]?loss)\b/i.test(text)) return "WEIGHT_METABOLIC";
+  if (/\b(?:reproductive|fertility|fertile)\b/i.test(text)) return "REPRODUCTIVE_FERTILITY";
+  if (/\b(?:recovery|healing|injur\w*)\b/i.test(text)) return "RECOVERY_HEALING";
+  if (/\b(?:longevity|anti[- ]?aging|lifespan)\b/i.test(text)) return "LONGEVITY_AGING";
+  if (/\b(?:cosmetic|skin|beauty|topical)\b/i.test(text)) return "COSMETIC";
+  return "GENERAL";
+}
+
+export function materialRiskTheme(finding: CandidateFinding) {
+  if (finding.riskTheme) return finding.riskTheme;
+  const text = `${finding.detectedText ?? ""} ${finding.title} ${finding.category}`;
+  const rule = finding.ruleKey;
+  const topic = riskTopic(text);
+  if (/CONFLICT|CONTRADICTION|DECEPTIVE|INCONSISTENT/.test(rule) || finding.semanticCategory === "CONTRADICTION" || finding.semanticCategory === "DECEPTIVE_INCONSISTENT_POSITIONING") return `CONTRADICTION:${topic}`;
+  if (/MEDICAL/.test(rule) || finding.semanticCategory === "MEDICAL_CLAIM") return `MEDICAL_CLAIM:${topic}`;
+  if (/ADMIN|DOSING/.test(rule) || finding.semanticCategory === "DOSING_ADMINISTRATION") return `DOSING_ADMINISTRATION:${topic}`;
+  if (/TESTIMONIAL/.test(rule)) return `TESTIMONIAL:${topic}`;
+  if (/PHARMACY|PRESCRIPTION|^RX-/.test(rule) || finding.semanticCategory === "PHARMACY_PRESCRIPTION") return `PHARMACY_PRESCRIPTION:${topic}`;
+  if (finding.scoreComponent === "MARKETING_RISK" || /MKT-|INTENDED_USE|HUMAN_THERAPEUTIC_OUTCOME/.test(rule)) return `PHYSIOLOGICAL_OUTCOME:${topic}`;
+  return `RULE:${rule}`;
+}
+
+function pageGroupable(finding: CandidateFinding) {
+  return finding.scoreComponent === "MARKETING_RISK" || /^(?:MKT-|RSRCH-ADMIN|RX-REVIEW|POSITION-CONFLICT|SEM-(?:PAGE|MERCHANT)-(?:INTENDED_USE|HUMAN_THERAPEUTIC_OUTCOME|MEDICAL_CLAIM|DOSING_ADMINISTRATION|CONTRADICTION|DECEPTIVE_INCONSISTENT_POSITIONING))/.test(finding.ruleKey);
+}
+
+function preferredFinding(left: CandidateFinding, right: CandidateFinding) {
+  if (severityRank[right.severity] > severityRank[left.severity] || (right.severity === left.severity && right.confidence > left.confidence)) return right;
+  return left;
+}
+
+function evidenceKey(evidence: { url: string; text: string }) {
+  return `${evidence.url}|${evidence.text.replace(/\s+/g, " ").trim().toLowerCase()}`;
+}
+
+function groupPageFindings(left: CandidateFinding, right: CandidateFinding, theme: string): CandidateFinding {
+  const preferred = preferredFinding(left, right);
+  const primaryKey = evidenceKey({ url: preferred.url, text: preferred.detectedText ?? preferred.title });
+  const secondaryKey = preferred.secondaryEvidence ? evidenceKey(preferred.secondaryEvidence) : "";
+  const evidence = [
+    ...(left.detectedText ? [{ url: left.url, text: left.detectedText, role: "related-theme-evidence", evidenceType: left.evidenceType }] : []),
+    ...(right.detectedText ? [{ url: right.url, text: right.detectedText, role: "related-theme-evidence", evidenceType: right.evidenceType }] : []),
+    ...(left.secondaryEvidence ? [{ ...left.secondaryEvidence, evidenceType: undefined }] : []),
+    ...(right.secondaryEvidence ? [{ ...right.secondaryEvidence, evidenceType: undefined }] : []),
+    ...(left.supportingEvidence ?? []),
+    ...(right.supportingEvidence ?? []),
+  ];
+  const supportingEvidence = [...new Map(evidence.filter((item) => evidenceKey(item) !== primaryKey && evidenceKey(item) !== secondaryKey).map((item) => [evidenceKey(item), item])).values()];
+  const affectedUrls = [...new Set([...(left.affectedUrls ?? [left.url]), ...(right.affectedUrls ?? [right.url])])];
+  return { ...preferred, riskTheme: theme, supportingEvidence, affectedUrls };
+}
+
 function guardedSeverity(finding: CandidateFinding): SentinelSeverity {
   if (finding.severity === "CRITICAL" && (!finding.detectedText || finding.confidence < 0.9)) return "HIGH";
   if ((finding.severity === "CRITICAL" || finding.severity === "HIGH") && finding.confidence < 0.7) return "MEDIUM";
@@ -92,5 +147,17 @@ export function consolidateCandidates(input: CandidateFinding[]) {
     const current = byRuleAndPage.get(key);
     if (!current || severityRank[finding.severity] > severityRank[current.severity] || (finding.severity === current.severity && finding.confidence > current.confidence)) byRuleAndPage.set(key, finding);
   }
-  return [...byRuleAndPage.values()];
+  const groupedByPageAndTheme = new Map<string, CandidateFinding>();
+  const ungrouped: CandidateFinding[] = [];
+  for (const finding of byRuleAndPage.values()) {
+    if (!pageGroupable(finding) || !finding.detectedText) {
+      ungrouped.push(finding);
+      continue;
+    }
+    const theme = materialRiskTheme(finding);
+    const key = `${finding.url}|${finding.scoreComponent}|${theme}`;
+    const current = groupedByPageAndTheme.get(key);
+    groupedByPageAndTheme.set(key, current ? groupPageFindings(current, finding, theme) : { ...finding, riskTheme: theme });
+  }
+  return [...ungrouped, ...groupedByPageAndTheme.values()];
 }

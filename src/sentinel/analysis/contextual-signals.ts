@@ -31,7 +31,7 @@ const researchRestriction = [
   /\b(?:must|may|should|can|shall)\s+not\b.{0,140}\b(?:consume|ingest|inject|administer|use (?:in|on|for) humans?|human (?:use|consumption))\b/i,
   /\b(?:do not|don['’]t|prohibited|forbidden)\b.{0,140}\b(?:consume|ingest|inject|administer|human|patient|personal use)\b/i,
   /\b(?:solely|exclusively|strictly)\s+(?:intended )?for (?:laboratory |analytical )?research\b/i,
-  /\b(?:research use only|for research purposes only|not for use in humans?|not for human (?:use|consumption))\b/i,
+  /\b(?:research[- ]use only|research[- ]only use|for research purposes only|not for use in humans?|not for human (?:use|consumption))\b/i,
 ];
 
 const scientificDiscussion = /\b(?:investigat(?:ed|ion)|stud(?:y|ied|ies)|evaluat(?:ed|ion)|observed|reported|examined|research(?:ers)?|literature|preclinical|in[ -]?vitro|in[ -]?vivo|animal model|rodent|receptor[- ]binding|assay|analytical reference|laboratory analysis)\b/i;
@@ -39,9 +39,9 @@ const strongScientificContext = /\b(?:preclinical|in[ -]?vitro|in[ -]?vivo|anima
 const directAdministration = /\b(?:inject|administer|take|consume|ingest|swallow|apply|use|reconstitute|mix)\b.{0,100}\b(?:\d+(?:\.\d+)?\s*(?:mcg|mg|g|ml|units?)|once|twice|daily|weekly|per day|per week|subcutaneous(?:ly)?|intramuscular(?:ly)?|before meals?|after meals?)\b/i;
 const administrationInstruction = /\b(?:dosage|dosing protocol|recommended dose|serving size|injection protocol|cycle length|for subcutaneous injection|for intramuscular injection)\b/i;
 const medicalClaim = /\b(?:treats?|cures?|heals?|prevents?|mitigates?|diagnoses?|reverses?|eliminates?)\b.{0,100}\b(?:diabetes|disease|injur(?:y|ies)|infection|cancer|obesity|anxiety|depression|pain|symptoms?|condition|disorder)\b/i;
-const outcomeTerms = String.raw`(?:obesity|weight[- ]?loss|fat[- ]?loss|adiposity|body[- ]?fat|metaboli(?:sm|c(?: (?:outcomes?|health|function))?)|appetite(?: suppression| control)?|muscle (?:growth|gain)|cognitive(?: (?:enhancement|performance|function))?|memory enhancement|focus|reproductive(?: (?:health|function|outcomes?))?|fertility|recovery|healing|longevity|anti[- ]?aging|body composition|energy|sleep|performance)`;
+const outcomeTerms = String.raw`(?:obesity|weight[- ]?loss|fat[- ]?loss|adiposity|body[- ]?fat|metaboli(?:sm|c(?: (?:outcomes?|health|function))?)|appetite(?: suppression| control)?|muscle (?:growth|gain|building)|hypertroph\w*|cognitive(?: (?:enhancement|performance|function))?|memory(?: enhancement)?|neuroprotect\w*|focus|reproductive(?: (?:health|function|outcomes?))?|fertility|recovery|healing|longevity|anti[- ]?aging|body composition|energy|sleep|human performance|performance)`;
 const commercialTerms = String.raw`(?:research|products?|collections?|categor(?:y|ies)|catalog|compounds?|peptides?|blends?|formulas?|solutions?)`;
-const directOutcome = new RegExp(String.raw`\b(?:lose|loses|lost|promotes?|supports?|causes?|delivers?|boosts?|increases?|improves?|burns?|suppresses?|builds?|enhances?|accelerates?|optimizes?)\b.{0,100}\b${outcomeTerms}\b`, "i");
+const directOutcome = new RegExp(String.raw`\b(?:lose|loses|lost|promotes?|supports?|causes?|delivers?|provides?|offers?|boosts?|increases?|improves?|burns?|suppresses?|builds?|enhances?|accelerates?|optimizes?)\b.{0,100}\b${outcomeTerms}\b`, "i");
 const namedOutcome = new RegExp(String.raw`\b${outcomeTerms}\b`, "i");
 const commercialIntendedUse = new RegExp(String.raw`(?:\b${outcomeTerms}\b.{0,60}\b${commercialTerms}\b|\b${commercialTerms}\b.{0,60}\b${outcomeTerms}\b)`, "i");
 const testimonial = /\b(?:i|my|we)\s+(?:lost|gained|felt|noticed|recovered|healed|improved)|\b(?:worked|results?)\s+(?:for me|in \d+ (?:days?|weeks?|months?))\b/i;
@@ -60,6 +60,8 @@ const explicitDenial = [
   /\b(?:not|never)\s+(?:for|intended for|approved for|authorized for)\b/i,
   /\b(?:we|this (?:company|business|site|website)|the (?:company|business|site|website))\s+(?:are|is)\s+not\s+(?:a|an)\s+(?:(?:compounding|retail)\s+)?(?:pharmacy|medical provider|telemedicine provider)\b/i,
 ];
+const cautionOrCriticism = /(?:\b(?:marketed|promoted|advertised|claimed|positioned)\b.{0,220}\b(?:claims?\s+)?(?:lack|lacks|lacking|without|insufficient|unsupported|unsubstantiated|misleading|not supported|no sufficient)\b.{0,100}\b(?:evidence|support|substantiation|proof)\b|\b(?:claims?\s+)?(?:lack|lacks|lacking|insufficient|unsupported|unsubstantiated|misleading|not supported)\b.{0,120}\b(?:marketed|promoted|advertised|health benefits?|anti[- ]?aging|muscle (?:growth|building)|performance)\b|\b(?:warns?|warning|cautions?|criticizes?|prohibits?|discourages?)\b.{0,180}\b(?:claims?|marketing|promotion|human use|health benefits?))/i;
+const standaloneQuestion = /^(?:can|could|should|would|what|which|who|when|where|why|how|is|are|do|does|did|may|might)\b[^.]{0,500}\?$/i;
 
 function result(input: Omit<ContextualSignal, "evidence">, evidence: string): ContextualSignal {
   return { ...input, evidence };
@@ -74,6 +76,8 @@ export function analyzeContext(input: string): ContextualSignal {
   const adversativeTail = text.match(/\b(?:but|however|yet|nevertheless|although|except)\b(.+)$/i)?.[1] ?? "";
   const materialTail = adversativeTail && (directAdministration.test(adversativeTail) || medicalClaim.test(adversativeTail) || directOutcome.test(adversativeTail) || commercialIntendedUse.test(adversativeTail));
   if ((restricted || denial) && !materialTail) return result({ type: "RESEARCH_RESTRICTION", confidence: 0.99, material: false, consumerDirected: false, researchContext: true, rationale: "The wording expressly denies, prohibits, or disclaims the risky use; terms inside that prohibition are not consumer recommendations." }, text);
+  if (cautionOrCriticism.test(text) && !materialTail) return result({ type: "SCIENTIFIC_DISCUSSION", confidence: 0.97, material: false, consumerDirected: false, researchContext: true, rationale: "The wording criticizes, cautions against, or identifies insufficient evidence for promotional claims rather than making those claims." }, text);
+  if (standaloneQuestion.test(text)) return result({ type: "AMBIGUOUS", confidence: 0.78, material: false, consumerDirected: false, researchContext: false, rationale: "A standalone question does not establish a promoted outcome; its answer and surrounding context must be reviewed together." }, text);
   if (operationalPerformance.test(text) || (operationalContext.test(text) && /\b(?:improv(?:e|es|ed|ing) performance|performance|behavior)\b/i.test(text))) return result({ type: "NONE", confidence: 0.98, material: false, consumerDirected: false, researchContext: false, rationale: "The wording describes website, analytics, fraud-prevention, or operational activity rather than a human outcome." }, text);
 
   const scientific = scientificDiscussion.test(text);

@@ -93,6 +93,38 @@ describe("hybrid website semantic analysis", () => {
     expect(consolidateCandidates([semantic, deterministic])).toEqual([expect.objectContaining({ ruleKey: "MKT-INTENDED-USE-001" })]);
   });
 
+  it("groups muscle growth, hypertrophy, and human performance into one page finding with multiple evidence records", () => {
+    const shared: CandidateFinding = { ruleKey: "SEM-PAGE-INTENDED_USE", severity: "HIGH", confidence: 0.93, status: "NEEDS_REVIEW", category: "intended use", title: "Intended use", description: "Observed", url: `${merchantUrl}articles/muscle-research`, pageType: "ARTICLE", detectedText: "Muscle growth", reason: "Commercial muscle positioning", recommendedAction: "Review", scoreComponent: "MARKETING_RISK", analysisSource: "SEMANTIC_PAGE", semanticCategory: "INTENDED_USE", evidenceType: "HEADING", humanReviewRequired: true };
+    const findings = consolidateCandidates([shared, { ...shared, detectedText: "Hypertrophy" }, { ...shared, detectedText: "Human performance" }]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].riskTheme).toBe("PHYSIOLOGICAL_OUTCOME:MUSCLE_PERFORMANCE");
+    expect(findings[0].supportingEvidence).toHaveLength(2);
+  });
+
+  it("rejects cautionary marketing criticism and standalone questions while retaining strong cognitive claims", () => {
+    const url = `${merchantUrl}articles/context`;
+    const contextualPage = { url, pageType: "ARTICLE" as const, content: extractNormalizedContent(`<main><p>Peptides marketed for anti-aging or muscle building have claims that lack sufficient evidence.</p><h2>Can muscle growth research materials be used for human testing?</h2><p>Supports memory enhancement and provides neuroprotection.</p></main>`, url) };
+    const document = buildPageSemanticDocument(contextualPage);
+    const semantic = pageSemanticAnalysisSchema.parse({ pageUrl: url, observations: [
+      observation("Peptides marketed for anti-aging or muscle building have claims that lack sufficient evidence.", { evidence: { url, evidenceType: "VISIBLE_TEXT", exactText: "Peptides marketed for anti-aging or muscle building have claims that lack sufficient evidence." } }),
+      observation("Can muscle growth research materials be used for human testing?", { evidence: { url, evidenceType: "HEADING", exactText: "Can muscle growth research materials be used for human testing?" } }),
+      observation("Supports memory enhancement and provides neuroprotection.", { category: "HUMAN_THERAPEUTIC_OUTCOME", classification: "POSITIVE_PROMOTION", evidence: { url, evidenceType: "VISIBLE_TEXT", exactText: "Supports memory enhancement and provides neuroprotection." } }),
+    ] });
+    const validated = validatePageSemanticAnalysis(document, semantic);
+    expect(validated.observations.map((item) => item.evidence.exactText)).toEqual(["Supports memory enhancement and provides neuroprotection."]);
+  });
+
+  it("rejects disclaimer-only contradictions and downgrades non-critical promotional contradictions", () => {
+    const restriction = observation("All products are sold for research use only and are not for human consumption.", { category: "RESEARCH_POSITIONING", classification: "RESTRICTION", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "All products are sold for research use only and are not for human consumption." }, severity: "INFO", confidence: 0.99, humanReviewRequired: false });
+    const pharmacyRestriction = observation("We are not a compounding pharmacy.", { category: "PHARMACY_PRESCRIPTION", classification: "NEGATION", evidence: { url: merchantUrl, evidenceType: "DISCLAIMER", exactText: "We are not a compounding pharmacy." }, severity: "INFO", confidence: 0.99, humanReviewRequired: false });
+    const intended = observation("Obesity Research Products");
+    const document: MerchantSemanticDocument = { merchantName: "Core Aminos", pages: [{ pageUrl: merchantUrl, pageType: "HOME", observations: [restriction, pharmacyRestriction, intended] }], deterministicFindings: [] };
+    const disclaimerOnly = merchantSemanticAnalysisSchema.parse({ observations: [{ ...restriction, category: "CONTRADICTION", classification: "CONTRADICTION", severity: "CRITICAL", humanReviewRequired: true, supportingEvidence: [pharmacyRestriction.evidence] }] });
+    expect(validateMerchantSemanticAnalysis(document, disclaimerOnly).observations).toEqual([]);
+    const overSevere = merchantSemanticAnalysisSchema.parse({ observations: [{ ...intended, category: "CONTRADICTION", classification: "CONTRADICTION", severity: "CRITICAL", humanReviewRequired: true, supportingEvidence: [restriction.evidence] }] });
+    expect(validateMerchantSemanticAnalysis(document, overSevere).observations[0]).toEqual(expect.objectContaining({ severity: "HIGH", evidence: intended.evidence, supportingEvidence: [restriction.evidence] }));
+  });
+
   it("requests strict JSON-schema output and forbids approval decisions", async () => {
     let requestBody: Record<string, unknown> = {};
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

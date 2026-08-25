@@ -1,6 +1,7 @@
 import type { CandidateFinding, NormalizedContent, ScoreComponentKey, SentinelPageType, SentinelSeverity } from "@/sentinel/types";
 import { splitSentences } from "@/sentinel/extraction/normalize";
 import { logger } from "@/sentinel/logger";
+import { analyzeContext } from "./contextual-signals";
 import type { MerchantSemanticAnalysis, MerchantSemanticObservation, PageSemanticAnalysis, SemanticEvidence, SemanticEvidenceType, SemanticObservation } from "./semantic-schema";
 import { MERCHANT_SEMANTIC_PROMPT_VERSION, PAGE_SEMANTIC_PROMPT_VERSION, type MerchantSemanticDocument, type PageSemanticDocument, type SemanticUsage, type WebsiteSemanticAnalyzer } from "./website-semantic";
 
@@ -25,6 +26,7 @@ export interface HybridSemanticStats {
 
 const policyPageTypes = new Set<SentinelPageType>(["POLICY", "TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT", "FAQ"]);
 const riskyClassifications = new Set(["POSITIVE_PROMOTION", "CONTROL_MISSING", "CONTRADICTION", "CONTEXTUAL_REVIEW"]);
+const standaloneQuestion = /^(?:can|could|should|would|what|which|who|when|where|why|how|is|are|do|does|did|may|might)\b[^.]{0,2000}\?$/i;
 
 function normalized(value: string) {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
@@ -100,7 +102,14 @@ function deduplicateObservations<T extends SemanticObservation>(observations: T[
 export function validatePageSemanticAnalysis(document: PageSemanticDocument, analysis: PageSemanticAnalysis): PageSemanticAnalysis {
   if (analysis.pageUrl !== document.pageUrl) return { pageUrl: document.pageUrl, observations: [] };
   const inventory = document.evidenceItems.map((item) => ({ url: document.pageUrl, ...item }));
-  return { pageUrl: document.pageUrl, observations: deduplicateObservations(analysis.observations.filter((observation) => evidenceExists(observation.evidence, inventory))) };
+  const observations = analysis.observations.filter((observation) => {
+    if (!evidenceExists(observation.evidence, inventory)) return false;
+    if (!riskyClassifications.has(observation.classification)) return true;
+    if (standaloneQuestion.test(observation.evidence.exactText.trim())) return false;
+    const context = analyzeContext(observation.evidence.exactText);
+    return context.material || (context.type !== "RESEARCH_RESTRICTION" && context.type !== "SCIENTIFIC_DISCUSSION");
+  });
+  return { pageUrl: document.pageUrl, observations: deduplicateObservations(observations) };
 }
 
 function merchantInventory(document: MerchantSemanticDocument) {
@@ -109,9 +118,42 @@ function merchantInventory(document: MerchantSemanticDocument) {
   return [...fromPages, ...fromRules].map((evidence) => ({ url: evidence.url, evidenceType: evidence.evidenceType, text: evidence.exactText }));
 }
 
+type EvidencePolarity = "MATERIAL_RISK" | "RESTRICTION" | "OTHER";
+
+function sameEvidence(left: SemanticEvidence, right: SemanticEvidence) {
+  return left.url === right.url && left.evidenceType === right.evidenceType && normalized(left.exactText) === normalized(right.exactText);
+}
+
+function evidencePolarity(document: MerchantSemanticDocument, evidence: SemanticEvidence): EvidencePolarity {
+  const pageMatches = document.pages.flatMap((page) => page.observations).filter((observation) => sameEvidence(observation.evidence, evidence));
+  if (pageMatches.some((observation) => ["RESTRICTION", "NEGATION"].includes(observation.classification) || (["DISCLAIMER", "RESEARCH_POSITIONING"].includes(observation.category) && observation.classification === "CONTROL_PRESENT"))) return "RESTRICTION";
+  if (pageMatches.some((observation) => ["POSITIVE_PROMOTION", "CONTEXTUAL_REVIEW"].includes(observation.classification) && !["DISCLAIMER", "RESEARCH_POSITIONING"].includes(observation.category))) return "MATERIAL_RISK";
+  const ruleMatches = document.deterministicFindings.filter((finding) => finding.url === evidence.url && finding.evidenceType === evidence.evidenceType && normalized(finding.exactEvidence) === normalized(evidence.exactText));
+  if (ruleMatches.some((finding) => finding.polarity === "RESTRICTION")) return "RESTRICTION";
+  if (ruleMatches.some((finding) => finding.polarity === "MATERIAL_RISK")) return "MATERIAL_RISK";
+  return "OTHER";
+}
+
+function supportsCriticalContradiction(document: MerchantSemanticDocument, evidence: SemanticEvidence) {
+  const pageCritical = document.pages.flatMap((page) => page.observations).some((observation) => sameEvidence(observation.evidence, evidence) && observation.severity === "CRITICAL" && ["MEDICAL_CLAIM", "DOSING_ADMINISTRATION"].includes(observation.category) && ["POSITIVE_PROMOTION", "CONTEXTUAL_REVIEW"].includes(observation.classification));
+  const ruleCritical = document.deterministicFindings.some((finding) => finding.url === evidence.url && normalized(finding.exactEvidence) === normalized(evidence.exactText) && finding.polarity === "MATERIAL_RISK" && finding.severity === "CRITICAL");
+  return pageCritical || ruleCritical;
+}
+
 export function validateMerchantSemanticAnalysis(document: MerchantSemanticDocument, analysis: MerchantSemanticAnalysis): MerchantSemanticAnalysis {
   const inventory = merchantInventory(document);
-  const observations = analysis.observations.filter((observation) => evidenceExists(observation.evidence, inventory) && observation.supportingEvidence.every((evidence) => evidenceExists(evidence, inventory)));
+  const observations = analysis.observations.flatMap((observation) => {
+    if (!evidenceExists(observation.evidence, inventory) || !observation.supportingEvidence.every((evidence) => evidenceExists(evidence, inventory))) return [];
+    const evidenceSet = [observation.evidence, ...observation.supportingEvidence].filter((evidence, index, all) => all.findIndex((item) => sameEvidence(item, evidence)) === index);
+    const contradiction = observation.classification === "CONTRADICTION" || observation.category === "CONTRADICTION" || observation.category === "DECEPTIVE_INCONSISTENT_POSITIONING";
+    if (!contradiction) return [observation];
+    const riskEvidence = evidenceSet.find((evidence) => evidencePolarity(document, evidence) === "MATERIAL_RISK");
+    const restrictionEvidence = evidenceSet.find((evidence) => evidencePolarity(document, evidence) === "RESTRICTION");
+    if (!riskEvidence || !restrictionEvidence || sameEvidence(riskEvidence, restrictionEvidence)) return [];
+    const supportingEvidence = [restrictionEvidence, ...evidenceSet.filter((evidence) => !sameEvidence(evidence, riskEvidence) && !sameEvidence(evidence, restrictionEvidence))];
+    const severity = observation.severity === "CRITICAL" && !supportsCriticalContradiction(document, riskEvidence) ? "HIGH" as const : observation.severity;
+    return [{ ...observation, evidence: riskEvidence, supportingEvidence, severity }];
+  });
   return { observations: deduplicateObservations(observations) };
 }
 
@@ -238,7 +280,12 @@ export async function runHybridSemanticAnalysis(input: { analyzer: WebsiteSemant
   const merchantDocument: MerchantSemanticDocument = {
     merchantName: input.merchantName,
     pages: analyses.map((analysis) => ({ pageUrl: analysis.pageUrl, pageType: pageTypeForUrl(pages, analysis.pageUrl), observations: analysis.observations })),
-    deterministicFindings: input.deterministicCandidates.map((finding) => ({ ruleKey: finding.ruleKey, category: finding.category, severity: finding.severity, url: finding.url, evidenceType: "VISIBLE_TEXT" as const, exactEvidence: finding.detectedText ?? "", explanation: finding.reason })),
+    deterministicFindings: input.deterministicCandidates.map((finding) => {
+      const exactEvidence = finding.detectedText ?? "";
+      const context = analyzeContext(exactEvidence);
+      const polarity = context.type === "RESEARCH_RESTRICTION" ? "RESTRICTION" as const : finding.scoreComponent === "MARKETING_RISK" || /^(?:RSRCH-ADMIN|RX-REVIEW|POSITION-COSMETIC)/.test(finding.ruleKey) ? "MATERIAL_RISK" as const : "OTHER" as const;
+      return { ruleKey: finding.ruleKey, category: finding.category, severity: finding.severity, url: finding.url, evidenceType: "VISIBLE_TEXT" as const, exactEvidence, explanation: finding.reason, polarity };
+    }),
   };
   let merchantAnalysis: MerchantSemanticAnalysis = { observations: [] };
   try {
