@@ -2,7 +2,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { contentHash } from "@/sentinel/extraction/normalize";
 import { normalizedContentSchema, type CandidateFinding, type SentinelPageType } from "@/sentinel/types";
 import { evaluatePage, evaluateSiteCoverage, isReviewableCheckout, requiredPolicyTypes } from "@/sentinel/analysis/rules";
-import { CachedSemanticAnalyzer, LocalSemanticAnalyzer } from "@/sentinel/analysis/semantic";
+import { CachedSemanticAnalyzer, LOCAL_SEMANTIC_VERSION, LocalSemanticAnalyzer } from "@/sentinel/analysis/semantic";
 import { evaluateContradictions } from "@/sentinel/analysis/contradictions";
 import { findingsToResolve } from "@/sentinel/analysis/lifecycle";
 import { calculateHealthScore } from "@/sentinel/analysis/score";
@@ -22,7 +22,7 @@ import { runVisualIntelligence } from "@/sentinel/analysis/visual-intelligence";
 import { runDocumentIntelligence } from "@/sentinel/analysis/document-intelligence";
 import { buildEvidenceGraph } from "@/sentinel/analysis/evidence-graph";
 import { loadEvidenceManifest, persistPageEvidenceLedger } from "@/sentinel/evidence/ledger";
-import { configuredLunaReviewer, persistLunaObservations } from "@/sentinel/review/luna";
+import { configuredLunaReviewer, LunaAgenticReviewError, persistLunaObservations } from "@/sentinel/review/luna";
 import { configuredLunaCritic } from "@/sentinel/review/critic";
 import { adjudicateDualReview, attachRetainedCandidateEvidence, candidateDomain } from "@/sentinel/review/adjudication";
 import { persistVerificationFacts, verifyEvidenceManifest } from "@/sentinel/verification/verifier";
@@ -30,6 +30,7 @@ import { logger } from "@/sentinel/logger";
 import { collectMerchantImages } from "@/sentinel/evidence/collect-images";
 import { runExternalPublicWebVerification } from "@/sentinel/review/external-verification";
 import { possibleProductCount, verifiedProductRecords } from "@/sentinel/verification/products";
+import { runAgenticTransition, selectAgenticRuntime } from "@/sentinel/agent/runtime";
 
 function compactJson(record: Record<string, unknown>): Prisma.InputJsonValue {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as Prisma.InputJsonObject;
@@ -54,6 +55,22 @@ function enrichCandidateProvenance(candidate: CandidateFinding, pages: Array<{ u
   if (!located) return candidate;
   const prominence: CandidateFinding["prominence"] = candidate.prominence ?? (page.pageType === "PRODUCT" || page.pageType === "COLLECTION" || page.pageType === "CATEGORY" || located.evidenceType === "CTA" ? "PRIMARY_COMMERCIAL" : page.pageType === "ARTICLE" || page.pageType === "BLOG" ? "EDITORIAL" : "SITEWIDE");
   return { ...candidate, domSelector: located.selector, evidenceType: candidate.evidenceType ?? located.evidenceType, sourceKind: candidate.sourceKind ?? "TEXT", prominence };
+}
+
+export function candidatesForPrimaryReview(mode: ReturnType<typeof getServerEnv>["DUAL_REVIEW_MODE"], candidates: CandidateFinding[]) {
+  return mode === "enforced" ? candidates.filter((candidate) => candidateDomain(candidate) !== "SEMANTIC_CONTEXT") : candidates;
+}
+
+export function assertAgenticPrimaryInvariant(mode: ReturnType<typeof getServerEnv>["DUAL_REVIEW_MODE"], lunaAvailable: boolean, candidates: CandidateFinding[]) {
+  if (mode !== "enforced" || !lunaAvailable) return;
+  const legacySemantic = candidates.find((candidate) => candidateDomain(candidate) === "SEMANTIC_CONTEXT" && candidate.provider !== "openai-responses");
+  if (legacySemantic) throw new Error(`Agentic primary invariant violated by ${legacySemantic.ruleKey}: enforced Luna review cannot emit legacy semantic primary findings.`);
+}
+
+function isLegacySemanticEvidence(evidence: { modelVersion: string | null; metadata: Prisma.JsonValue }) {
+  if (evidence.modelVersion !== LOCAL_SEMANTIC_VERSION || !evidence.metadata || typeof evidence.metadata !== "object" || Array.isArray(evidence.metadata)) return false;
+  const metadata = evidence.metadata as Record<string, unknown>;
+  return metadata.analysisSource === "SEMANTIC_PAGE" || metadata.analysisSource === "SEMANTIC_MERCHANT" || typeof metadata.ruleKey === "string" && /^(?:SEM-|MKT-|RSRCH-ADMIN|MKT-INTENDED|RX-REVIEW|POSITION-|VISUAL-|DOCUMENT-)/.test(metadata.ruleKey);
 }
 
 export async function runAnalysisStage(scanId: string) {
@@ -112,8 +129,9 @@ export async function runAnalysisStage(scanId: string) {
   const manifest = await loadEvidenceManifest(scanId);
   const legacyCandidates = consolidatedLegacyCandidates.map((candidate) => attachRetainedCandidateEvidence(candidate, manifest));
   const verifierFacts = verifyEvidenceManifest(manifest);
+  const agenticSelection = selectAgenticRuntime(env);
   const lunaReviewer = configuredLunaReviewer();
-  const reviewPromise = lunaReviewer?.agenticReview({
+  const reviewInput = {
     scanId,
     merchantId: scan.merchantId,
     merchantName: scan.merchant.businessName,
@@ -121,11 +139,10 @@ export async function runAnalysisStage(scanId: string) {
     manifest,
     pages,
     budget: { maxAuditTimeMs: env.AI_AUDIT_MAX_TIME_MS, maxToolCalls: env.AI_AUDIT_MAX_TOOL_CALLS, maxPages: env.AI_AUDIT_MAX_PAGES, maxImageRegions: env.AI_AUDIT_MAX_IMAGE_REGIONS, maxDocuments: env.AI_AUDIT_MAX_DOCUMENTS, maxTokens: env.AI_AUDIT_MAX_TOKENS, maxCostUsd: env.AI_AUDIT_MAX_COST_USD },
-  });
+  };
   const verificationPromise = persistVerificationFacts(scanId, verifierFacts);
-  let lunaResult: Awaited<NonNullable<typeof reviewPromise>> | undefined;
-  try { lunaResult = await reviewPromise; }
-  catch (error) { logger.error({ error, scanId }, "Primary holistic Luna review failed; semantic conclusions will remain unscored and require review"); }
+  const agenticTransition = await runAgenticTransition({ scanId, selection: agenticSelection, invoke: lunaReviewer ? () => lunaReviewer.agenticReview(reviewInput) : undefined });
+  const lunaResult = agenticTransition.result;
   await verificationPromise;
   if (lunaResult) await persistLunaObservations(lunaResult.runId, lunaResult.review);
   let externalVerification: Awaited<ReturnType<typeof runExternalPublicWebVerification>> | undefined;
@@ -135,13 +152,14 @@ export async function runAnalysisStage(scanId: string) {
   let materialDisagreements = 0;
   let criticRunId: string | undefined;
   if (env.DUAL_REVIEW_MODE !== "off") {
-    const verifierOwnedCandidates = lunaResult ? legacyCandidates.filter((candidate) => candidateDomain(candidate) !== "SEMANTIC_CONTEXT") : legacyCandidates;
+    const verifierOwnedCandidates = candidatesForPrimaryReview(env.DUAL_REVIEW_MODE, legacyCandidates);
     const adjudicated = await adjudicateDualReview({ scanId, merchantId: scan.merchantId, deterministicCandidates: verifierOwnedCandidates, review: lunaResult?.review, reviewRunId: lunaResult?.runId, manifest, verifierFacts, critic: configuredLunaCritic(), maxDisagreements: env.AI_CRITIC_MAX_DISAGREEMENTS });
     materialDisagreements = adjudicated.materialDisagreements;
     criticRunId = adjudicated.criticRunId;
     if (env.DUAL_REVIEW_MODE === "enforced") adjudicatedCandidates = adjudicated.candidates;
   }
   const candidates = consolidateCandidates(adjudicatedCandidates.map((candidate) => enrichCandidateProvenance(candidate, pages)));
+  assertAgenticPrimaryInvariant(env.DUAL_REVIEW_MODE, agenticSelection.available, candidates);
   const pageRestrictions = pages.flatMap((page) => page.content.disclaimers.filter((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION").map((text) => ({ url: page.url, pageType: page.pageType, text })));
   for (const candidate of candidates) if (candidate.scoreComponent === "MARKETING_RISK" && !candidate.riskTheme?.startsWith("CONTRADICTION:")) candidate.mitigatingEvidence = pageRestrictions.slice(0, 12).map((restriction) => ({ url: restriction.url, text: restriction.text, role: "merchant-level-restriction", evidenceType: "DISCLAIMER", classification: "MITIGATING" }));
   const storedRuleVersions = await db.ruleVersion.findMany({ where: { version: 1, rule: { key: { in: [...new Set(candidates.map((candidate) => candidate.ruleKey))] } } }, include: { rule: { select: { key: true } } } });
@@ -223,8 +241,9 @@ export async function runAnalysisStage(scanId: string) {
   const retainedForScore: CandidateFinding[] = [];
   if (scan.mode === "INCREMENTAL") {
     const changedUrls = new Set(pagesForDeepAnalysis.map((page) => page.url));
-    const retained = await db.finding.findMany({ where: { merchantId: scan.merchantId, siteId: scan.siteId, status: { in: ["OPEN", "NEEDS_REVIEW", "CONFIRMED", "ACCEPTED_RISK"] }, url: { notIn: [...changedUrls] } } });
+    const retained = await db.finding.findMany({ where: { merchantId: scan.merchantId, siteId: scan.siteId, status: { in: ["OPEN", "NEEDS_REVIEW", "CONFIRMED", "ACCEPTED_RISK"] }, url: { notIn: [...changedUrls] } }, include: { evidence: { select: { modelVersion: true, metadata: true } } } });
     for (const item of retained) {
+      if (env.DUAL_REVIEW_MODE === "enforced" && item.evidence.some(isLegacySemanticEvidence)) continue;
       fingerprints.add(item.fingerprint);
       const scoreComponent = storedFindingScoreComponent(item.category);
       retainedForScore.push({ ruleKey: item.fingerprint, severity: item.severity, confidence: item.confidence, status: item.status === "NEEDS_REVIEW" ? "NEEDS_REVIEW" : "OPEN", category: item.category, title: item.title, description: item.description, url: item.url, pageType: item.pageType as SentinelPageType, detectedText: item.detectedText ?? undefined, reason: item.reason, recommendedAction: item.recommendedAction, scoreComponent });
@@ -242,7 +261,7 @@ export async function runAnalysisStage(scanId: string) {
     if (!existing) findingsCreated++;
     const sourcePage = pages.find((page) => page.url === candidate.url);
     const pageHash = sourcePage ? contentHash(sourcePage.content) : fingerprint;
-    const modelVersion = candidate.modelVersion ?? claimAnalyzer.model;
+    const modelVersion = candidate.modelVersion ?? (candidateDomain(candidate) === "SEMANTIC_CONTEXT" ? claimAnalyzer.model : "deterministic-rules-v1");
     const evidenceMetadata = compactJson({ ruleKey: candidate.ruleKey, role: "primary", affectedUrls: candidate.affectedUrls ?? [], analysisSource: candidate.analysisSource ?? "DETERMINISTIC", evidenceType: candidate.evidenceType, evidenceClassification: candidate.evidenceClassification, prominence: candidate.prominence, sourceKind: candidate.sourceKind ?? "TEXT", domSelector: candidate.domSelector, assetHash: candidate.assetHash, humanReviewRequired: candidate.humanReviewRequired ?? candidate.status === "NEEDS_REVIEW", semanticCategory: candidate.semanticCategory, semanticClassification: candidate.semanticClassification, provider: candidate.provider, promptVersion: candidate.promptVersion, riskTheme: candidate.riskTheme });
     const evidenceData = { snapshotId: sourcePage?.snapshotId, evidenceRecordId: candidate.evidenceRecordIds?.[0], pageUrl: candidate.url, normalizedText: candidate.detectedText, evidenceSnippet: candidate.detectedText, pageHash, ruleVersion: ruleVersion ? `${candidate.ruleKey}@${ruleVersion.version}` : undefined, modelVersion, classificationConfidence: candidate.confidence, metadata: evidenceMetadata };
     const existingEvidence = await db.findingEvidence.findFirst({ where: { findingId: finding.id, kind: "TEXT", pageHash, modelVersion, normalizedText: candidate.detectedText ?? null }, select: { id: true } });
@@ -300,9 +319,13 @@ export async function runAnalysisStage(scanId: string) {
   const evidenceGraph = buildEvidenceGraph(candidates, pageRestrictions);
   const lunaEstimatedCostUsd = lunaResult ? (lunaResult.usage.inputTokens + lunaResult.investigationUsage.inputTokens) * env.AI_INPUT_COST_PER_MILLION / 1_000_000 + (lunaResult.usage.outputTokens + lunaResult.investigationUsage.outputTokens) * env.AI_OUTPUT_COST_PER_MILLION / 1_000_000 : 0;
   const estimatedCostUsd = Number(((semanticStats?.estimatedCostUsd ?? 0) + lunaEstimatedCostUsd + visual.stats.estimatedCostUsd + documents.stats.estimatedCostUsd).toFixed(6));
-  const dualReview = { mode: env.DUAL_REVIEW_MODE, evidenceManifestVersion: manifest.version, retainedFirstPartyEvidenceRecords: manifest.records.filter((record) => record.scope === "MERCHANT_SITE").length, verifierAssertions: verifierFacts.length, luna: lunaResult ? { model: env.AI_REVIEW_MODEL, promptVersion: "orbit-luna-agentic-audit-v1", reviewRunId: lunaResult.runId, runIds: lunaResult.runIds, usage: lunaResult.usage, investigationUsage: lunaResult.investigationUsage, investigation: lunaResult.investigation } : null, externalPublicWeb: externalVerification ? { reviewRunId: externalVerification.runId, resultCount: externalVerification.result.results.length, evidenceScope: "EXTERNAL_PUBLIC_WEB" } : null, materialDisagreements, criticRunId: criticRunId ?? null, scoreAuthority: "deterministic" };
+  const agenticReviewError = agenticTransition.error instanceof LunaAgenticReviewError ? agenticTransition.error : undefined;
+  const failedInvestigation = agenticReviewError?.investigation ?? null;
+  const agenticStatus = lunaResult?.agenticCompleted === false ? "FALLBACK_CONFIGURED" : agenticTransition.status;
+  const storedAgenticFailure = agenticTransition.failure ? { errorName: agenticTransition.failure.errorName, message: agenticTransition.failure.message, httpStatus: agenticTransition.failure.httpStatus, openaiRequestId: agenticTransition.failure.openaiRequestId, openaiCode: agenticTransition.failure.openaiCode, openaiType: agenticTransition.failure.openaiType, agentStage: agenticTransition.failure.agentStage, toolName: agenticTransition.failure.toolName } : null;
+  const dualReview = { mode: env.DUAL_REVIEW_MODE, agenticStatus, agenticFailure: storedAgenticFailure, evidenceManifestVersion: manifest.version, retainedFirstPartyEvidenceRecords: manifest.records.filter((record) => record.scope === "MERCHANT_SITE").length, verifierAssertions: verifierFacts.length, luna: lunaResult ? { model: env.AI_REVIEW_MODEL, promptVersion: "orbit-luna-agentic-audit-v1", reviewRunId: lunaResult.runId, runIds: lunaResult.runIds, usage: lunaResult.usage, investigationUsage: lunaResult.investigationUsage, investigation: lunaResult.investigation, agenticCompleted: lunaResult.agenticCompleted, fallbackReason: lunaResult.agenticFallbackReason } : failedInvestigation ? { model: env.AI_REVIEW_MODEL, promptVersion: "orbit-luna-agentic-audit-v1", reviewRunId: null, runIds: [], usage: null, investigationUsage: agenticReviewError?.investigationUsage ?? null, investigation: failedInvestigation, agenticCompleted: false, fallbackReason: null } : null, externalPublicWeb: externalVerification ? { reviewRunId: externalVerification.runId, resultCount: externalVerification.result.results.length, evidenceScope: "EXTERNAL_PUBLIC_WEB" } : null, materialDisagreements, criticRunId: criticRunId ?? null, scoreAuthority: "deterministic" };
   const scoreInputs = { assessmentCoverage, validatedFindings: [...candidates, ...retainedForScore].filter(isScorableCandidate).map((candidate) => ({ ruleKey: candidate.ruleKey, riskTheme: candidate.riskTheme ?? null, severity: candidate.severity, confidence: candidate.confidence, materiality: candidate.materiality ?? null, commercialProminence: candidate.commercialProminence ?? null, productAssociation: candidate.productAssociation ?? null, visualSignificance: candidate.visualSignificance ?? null, mitigation: candidate.mitigation ?? null, evidenceRecordIds: candidate.evidenceRecordIds ?? [], adjudicationId: candidate.adjudicationId ?? null })) };
-  const intelligence = { version: "orbit-agentic-audit-v1", riskScore: 100 - score.total, healthScore: score.total, coverage: { overall: scanCoveragePercent, surfaces: coverageSurfaces, inaccessibleAreas }, evidenceGraph, dualReview, scoreInputs, visual: { ...visual.stats, merchantImages: collectedImages }, documents: { stats: documents.stats, records: documents.documents.map((document) => ({ url: document.url, sourcePageUrl: document.sourcePageUrl, documentType: document.documentType, hash: document.hash, storageKey: document.storageKey, pageCount: document.pageCount, metadata: document.metadata })) }, model: { semantic: semanticStats, estimatedCostUsd, fallbackIncomplete: env.DUAL_REVIEW_MODE === "enforced" ? !lunaResult : !websiteAnalyzer || Boolean((semanticStats?.failures ?? 0) + visual.stats.failures + documents.stats.failures) }, methodologyLimitations: [...(crawlCapReached ? [`Discovery reached the configured ${crawlPageLimit}-page cap; coverage is partial and is not reported as 100%.`] : []), ...(env.DUAL_REVIEW_MODE === "enforced" && !lunaResult ? ["Primary holistic Luna review was unavailable; semantic signals were retained as NEEDS_REVIEW and excluded from scoring."] : []), ...(visual.stats.selectionCapped ? [`Visual page selection reached its configured budget after ${visual.stats.pagesSelected} of ${visual.stats.pagesEligible} eligible pages.`] : []), ...(visual.stats.failures ? [`${visual.stats.failures} visual evidence collection attempt(s) failed.`] : []), ...(documents.stats.extracted < documents.stats.discovered ? [`${documents.stats.discovered - documents.stats.extracted} discovered public document(s) were not extracted within the budget or failed.`] : []), ...(documents.stats.failures ? [`${documents.stats.failures} public document extraction attempt(s) failed.`] : []), ...(collectedImages.failed ? [`${collectedImages.failed} public image retrieval attempt(s) failed.`] : []), ...(["NOT_OBSERVED", "UNKNOWN"].includes(coverageSurfaces.checkout.state) ? ["A populated public checkout state was not observable without an explicitly enabled anonymous cart action."] : [])] };
+  const intelligence = { version: "orbit-agentic-audit-v1", riskScore: 100 - score.total, healthScore: score.total, coverage: { overall: scanCoveragePercent, surfaces: coverageSurfaces, inaccessibleAreas }, evidenceGraph, dualReview, scoreInputs, visual: { ...visual.stats, merchantImages: collectedImages }, documents: { stats: documents.stats, records: documents.documents.map((document) => ({ url: document.url, sourcePageUrl: document.sourcePageUrl, documentType: document.documentType, hash: document.hash, storageKey: document.storageKey, pageCount: document.pageCount, metadata: document.metadata })) }, model: { semantic: semanticStats, estimatedCostUsd, fallbackIncomplete: env.DUAL_REVIEW_MODE === "enforced" ? !lunaResult : !websiteAnalyzer || Boolean((semanticStats?.failures ?? 0) + visual.stats.failures + documents.stats.failures) }, methodologyLimitations: [...(crawlCapReached ? [`Discovery reached the configured ${crawlPageLimit}-page cap; coverage is partial and is not reported as 100%.`] : []), ...(agenticStatus === "AGENTIC_REVIEW_FAILED" ? [`AGENTIC_REVIEW_FAILED: ${agenticTransition.failure?.message ?? "Primary holistic Luna review was unavailable."} Semantic coverage is incomplete; local semantic findings were not used as the enforced primary review.`] : []), ...(visual.stats.selectionCapped ? [`Visual page selection reached its configured budget after ${visual.stats.pagesSelected} of ${visual.stats.pagesEligible} eligible pages.`] : []), ...(visual.stats.failures ? [`${visual.stats.failures} visual evidence collection attempt(s) failed.`] : []), ...(documents.stats.extracted < documents.stats.discovered ? [`${documents.stats.discovered - documents.stats.extracted} discovered public document(s) were not extracted within the budget or failed.`] : []), ...(documents.stats.failures ? [`${documents.stats.failures} public document extraction attempt(s) failed.`] : []), ...(collectedImages.failed ? [`${collectedImages.failed} public image retrieval attempt(s) failed.`] : []), ...(["NOT_OBSERVED", "UNKNOWN"].includes(coverageSurfaces.checkout.state) ? ["A populated public checkout state was not observable without an explicitly enabled anonymous cart action."] : [])] };
   await db.scan.update({ where: { id: scanId }, data: { intelligence: intelligence as unknown as Prisma.InputJsonValue } });
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
   const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));
@@ -315,7 +338,7 @@ export async function runAnalysisStage(scanId: string) {
   await db.merchant.update({ where: { id: scan.merchantId }, data: { status: activeMaterialFindings > 0 ? "REVIEW_REQUIRED" : "MONITORED" } });
   await db.merchantSite.update({ where: { id: scan.siteId }, data: { nextScanAt: new Date(Date.now() + (await db.merchantSite.findUniqueOrThrow({ where: { id: scan.siteId }, select: { monitoringCadenceMinutes: true } })).monitoringCadenceMinutes * 60_000) } });
   const completionAudit = await db.auditLog.findFirst({ where: { scanId, action: "scan.completed", targetType: "Scan", targetId: scanId }, select: { id: true } });
-  if (!completionAudit) await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: compactJson({ score: score.total, riskScore: 100 - score.total, findings: candidates.length, pages: pages.length, semantic: semanticStats, visual: visual.stats, documents: documents.stats, estimatedCostUsd }) } });
+  if (!completionAudit) await db.auditLog.create({ data: { organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, scanId, action: "scan.completed", targetType: "Scan", targetId: scanId, metadata: compactJson({ score: score.total, riskScore: 100 - score.total, findings: candidates.length, pages: pages.length, agenticStatus, semantic: semanticStats, visual: visual.stats, documents: documents.stats, estimatedCostUsd }) } });
   await updateProgress(scanId, { stage: "completed", message: "Scan completed", pagesProcessed: pages.length, pagesTotal: pages.length, stageProcessed: 1, stageTotal: 1 });
   await Promise.all(evidenceJobs.map((findingId) => queues().evidence.add("capture", { findingId }, { jobId: `evidence-${findingId}-${scanId}` })));
   return { score: score.total, findings: candidates.length, findingsCreated, productsDetected, policiesDetected };

@@ -9,7 +9,7 @@ const serverEnvSchema = z.object({
   DATABASE_URL: z.string().default("postgresql://orbit:orbit@localhost:5432/orbit?schema=public"),
   REDIS_URL: z.string().default("redis://localhost:6379"),
   APP_URL: z.string().url().default("http://localhost:3000"),
-  AI_PROVIDER: z.enum(["deterministic", "openai-compatible"]).default("deterministic"),
+  AI_PROVIDER: z.enum(["deterministic", "openai-compatible"]).default("openai-compatible"),
   AI_MODEL: z.string().default("local-context-v1"),
   AI_REVIEW_MODEL: z.string().default("gpt-5.6-luna"),
   AI_CRITIC_MODEL: z.string().default("gpt-5.6-luna"),

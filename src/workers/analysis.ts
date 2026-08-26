@@ -1,5 +1,5 @@
 import "dotenv/config";
 import { createSentinelWorker } from "./shared";
-import { runAnalysisStage } from "@/sentinel/pipeline/analysis-stage";
+import { processAnalysisJob } from "./analysis-handler";
 
-createSentinelWorker("analysis", (job) => runAnalysisStage(String(job.data.scanId)));
+createSentinelWorker("analysis", processAnalysisJob);

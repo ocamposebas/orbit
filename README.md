@@ -95,7 +95,7 @@ docker compose --profile workers up -d --build
 | `DATABASE_URL` | PostgreSQL connection string |
 | `REDIS_URL` | Redis connection string for queues, throttling and health checks |
 | `APP_URL` | Canonical web origin used by mutation origin checks |
-| `AI_PROVIDER` | `deterministic` or `openai-compatible`; the latter enables the Responses API review path |
+| `AI_PROVIDER` | Defaults to `openai-compatible` for the agentic Responses API path; use `deterministic` only with an explicit `off` or `shadow` fallback configuration |
 | `AI_MODEL` | Legacy semantic model identifier used only when dual review is off or shadowed |
 | `AI_REVIEW_MODEL` / `AI_CRITIC_MODEL` | Primary holistic reviewer and material-disagreement critic; both default to `gpt-5.6-luna` |
 | `AI_REVIEW_REASONING_EFFORT` | Luna reasoning effort for primary and critic passes |
@@ -183,6 +183,8 @@ Deterministic checks run first. A keyword can nominate a statement for contextua
 ## Dual review
 
 In enforced mode, GPT-5.6 Luna is the primary semantic and contextual reviewer. It receives bounded deterministic shards when a manifest exceeds input limits, then performs merchant-wide synthesis. Every summary, uncertainty and observation must cite retained first-party `EvidenceRecord` IDs. ORBIT hydrates the actual text, value, URL or stored asset after the response; invented or external IDs are rejected. Luna returns only `ADVERSE`, `MITIGATING`, `NEUTRAL` or `INFORMATIONAL` observations and never returns merchant approval, legality, processor eligibility or an ORBIT score.
+
+Runtime selection is explicit: `DUAL_REVIEW_MODE=enforced`, `AI_PROVIDER=openai-compatible`, and a non-empty `AI_API_KEY` are required for the production agentic path. Enforced mode never promotes `local-semantic-v5` findings when Luna cannot start; the scan records `AGENTIC_REVIEW_FAILED` and incomplete semantic coverage. `shadow` and `off` are the only modes that permit the legacy semantic path, and every such fallback is logged with its reason. A production start is proven by the sanitized `Luna agent orchestrator start` log line, which includes the scan ID, model, sitemap count, and objective inventory counts.
 
 The deterministic verifier independently derives objective `VerificationAssertion` records from the evidence ledger. `AdjudicationDecision` records make the authority explicit: semantic/context questions prioritize Luna, objective facts prioritize the verifier, material conflicts can trigger a separate critic `ReviewRun`, and unresolved conflicts are retained as `NEEDS_REVIEW` but excluded from score deductions.
 

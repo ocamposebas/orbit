@@ -15,7 +15,10 @@ export async function POST(request: NextRequest) {
     const merchant = await getDatabase().merchant.findFirst({ where: { id: input.merchantId, organizationId: organization.id }, select: { id: true } });
     if (!merchant) throw new HttpError(404, "Merchant not found");
     const readiness = await getWorkerReadiness();
-    if (!readiness.workers.crawler.ready) throw new HttpError(503, `Crawler ${readiness.pipelineVersion} is not ready. Deploy or restart the worker service before starting a scan.`);
+    if (!readiness.ready) {
+      const unavailable = Object.entries(readiness.workers).filter(([, worker]) => !worker.ready).map(([name]) => name).join(", ");
+      throw new HttpError(503, `Sentinel ${readiness.pipelineVersion} workers are not ready (${unavailable}). Deploy or restart the worker service before starting a scan.`);
+    }
     const scan = await createScan(input);
     return NextResponse.json({ scan }, { status: 202 });
   } catch (error) { return apiError(error); }

@@ -4,7 +4,7 @@ import { getServerEnv } from "./config";
 // Keep this version aligned with material crawler/analysis changes. Queue names
 // and worker heartbeats include it so a newly deployed web process cannot send
 // scans to workers that are still running an older ruleset.
-export const pipelineVersion = "sentinel-pipeline-v3";
+export const pipelineVersion = "sentinel-pipeline-v4-agentic";
 export const queueNames = { crawler: `${pipelineVersion}-crawler`, analysis: `${pipelineVersion}-analysis`, evidence: `${pipelineVersion}-evidence`, deadLetter: `${pipelineVersion}-dead-letter` } as const;
 
 export function redisConnection(): ConnectionOptions {
