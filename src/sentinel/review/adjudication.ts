@@ -1,4 +1,4 @@
-import { evidenceRiskTheme, type EvidenceRiskTheme } from "@/sentinel/analysis/evidence-classification";
+import { evidenceRiskTheme, evidenceRiskThemes, type EvidenceRiskTheme } from "@/sentinel/analysis/evidence-classification";
 import { getDatabase } from "@/sentinel/db";
 import type { EvidenceManifest, EvidenceManifestRecord } from "@/sentinel/evidence/schema";
 import { contentHash } from "@/sentinel/extraction/normalize";
@@ -20,14 +20,16 @@ export function candidateDomain(candidate: CandidateFinding): AdjudicationDomain
 
 function candidateTheme(candidate: CandidateFinding): EvidenceRiskTheme {
   const declared = candidate.riskTheme?.replace(/^CONTRADICTION:/, "") as EvidenceRiskTheme | undefined;
-  const allowed: EvidenceRiskTheme[] = ["WEIGHT_METABOLIC", "MUSCLE_PERFORMANCE", "COGNITIVE_NEUROLOGICAL", "REPRODUCTIVE_FERTILITY", "RECOVERY_HEALING", "LONGEVITY_AGING", "MEDICAL_DISEASE", "DOSING_ADMINISTRATION", "PHARMACY_PRESCRIPTION", "COSMETIC", "GENERAL"];
-  if (declared && allowed.includes(declared)) return declared;
+  if (declared && evidenceRiskThemes.includes(declared)) return declared;
   return evidenceRiskTheme(`${candidate.detectedText ?? ""} ${candidate.title} ${candidate.reason}`);
 }
 
 function scoreComponent(theme: EvidenceRiskTheme): ScoreComponentKey {
   if (theme === "DOSING_ADMINISTRATION") return "RESEARCH_CONTROLS";
-  if (theme === "PHARMACY_PRESCRIPTION") return "OPERATIONAL_CONSISTENCY";
+  if (["PHARMACY_PRESCRIPTION", "PROHIBITED_GOODS", "FINANCIAL_MISREPRESENTATION", "SAFETY_HAZARD"].includes(theme)) return "OPERATIONAL_CONSISTENCY";
+  if (["PRODUCT_MISREPRESENTATION", "COUNTERFEIT_AUTHENTICITY", "AGE_RESTRICTED_COMMERCE"].includes(theme)) return "PRODUCT_INTEGRITY";
+  if (["PRIVACY_DATA_USE", "POLICY_CONTRADICTION"].includes(theme)) return "POLICY_COVERAGE";
+  if (theme === "CHECKOUT_DARK_PATTERN") return "SITE_CONTROLS";
   return "MARKETING_RISK";
 }
 
@@ -85,7 +87,7 @@ export function lunaObservationCandidate(observation: LunaObservation, manifest:
     pageType: pageType(primary),
     detectedText: primary.exactText,
     reason: observation.conclusion,
-    recommendedAction: "Review the cited first-party evidence in its complete merchant context and remediate the supported issue.",
+    recommendedAction: observation.remediation ?? `On ${primary.sourceUrl}, revise or remove the exact cited evidence and its validated ${observation.category.toLowerCase()} context; preserve any material mitigating control identified in the retained evidence.`,
     scoreComponent: scoreComponent(observation.riskTheme),
     supportingEvidence,
     affectedUrls: [...new Set(records.map((record) => record.sourceUrl))],
@@ -104,6 +106,11 @@ export function lunaObservationCandidate(observation: LunaObservation, manifest:
     assetHash: primary.artifactHash,
     evidenceRecordIds: orderedRecords.map((record) => record.id),
     scoreEligible: true,
+    materiality: observation.materiality,
+    commercialProminence: observation.commercialProminence ?? undefined,
+    productAssociation: observation.productAssociation ?? undefined,
+    visualSignificance: observation.visualSignificance ?? undefined,
+    mitigation: observation.mitigation ?? undefined,
   };
 }
 
@@ -113,6 +120,15 @@ function verifierFactForCandidate(candidate: CandidateFinding, facts: VerifiedFa
   if (candidate.ruleKey === "SITE-HOME-001") return facts.find((item) => item.factType === "URL_STATUS" && item.subjectId === candidate.url);
   if (candidate.ruleKey === "SITE-BROKEN-CRITICAL-001") return facts.find((item) => item.factType === "URL_STATUS" && (candidate.affectedUrls ?? [candidate.url]).includes(item.subjectId) && item.state === "REFUTED");
   return undefined;
+}
+
+function verifierFactForObservation(observation: LunaObservation, manifest: EvidenceManifest, facts: VerifiedFact[]) {
+  const primaryReference = observation.evidence.find((reference) => reference.role === "PRIMARY") ?? observation.evidence[0];
+  const record = manifest.records.find((item) => item.id === primaryReference?.evidenceRecordId);
+  const surfaceUrl = record?.parentUrl ?? record?.sourceUrl;
+  if (observation.productAssociation === "DIRECT" && surfaceUrl) return facts.find((item) => item.factType === "PRODUCT_IDENTITY" && item.subjectId === surfaceUrl);
+  if (observation.riskTheme === "CHECKOUT_DARK_PATTERN") return facts.find((item) => item.factType === "CHECKOUT_CONTROLS");
+  return surfaceUrl ? facts.find((item) => item.factType === "URL_STATUS" && item.subjectId === surfaceUrl) : undefined;
 }
 
 function verifierSupportsCandidate(candidate: CandidateFinding, item: VerifiedFact | undefined) {
@@ -136,11 +152,15 @@ export async function adjudicateDualReview(input: { scanId: string; merchantId: 
   const assertions = await db.verificationAssertion.findMany({ where: { scanId: input.scanId } });
   const assertionId = new Map(assertions.map((item) => [item.issueKey, item.id]));
   const accepted: CandidateFinding[] = [];
+  let objectiveDisagreements = 0;
 
   for (const observation of input.review?.observations ?? []) {
     const candidate = lunaObservationCandidate(observation, input.manifest);
-    const stored = await decision({ scanId: input.scanId, issueKey: `luna:${observation.issueKey}`, domain: "SEMANTIC_CONTEXT", material: observation.materiality === "MATERIAL", outcome: "ACCEPTED_LUNA", reason: `Luna has priority for the supported semantic/context conclusion classified ${observation.classification}.`, scoreEligible: Boolean(candidate), primaryObservationId: observationId.get(observation.issueKey) });
-    if (candidate) accepted.push({ ...candidate, adjudicationId: stored.id });
+    const verifier = verifierFactForObservation(observation, input.manifest, input.verifierFacts);
+    const objectiveConflict = Boolean(candidate && ((observation.productAssociation === "DIRECT" || observation.riskTheme === "CHECKOUT_DARK_PATTERN") && verifier?.state !== "VERIFIED"));
+    if (objectiveConflict && observation.materiality === "MATERIAL") objectiveDisagreements++;
+    const stored = await decision({ scanId: input.scanId, issueKey: `luna:${observation.issueKey}`, domain: objectiveConflict ? "MIXED" : "SEMANTIC_CONTEXT", material: observation.materiality === "MATERIAL", outcome: objectiveConflict ? "NEEDS_REVIEW" : "ACCEPTED_LUNA", reason: objectiveConflict ? "Luna's semantic conclusion is retained, but a verifier-owned product or checkout fact was not confirmed." : `Luna has priority for the supported semantic/context conclusion classified ${observation.classification}.`, scoreEligible: Boolean(candidate) && !objectiveConflict, primaryObservationId: observationId.get(observation.issueKey), verificationAssertionId: verifier ? assertionId.get(verifier.issueKey) : undefined });
+    if (candidate) accepted.push({ ...candidate, status: objectiveConflict ? "NEEDS_REVIEW" : candidate.status, adjudicationId: stored.id, scoreEligible: !objectiveConflict });
   }
 
   const conflicts: Array<{ candidate: CandidateFinding; observation: LunaObservation; disagreement: MaterialDisagreement }> = [];
@@ -178,5 +198,5 @@ export async function adjudicateDualReview(input: { scanId: string; merchantId: 
     const stored = await decision({ scanId: input.scanId, issueKey: conflict.disagreement.issueKey, domain: candidateDomain(conflict.candidate), material: true, outcome, reason: criticDecision?.explanation ?? "The material disagreement could not be resolved and requires review.", scoreEligible: supportsDeterministic, primaryObservationId: observationId.get(conflict.observation.issueKey), criticRunId: criticResult?.runId });
     if (supportsDeterministic || !supportsLuna) accepted.push({ ...conflict.candidate, status: supportsDeterministic ? conflict.candidate.status : "NEEDS_REVIEW", adjudicationId: stored.id, scoreEligible: supportsDeterministic });
   }
-  return { candidates: accepted, materialDisagreements: conflicts.length, criticRunId: criticResult?.runId };
+  return { candidates: accepted, materialDisagreements: conflicts.length + objectiveDisagreements, criticRunId: criticResult?.runId };
 }

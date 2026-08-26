@@ -42,8 +42,10 @@ Heavy scan-browser work is isolated in persistent workers. The web service uses 
 - contextual claim analysis with explicit negation handling and hash-based cache;
 - deterministic, contextual and contradiction signals;
 - immutable, addressable evidence records for pages, metadata, structured data, public JSON, images, screenshots, public PDFs and read-only checkout states;
-- GPT-5.6 Luna holistic review across the retained first-party evidence manifest;
-- an independent deterministic verifier for URLs, policies, product counts, structured data, checkout controls, documents and exact duplicate content;
+- GPT-5.6 Luna agentic review: objective site-map inventory, persisted investigation plan, iterative read-only evidence tools, explicit budgets and inspected-surface coverage;
+- composition-preserving multimodal review linking screenshots/regions to visible text, DOM, CTA/link destinations, product/category relationships and commercial prominence;
+- platform-neutral product identity from corroborating structured data, SKU, price, CTA, variants, inventory, templates, category relationships and public commerce APIs, with editorial exclusion;
+- an independent deterministic verifier for URLs, policies, product identities/counts, SKUs/prices, link destinations, structured data, checkout controls, documents and exact duplicate content;
 - priority-based adjudication with a second Luna critic pass for material disagreements;
 - a persisted evidence graph grouping adverse, contradictory and mitigating records by unique material risk theme;
 - normalized content hashes, historical snapshots and sentence-level smart diff;
@@ -99,7 +101,9 @@ docker compose --profile workers up -d --build
 | `AI_REVIEW_REASONING_EFFORT` | Luna reasoning effort for primary and critic passes |
 | `DUAL_REVIEW_MODE` | `off`, `shadow`, or `enforced`; enforced gates score eligibility through adjudication |
 | `AI_REVIEW_MAX_INPUT_CHARS` / `AI_REVIEW_MAX_RECORDS` | Deterministic evidence-manifest shard bounds |
-| `AI_REVIEW_MAX_IMAGES` | Maximum retained images/screenshots supplied to Luna per shard |
+| `AI_AUDIT_MAX_TIME_MS` / `AI_AUDIT_MAX_TOOL_CALLS` | Merchant-wide Luna investigation time and tool-call budgets |
+| `AI_AUDIT_MAX_PAGES` / `AI_AUDIT_MAX_IMAGE_REGIONS` / `AI_AUDIT_MAX_DOCUMENTS` | Inspectable surface budgets; reaching one produces partial, never perfect, coverage |
+| `AI_AUDIT_MAX_TOKENS` / `AI_AUDIT_MAX_COST_USD` | Token and estimated-cost ceilings supplied to and enforced around the Luna investigation loop |
 | `AI_CRITIC_MAX_DISAGREEMENTS` | Maximum material disagreements sent to one critic pass |
 | `AI_API_KEY` | Required server-only credential when the remote semantic layer is enabled |
 | `AI_BASE_URL` | OpenAI API base URL; dual review uses `/responses` with strict JSON Schema output |

@@ -36,7 +36,8 @@ function validationLog(artifactId: string, result: ImageValidationResult) {
 export async function collectMerchantImages(scanId: string, pages: Array<{ url: string; pageType: SentinelPageType; content: NormalizedContent }>) {
   const env = getServerEnv();
   const ranked = [...pages].sort((left, right) => Number(right.pageType === "PRODUCT") - Number(left.pageType === "PRODUCT"));
-  const references = [...new Map(ranked.flatMap((page) => page.content.images.map((image) => ({ ...image, parentUrl: page.url, pageType: page.pageType }))).filter((image) => /^https?:/i.test(image.src)).map((image) => [image.src, image])).values()].slice(0, env.AI_REVIEW_MAX_IMAGES);
+  const discoveredReferences = [...new Map(ranked.flatMap((page) => page.content.images.map((image) => ({ ...image, parentUrl: page.url, pageType: page.pageType, composition: { pageUrl: page.url, visibleText: page.content.visibleText?.slice(0, 8_000) ?? "", surroundingDom: page.content.domEvidence?.slice(0, 80) ?? [], linksAndCtas: page.content.linkCtas?.slice(0, 40) ?? [], categories: page.content.productCategories ?? [], productName: page.content.productName ?? null, prominence: ["PRODUCT", "CATEGORY", "COLLECTION", "HOME", "LANDING"].includes(page.pageType) ? "COMMERCIAL" : ["ARTICLE", "BLOG"].includes(page.pageType) ? "EDITORIAL" : "SUPPORTING" } }))).filter((image) => /^https?:/i.test(image.src)).map((image) => [image.src, image])).values()];
+  const references = discoveredReferences.slice(0, env.AI_AUDIT_MAX_IMAGE_REGIONS ?? Number.POSITIVE_INFINITY);
   let retained = 0;
   let failed = 0;
   let rasterized = 0;
@@ -72,7 +73,7 @@ export async function collectMerchantImages(scanId: string, pages: Array<{ url: 
         const storedHash = hash(validation.outputBytes);
         const storageKey = `${scanId}/images/${storedHash}.${extension(validation.outputMime)}`;
         await evidenceStorage().put(storageKey, validation.outputBytes);
-        const artifact = await persistArtifactEvidence({ scanId, kind: "IMAGE", url: response.url.toString(), parentUrl: image.parentUrl, mimeType: validation.outputMime, httpStatus: response.status, storageKey, sha256: originalHash, metadata: { pageType: image.pageType, filename: image.filename, alt: image.alt, title: image.title, requestedUrl: image.src, declaredContentType: response.contentType, detectedMime: validation.detectedMime, byteSize: validation.byteSize, width: validation.width, height: validation.height, validationResult: validation.validationResult, originalHash, storedHash, visualAvailability: "AVAILABLE" }, records: [{ evidenceType: "IMAGE_FILE", exactText: [image.alt, image.title].filter(Boolean).join(" | ") || undefined, value: { filename: image.filename, alt: image.alt, title: image.title, detectedMime: validation.detectedMime, validationResult: validation.validationResult } }] });
+        const artifact = await persistArtifactEvidence({ scanId, kind: "IMAGE", url: response.url.toString(), parentUrl: image.parentUrl, mimeType: validation.outputMime, httpStatus: response.status, storageKey, sha256: originalHash, metadata: { pageType: image.pageType, filename: image.filename, alt: image.alt, title: image.title, requestedUrl: image.src, declaredContentType: response.contentType, detectedMime: validation.detectedMime, byteSize: validation.byteSize, width: validation.width, height: validation.height, validationResult: validation.validationResult, originalHash, storedHash, visualAvailability: "AVAILABLE", composition: image.composition }, records: [{ evidenceType: "IMAGE_FILE", exactText: [image.alt, image.title].filter(Boolean).join(" | ") || undefined, value: { filename: image.filename, alt: image.alt, title: image.title, detectedMime: validation.detectedMime, validationResult: validation.validationResult, composition: image.composition } }] });
         logger.info(validationLog(artifact.id, validation), "Merchant image validated for Luna visual payload");
         retained++;
         rasterized += Number(validation.validationResult === "RASTERIZED");
@@ -87,5 +88,6 @@ export async function collectMerchantImages(scanId: string, pages: Array<{ url: 
   } finally {
     await validator.close();
   }
-  return { discovered: references.length, retained, failed, rasterized, coveragePercent: references.length ? Math.round(retained / references.length * 100) : 100 };
+  const result = { discovered: discoveredReferences.length, retained, failed, rasterized, coveragePercent: discoveredReferences.length ? Math.round(retained / discoveredReferences.length * 100) : 100 };
+  return references.length < discoveredReferences.length ? { ...result, inspected: references.length, capped: true } : result;
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const VERIFIER_METHOD_VERSION = "orbit-deterministic-verifier-v1";
+export const VERIFIER_METHOD_VERSION = "orbit-deterministic-verifier-v2";
 
 export const verifiedFactSchema = z.object({
   issueKey: z.string().min(1),
@@ -8,6 +8,8 @@ export const verifiedFactSchema = z.object({
     "URL_STATUS",
     "POLICY_PRESENCE",
     "PRODUCT_COUNT",
+    "PRODUCT_IDENTITY",
+    "LINK_DESTINATION",
     "STRUCTURED_DATA_COUNT",
     "CHECKOUT_CONTROLS",
     "DOCUMENT_AVAILABILITY",

@@ -6,8 +6,8 @@ import { VERIFIER_METHOD_VERSION, verifiedFactSchema, type VerifiedFact } from "
 const policyPageTypes = ["POLICY", "TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"] as const;
 const legalPolicyPageTypes = ["POLICY", "TERMS", "PRIVACY", "REFUND", "SHIPPING"] as const;
 
-function valueString(record: EvidenceManifestRecord) {
-  return typeof record.value === "string" ? record.value : undefined;
+function valueString(record: EvidenceManifestRecord | undefined) {
+  return typeof record?.value === "string" ? record.value : undefined;
 }
 
 function artifactGroups(records: EvidenceManifestRecord[]) {
@@ -43,8 +43,36 @@ export function verifyEvidenceManifest(manifest: EvidenceManifest): VerifiedFact
   }
 
   const pageTypeRecords = firstParty.filter((record) => record.evidenceType === "PAGE_TYPE");
-  const productRecords = pageTypeRecords.filter((record) => valueString(record) === "PRODUCT");
-  facts.push(fact({ issueKey: "fact:product-count", factType: "PRODUCT_COUNT", subjectId: manifest.scanId, state: "VERIFIED", value: { count: new Set(productRecords.map((record) => record.sourceUrl)).size }, evidenceRecordIds: (productRecords.length ? productRecords : pageTypeRecords).map((record) => record.id).slice(0, 100) }));
+  const verifiedProducts: Array<{ url: string; name: string | null; sku: string | null; prices: string[]; signals: string[]; evidenceRecordIds: string[] }> = [];
+  for (const records of artifacts.filter((group) => group[0]?.artifactKind === "PAGE_SNAPSHOT")) {
+    const pageType = records.find((record) => record.evidenceType === "PAGE_TYPE");
+    if (["ARTICLE", "BLOG"].includes(valueString(pageType!) ?? "") || /\/(?:blogs?|articles?|news|insights)(?:\/|$)/i.test(new URL(records[0].sourceUrl).pathname)) continue;
+    const productName = records.find((record) => record.evidenceType === "PRODUCT_NAME" && record.exactText)?.exactText;
+    const structured = records.filter((record) => record.evidenceType === "STRUCTURED_DATA");
+    const sku = records.find((record) => record.evidenceType === "SKU")?.exactText ?? structured.map((record) => JSON.stringify(record.value)).map((value) => /"sku"\s*:\s*"([^"]+)"/i.exec(value)?.[1]).find(Boolean) ?? null;
+    const prices = records.filter((record) => record.evidenceType === "PRICE" && record.exactText).map((record) => record.exactText!);
+    const signals = [
+      structured.some((record) => /"@type"\s*:\s*"Product"/i.test(JSON.stringify(record.value))) && "PRODUCT_STRUCTURED_DATA",
+      Boolean(sku) && "SKU",
+      records.some((record) => (record.evidenceType === "LINK_CTA" || record.evidenceType === "BUTTON") && /\b(?:add to cart|buy now|purchase|select options?)\b/i.test(record.exactText ?? "")) && "COMMERCE_CTA",
+      prices.length > 0 && "PRICE",
+      records.some((record) => record.evidenceType === "INTERACTIVE_STATE" && /variation/i.test(record.exactText ?? JSON.stringify(record.value))) && "VARIANT_CONTROL",
+      records.some((record) => record.evidenceType === "STOCK") && "INVENTORY",
+      valueString(pageType!) === "PRODUCT" && "PRODUCT_TEMPLATE",
+    ].filter((value): value is string => Boolean(value));
+    const strong = signals.includes("PRODUCT_STRUCTURED_DATA") || signals.includes("SKU") || (signals.includes("COMMERCE_CTA") && signals.includes("PRICE")) || (signals.includes("VARIANT_CONTROL") && signals.includes("PRICE"));
+    if (!strong || (!productName && valueString(pageType) !== "PRODUCT")) continue;
+    const evidenceRecordIds = records.filter((record) => ["PRODUCT_NAME", "SKU", "STRUCTURED_DATA", "PRICE", "BUTTON", "LINK_CTA", "PRODUCT_VARIATION", "INTERACTIVE_STATE", "STOCK"].includes(record.evidenceType)).map((record) => record.id).slice(0, 50);
+    verifiedProducts.push({ url: records[0].sourceUrl, name: productName ?? null, sku, prices, signals, evidenceRecordIds });
+    facts.push(fact({ issueKey: `fact:product-identity:${records[0].sourceUrl}`, factType: "PRODUCT_IDENTITY", subjectId: records[0].sourceUrl, state: "VERIFIED", value: { url: records[0].sourceUrl, name: productName ?? null, sku, prices, signals }, evidenceRecordIds }));
+  }
+  facts.push(fact({ issueKey: "fact:product-count", factType: "PRODUCT_COUNT", subjectId: manifest.scanId, state: "VERIFIED", value: { count: verifiedProducts.length }, evidenceRecordIds: (verifiedProducts.length ? verifiedProducts.flatMap((record) => record.evidenceRecordIds) : pageTypeRecords.map((record) => record.id)).slice(0, 100) }));
+
+  for (const record of firstParty.filter((item) => ["LINK_CTA", "NAVIGATION", "FOOTER"].includes(item.evidenceType))) {
+    const value = record.value && typeof record.value === "object" && !Array.isArray(record.value) ? record.value as Record<string, unknown> : {};
+    if (typeof value.href !== "string") continue;
+    facts.push(fact({ issueKey: `fact:link-destination:${record.id}`, factType: "LINK_DESTINATION", subjectId: record.id, state: "VERIFIED", value: { sourceUrl: record.sourceUrl, text: record.exactText ?? null, href: value.href, selector: record.selector ?? null }, evidenceRecordIds: [record.id] }));
+  }
 
   for (const policyType of policyPageTypes) {
     const exact = pageTypeRecords.filter((record) => valueString(record) === policyType);

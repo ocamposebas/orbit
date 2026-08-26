@@ -32,8 +32,8 @@ function recordHash(input: RecordInput) {
   return contentHash({ evidenceType: input.evidenceType, exactText: input.exactText, value: input.value, selector: input.selector, jsonPointer: input.jsonPointer, pageNumber: input.pageNumber, coordinates: input.coordinates });
 }
 
-function locatedRecords(evidenceType: string, values: Array<{ text: string; selector?: string }>): RecordInput[] {
-  return values.filter((item) => item.text.trim()).map((item) => ({ evidenceType, exactText: item.text, selector: item.selector }));
+function locatedRecords(evidenceType: string, values: Array<{ text: string; selector?: string; href?: string }>): RecordInput[] {
+  return values.filter((item) => item.text.trim()).map((item) => ({ evidenceType, exactText: item.text, selector: item.selector, value: item.href ? { href: item.href } : undefined }));
 }
 
 function textChunks(text: string, maximum = 20_000) {
@@ -53,12 +53,14 @@ function pageRecords(page: PageEvidenceInput): RecordInput[] {
     { evidenceType: "OPEN_GRAPH_TITLE", exactText: content.metadata.openGraphTitle },
     { evidenceType: "OPEN_GRAPH_DESCRIPTION", exactText: content.metadata.openGraphDescription },
     { evidenceType: "PRODUCT_NAME", exactText: content.productName },
+    { evidenceType: "SKU", exactText: content.sku },
     { evidenceType: "PRODUCT_SHORT_DESCRIPTION", exactText: content.descriptions.short },
     { evidenceType: "PRODUCT_FULL_DESCRIPTION", exactText: content.descriptions.full },
     ...locatedRecords("HEADING", content.headingRecords.length ? content.headingRecords : content.headings.map((text) => ({ text }))),
     ...locatedRecords("NAVIGATION", content.navigation),
     ...locatedRecords("FOOTER", content.footer),
     ...locatedRecords("LINK_CTA", content.linkCtas),
+    ...content.buttons.map((exactText) => ({ evidenceType: "BUTTON", exactText })),
     ...locatedRecords("BADGE", content.badges),
     ...locatedRecords("STOCK", content.stockText),
     ...locatedRecords("CHECKOUT_TEXT", content.checkoutText),
@@ -68,6 +70,7 @@ function pageRecords(page: PageEvidenceInput): RecordInput[] {
     ...content.breadcrumbs.map((exactText) => ({ evidenceType: "BREADCRUMB", exactText })),
     ...content.productCategories.map((exactText) => ({ evidenceType: "PRODUCT_CATEGORY", exactText })),
     ...content.productTags.map((exactText) => ({ evidenceType: "PRODUCT_TAG", exactText })),
+    ...content.productVariations.map((value, index) => ({ evidenceType: "PRODUCT_VARIATION", exactText: value.name, value, jsonPointer: `/productVariations/${index}` })),
     ...content.images.map((image, index) => ({ evidenceType: "IMAGE_REFERENCE", exactText: [image.alt, image.title].filter(Boolean).join(" | ") || undefined, value: image, jsonPointer: `/images/${index}` })),
     ...content.structuredData.map((value, index) => ({ evidenceType: "STRUCTURED_DATA", value, jsonPointer: `/structuredData/${index}` })),
     ...content.embeddedDocuments.map((document, index) => ({ evidenceType: "DOCUMENT_LINK", exactText: document.text || undefined, value: document, selector: document.selector, jsonPointer: `/embeddedDocuments/${index}` })),

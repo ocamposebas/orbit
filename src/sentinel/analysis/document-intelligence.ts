@@ -141,8 +141,9 @@ export function documentCandidates(document: ExtractedDocument, analysis: Docume
 
 export async function runDocumentIntelligence(scanId: string, pages: SemanticPageInput[], options: { analyzeSemantic?: boolean } = {}) {
   const env = getServerEnv();
-  const links = [...new Map(pages.flatMap((page) => page.content.embeddedDocuments.map((document) => ({ ...document, sourcePageUrl: page.url }))).filter((document) => /\.pdf(?:$|[?#])/i.test(document.url)).map((document) => [document.url, document])).values()].slice(0, env.AI_DOCUMENT_MAX_FILES);
-  const stats: DocumentIntelligenceStats = { discovered: links.length, extracted: 0, semanticallyAnalyzed: 0, cacheHits: 0, failures: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
+  const discoveredLinks = [...new Map(pages.flatMap((page) => page.content.embeddedDocuments.map((document) => ({ ...document, sourcePageUrl: page.url }))).filter((document) => /\.pdf(?:$|[?#])/i.test(document.url)).map((document) => [document.url, document])).values()];
+  const links = discoveredLinks.slice(0, Math.min(env.AI_DOCUMENT_MAX_FILES, env.AI_AUDIT_MAX_DOCUMENTS));
+  const stats: DocumentIntelligenceStats = { discovered: discoveredLinks.length, extracted: 0, semanticallyAnalyzed: 0, cacheHits: 0, failures: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
   const documents: ExtractedDocument[] = [];
   const candidates: CandidateFinding[] = [];
   for (const link of links) {

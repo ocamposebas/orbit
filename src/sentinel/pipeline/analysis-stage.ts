@@ -14,7 +14,6 @@ import { buildProductIntelligence } from "@/sentinel/analysis/product-intelligen
 import { evaluateWebsiteLegitimacy } from "@/sentinel/analysis/legitimacy";
 import { analyzeContext } from "@/sentinel/analysis/contextual-signals";
 import { consolidateCandidates, isScorableCandidate } from "@/sentinel/analysis/candidate-quality";
-import { hasProductEvidence, isEditorialUrl, looksLikeProductUrl, verifiedCanonicalProductUrl } from "@/sentinel/classification/classifier";
 import { coverageForAssessment, surfaceCoverage, weightedCoverage } from "@/sentinel/analysis/coverage";
 import { getServerEnv } from "@/sentinel/config";
 import { merchantSemanticCandidates, runHybridSemanticAnalysis, runMerchantSemanticPass, type HybridSemanticStats } from "@/sentinel/analysis/hybrid-semantic";
@@ -25,11 +24,12 @@ import { buildEvidenceGraph } from "@/sentinel/analysis/evidence-graph";
 import { loadEvidenceManifest, persistPageEvidenceLedger } from "@/sentinel/evidence/ledger";
 import { configuredLunaReviewer, persistLunaObservations } from "@/sentinel/review/luna";
 import { configuredLunaCritic } from "@/sentinel/review/critic";
-import { adjudicateDualReview, attachRetainedCandidateEvidence } from "@/sentinel/review/adjudication";
+import { adjudicateDualReview, attachRetainedCandidateEvidence, candidateDomain } from "@/sentinel/review/adjudication";
 import { persistVerificationFacts, verifyEvidenceManifest } from "@/sentinel/verification/verifier";
 import { logger } from "@/sentinel/logger";
 import { collectMerchantImages } from "@/sentinel/evidence/collect-images";
 import { runExternalPublicWebVerification } from "@/sentinel/review/external-verification";
+import { possibleProductCount, verifiedProductRecords } from "@/sentinel/verification/products";
 
 function compactJson(record: Record<string, unknown>): Prisma.InputJsonValue {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as Prisma.InputJsonObject;
@@ -79,7 +79,10 @@ export async function runAnalysisStage(scanId: string) {
     const processed = Math.min(offset + batch.length, pagesForDeepAnalysis.length);
     await updateProgress(scanId, { stage: "analyzing", message: `Evaluating page context (${processed}/${pagesForDeepAnalysis.length})`, stageProcessed: processed, stageTotal: pagesForDeepAnalysis.length });
   }
-  const analysisCoverageRatio = pages.length / Math.max(scan.pagesDiscovered, pages.length, 1);
+  const crawlPageLimit = scan.mode === "QUICK" ? 25 : env.CRAWLER_MAX_PAGES;
+  const crawlCapReached = pages.length >= crawlPageLimit;
+  const expectedPageCount = Math.max(scan.pagesDiscovered, pages.length, crawlCapReached ? pages.length + Math.max(1, Math.ceil(pages.length * 0.01)) : 1);
+  const analysisCoverageRatio = pages.length / expectedPageCount;
   const deterministicCandidates = [...pageFindingGroups.flat(), ...evaluateSiteCoverage(pages, { coverageRatio: analysisCoverageRatio }), ...evaluateWebsiteLegitimacy(pages), ...evaluateContradictions(pages)];
   const websiteAnalyzer = env.DUAL_REVIEW_MODE === "enforced" ? undefined : configuredWebsiteSemanticAnalyzer();
   let semanticCandidates: CandidateFinding[] = [];
@@ -110,7 +113,15 @@ export async function runAnalysisStage(scanId: string) {
   const legacyCandidates = consolidatedLegacyCandidates.map((candidate) => attachRetainedCandidateEvidence(candidate, manifest));
   const verifierFacts = verifyEvidenceManifest(manifest);
   const lunaReviewer = configuredLunaReviewer();
-  const reviewPromise = lunaReviewer?.review({ scanId, merchantId: scan.merchantId, merchantName: scan.merchant.businessName, merchantDescription: scan.merchant.businessDescription, manifest });
+  const reviewPromise = lunaReviewer?.agenticReview({
+    scanId,
+    merchantId: scan.merchantId,
+    merchantName: scan.merchant.businessName,
+    merchantDescription: scan.merchant.businessDescription,
+    manifest,
+    pages,
+    budget: { maxAuditTimeMs: env.AI_AUDIT_MAX_TIME_MS, maxToolCalls: env.AI_AUDIT_MAX_TOOL_CALLS, maxPages: env.AI_AUDIT_MAX_PAGES, maxImageRegions: env.AI_AUDIT_MAX_IMAGE_REGIONS, maxDocuments: env.AI_AUDIT_MAX_DOCUMENTS, maxTokens: env.AI_AUDIT_MAX_TOKENS, maxCostUsd: env.AI_AUDIT_MAX_COST_USD },
+  });
   const verificationPromise = persistVerificationFacts(scanId, verifierFacts);
   let lunaResult: Awaited<NonNullable<typeof reviewPromise>> | undefined;
   try { lunaResult = await reviewPromise; }
@@ -124,7 +135,8 @@ export async function runAnalysisStage(scanId: string) {
   let materialDisagreements = 0;
   let criticRunId: string | undefined;
   if (env.DUAL_REVIEW_MODE !== "off") {
-    const adjudicated = await adjudicateDualReview({ scanId, merchantId: scan.merchantId, deterministicCandidates: legacyCandidates, review: lunaResult?.review, reviewRunId: lunaResult?.runId, manifest, verifierFacts, critic: configuredLunaCritic(), maxDisagreements: env.AI_CRITIC_MAX_DISAGREEMENTS });
+    const verifierOwnedCandidates = lunaResult ? legacyCandidates.filter((candidate) => candidateDomain(candidate) !== "SEMANTIC_CONTEXT") : legacyCandidates;
+    const adjudicated = await adjudicateDualReview({ scanId, merchantId: scan.merchantId, deterministicCandidates: verifierOwnedCandidates, review: lunaResult?.review, reviewRunId: lunaResult?.runId, manifest, verifierFacts, critic: configuredLunaCritic(), maxDisagreements: env.AI_CRITIC_MAX_DISAGREEMENTS });
     materialDisagreements = adjudicated.materialDisagreements;
     criticRunId = adjudicated.criticRunId;
     if (env.DUAL_REVIEW_MODE === "enforced") adjudicatedCandidates = adjudicated.candidates;
@@ -136,15 +148,18 @@ export async function runAnalysisStage(scanId: string) {
   const ruleVersionByKey = new Map(storedRuleVersions.map((version) => [version.rule.key, version]));
 
   let productsDetected = 0;
+  const verifiedProducts = verifiedProductRecords(pages, manifest);
+  const verifiedProductByUrl = new Map(verifiedProducts.flatMap((product) => [[product.url, product], [product.canonicalUrl, product]]));
   const presentPolicyTypes = new Set<PolicySignalType>();
   for (const page of pages) {
     if (page.httpStatus !== undefined && page.httpStatus >= 400) continue;
-    if (page.pageType === "PRODUCT" && page.content.productName && hasProductEvidence(page.content, page.url) && !isEditorialUrl(page.url)) {
-      const canonicalUrl = verifiedCanonicalProductUrl(page.url, page.canonicalUrl);
+    const verifiedProduct = verifiedProductByUrl.get(page.url);
+    if (verifiedProduct) {
+      const canonicalUrl = verifiedProduct.canonicalUrl;
       const intelligence = buildProductIntelligence(page.content, canonicalUrl, scan.merchant.businessName);
       const numericPrice = page.content.prices[0]?.replace(/[^\d.,]/g, "").replace(",", ".");
       const availability = page.content.stockText.map((item) => item.text).join(" | ").slice(0, 500) || undefined;
-      const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl } }, update: { name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl, name: page.content.productName, sku: page.content.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: page.content.productCategories, claims: page.content.claims, disclaimers: page.content.disclaimers } });
+      const product = await db.product.upsert({ where: { merchantId_canonicalUrl: { merchantId: scan.merchantId, canonicalUrl } }, update: { name: verifiedProduct.name, sku: verifiedProduct.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: verifiedProduct.categories, claims: page.content.claims, disclaimers: page.content.disclaimers, lastSeenAt: new Date() }, create: { merchantId: scan.merchantId, siteId: scan.siteId, canonicalUrl, name: verifiedProduct.name, sku: verifiedProduct.sku, currentPrice: numericPrice && Number.isFinite(Number(numericPrice)) ? numericPrice : null, availability, categories: verifiedProduct.categories, claims: page.content.claims, disclaimers: page.content.disclaimers } });
       const productSnapshotPayload = { content: page.content, intelligence };
       const productSnapshotData = { data: productSnapshotPayload as unknown as Prisma.InputJsonValue, hash: contentHash(productSnapshotPayload) };
       const existingProductSnapshot = await db.productSnapshot.findFirst({ where: { productId: product.id, scanId }, select: { id: true } });
@@ -166,23 +181,23 @@ export async function runAnalysisStage(scanId: string) {
     }
   }
   const policiesDetected = presentPolicyTypes.size;
-  const productCandidates = scan.pages.filter((page) => !isEditorialUrl(page.url) && (page.pageType === "PRODUCT" || looksLikeProductUrl(page.url)));
-  const productsDiscovered = productCandidates.length;
+  const productsDiscovered = Math.max(verifiedProducts.length, possibleProductCount(pages, manifest));
   const variantsScanned = pages.reduce((sum, page) => sum + (page.pageType === "PRODUCT" ? Math.max(page.content.variants.length, page.content.productVariations.length) : 0), 0);
   const imagesDiscovered = pages.reduce((sum, page) => sum + page.content.images.length, 0);
   const imagesAnalyzed = visual.stats.assetsAnalyzed;
   const certificatesDiscovered = new Set(pages.flatMap((page) => page.content.certificateLinks)).size;
   const checkoutFlowsInspected = pages.filter((page) => page.pageType === "CART" || isReviewableCheckout(page)).length;
   const checkoutStatesInspected = pages.filter((page) => page.pageType === "CART" || page.pageType === "CHECKOUT").reduce((sum, page) => sum + Math.max(1, page.content.interactiveStates.length), 0);
-  const pageCoveragePercent = Math.min(100, Math.round((pages.length / Math.max(scan.pagesDiscovered, pages.length, 1)) * 100));
-  const semanticCoveragePercent = lunaResult ? 100 : websiteAnalyzer ? Math.round((semanticPageAnalyses.length / Math.max(pages.length, 1)) * 100) : 0;
+  const pageCoveragePercent = Math.min(crawlCapReached ? 99 : 100, Math.round((pages.length / expectedPageCount) * 100));
+  const semanticPagesInspected = lunaResult ? lunaResult.investigation.budgetUsed.pages : semanticPageAnalyses.length;
+  const semanticCoveragePercent = Math.round((semanticPagesInspected / Math.max(pages.length, 1)) * 100);
   const inaccessibleAreas = scan.pages.filter((page) => Boolean(page.inaccessibleReason) || (page.httpStatus ?? 0) >= 400).length;
   const commerceApplicable = productsDiscovered > 0 || pages.some((page) => page.pageType === "CART" || page.pageType === "CHECKOUT");
   const coverageSurfaces = {
-    pages: surfaceCoverage({ inspected: pages.length, expected: Math.max(scan.pagesDiscovered, pages.length, 1) }),
+    pages: surfaceCoverage({ inspected: pages.length, expected: expectedPageCount }),
     products: surfaceCoverage({ inspected: productsDetected, expected: productsDiscovered, applicable: productsDiscovered > 0, known: analysisCoverageRatio >= 0.65 }),
-    semantic: surfaceCoverage({ inspected: lunaResult ? pages.length : semanticPageAnalyses.length, expected: pages.length }),
-    visual: surfaceCoverage({ inspected: visual.stats.pagesAnalyzed, expected: visual.stats.pagesSelected, applicable: visual.stats.pagesSelected > 0 }),
+    semantic: surfaceCoverage({ inspected: semanticPagesInspected, expected: pages.length }),
+    visual: surfaceCoverage({ inspected: visual.stats.pagesAnalyzed, expected: visual.stats.pagesEligible, applicable: visual.stats.pagesEligible > 0 }),
     documents: surfaceCoverage({ inspected: documents.stats.extracted, expected: documents.stats.discovered, applicable: documents.stats.discovered > 0 }),
     checkout: surfaceCoverage({ inspected: checkoutStatesInspected, expected: commerceApplicable ? 1 : 0, applicable: commerceApplicable, known: analysisCoverageRatio >= 0.65 }),
   };
@@ -270,7 +285,7 @@ export async function runAnalysisStage(scanId: string) {
   const researchCoveredProducts = productPages.filter((page) => page.content.disclaimers.some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
   const researchRestrictionPagesObserved = pages.filter((page) => [...page.content.disclaimers, ...page.content.paragraphs].some((text) => analyzeContext(text).type === "RESEARCH_RESTRICTION")).length;
   const disclaimerPagesObserved = pages.filter((page) => /\bdisclaimer\b/i.test(`${new URL(page.url).pathname} ${page.content.title} ${page.content.headings.join(" ")}`) && page.content.disclaimers.length > 0).length;
-  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesDiscovered, imagesAnalyzed, screenshotsAnalyzed: visual.stats.assetsAnalyzed, visualPagesAnalyzed: visual.stats.pagesAnalyzed, visualCoveragePercent, certificatesDiscovered, certificatesAnalyzed: documents.stats.extracted, documentsDiscovered: documents.stats.discovered, documentsAnalyzed: documents.stats.extracted, documentCoveragePercent, checkoutFlowsInspected, checkoutStatesInspected, semanticPagesAnalyzed: lunaResult ? pages.length : semanticPageAnalyses.length, semanticCoveragePercent, inaccessibleAreas, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, coverageStates: Object.fromEntries(Object.entries(coverageSurfaces).map(([key, value]) => [key, value.state])), policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
+  await updateProgress(scanId, { stage: "scoring", message: "Calculating the internal ORBIT Health Score", productsDetected, productsDiscovered, productsScanned: productsDetected, variantsScanned, imagesDiscovered, imagesAnalyzed, screenshotsAnalyzed: visual.stats.assetsAnalyzed, visualPagesAnalyzed: visual.stats.pagesAnalyzed, visualCoveragePercent, certificatesDiscovered, certificatesAnalyzed: documents.stats.extracted, documentsDiscovered: documents.stats.discovered, documentsAnalyzed: documents.stats.extracted, documentCoveragePercent, checkoutFlowsInspected, checkoutStatesInspected, semanticPagesAnalyzed: semanticPagesInspected, semanticCoveragePercent, inaccessibleAreas, disclaimerPagesObserved, researchRestrictionPagesObserved, researchCoveredProducts, scanCoveragePercent, coverageStates: Object.fromEntries(Object.entries(coverageSurfaces).map(([key, value]) => [key, value.state])), policiesDetected, claimsInspected: pages.reduce((sum, page) => sum + page.content.claims.length, 0), findings: candidates.length, stageProcessed: 0, stageTotal: 1 });
   await advanceScanStatus(scanId, "SCORING");
   const requiredPoliciesFound = expectedPolicyTypes.filter((type) => presentPolicyTypes.has(type)).length;
   const assessmentCoverage = {
@@ -283,10 +298,11 @@ export async function runAnalysisStage(scanId: string) {
   } as const;
   const score = calculateHealthScore([...candidates, ...retainedForScore].filter(isScorableCandidate), assessmentCoverage);
   const evidenceGraph = buildEvidenceGraph(candidates, pageRestrictions);
-  const lunaEstimatedCostUsd = lunaResult ? lunaResult.usage.inputTokens * env.AI_INPUT_COST_PER_MILLION / 1_000_000 + lunaResult.usage.outputTokens * env.AI_OUTPUT_COST_PER_MILLION / 1_000_000 : 0;
+  const lunaEstimatedCostUsd = lunaResult ? (lunaResult.usage.inputTokens + lunaResult.investigationUsage.inputTokens) * env.AI_INPUT_COST_PER_MILLION / 1_000_000 + (lunaResult.usage.outputTokens + lunaResult.investigationUsage.outputTokens) * env.AI_OUTPUT_COST_PER_MILLION / 1_000_000 : 0;
   const estimatedCostUsd = Number(((semanticStats?.estimatedCostUsd ?? 0) + lunaEstimatedCostUsd + visual.stats.estimatedCostUsd + documents.stats.estimatedCostUsd).toFixed(6));
-  const dualReview = { mode: env.DUAL_REVIEW_MODE, evidenceManifestVersion: manifest.version, retainedFirstPartyEvidenceRecords: manifest.records.filter((record) => record.scope === "MERCHANT_SITE").length, verifierAssertions: verifierFacts.length, luna: lunaResult ? { model: env.AI_REVIEW_MODEL, promptVersion: "orbit-luna-holistic-v1", reviewRunId: lunaResult.runId, runIds: lunaResult.runIds, usage: lunaResult.usage } : null, externalPublicWeb: externalVerification ? { reviewRunId: externalVerification.runId, resultCount: externalVerification.result.results.length, evidenceScope: "EXTERNAL_PUBLIC_WEB" } : null, materialDisagreements, criticRunId: criticRunId ?? null, scoreAuthority: "deterministic" };
-  const intelligence = { version: "orbit-dual-review-v1", riskScore: 100 - score.total, healthScore: score.total, coverage: { overall: scanCoveragePercent, surfaces: coverageSurfaces, inaccessibleAreas }, evidenceGraph, dualReview, visual: { ...visual.stats, merchantImages: collectedImages }, documents: { stats: documents.stats, records: documents.documents.map((document) => ({ url: document.url, sourcePageUrl: document.sourcePageUrl, documentType: document.documentType, hash: document.hash, storageKey: document.storageKey, pageCount: document.pageCount, metadata: document.metadata })) }, model: { semantic: semanticStats, estimatedCostUsd, fallbackIncomplete: env.DUAL_REVIEW_MODE === "enforced" ? !lunaResult : !websiteAnalyzer || Boolean((semanticStats?.failures ?? 0) + visual.stats.failures + documents.stats.failures) }, methodologyLimitations: [...(env.DUAL_REVIEW_MODE === "enforced" && !lunaResult ? ["Primary holistic Luna review was unavailable; semantic signals were retained as NEEDS_REVIEW and excluded from scoring."] : []), ...(visual.stats.failures ? [`${visual.stats.failures} visual evidence collection attempt(s) failed.`] : []), ...(documents.stats.failures ? [`${documents.stats.failures} public document extraction attempt(s) failed.`] : []), ...(collectedImages.failed ? [`${collectedImages.failed} public image retrieval attempt(s) failed.`] : []), ...(["NOT_OBSERVED", "UNKNOWN"].includes(coverageSurfaces.checkout.state) ? ["A populated public checkout state was not observable without an explicitly enabled anonymous cart action."] : [])] };
+  const dualReview = { mode: env.DUAL_REVIEW_MODE, evidenceManifestVersion: manifest.version, retainedFirstPartyEvidenceRecords: manifest.records.filter((record) => record.scope === "MERCHANT_SITE").length, verifierAssertions: verifierFacts.length, luna: lunaResult ? { model: env.AI_REVIEW_MODEL, promptVersion: "orbit-luna-agentic-audit-v1", reviewRunId: lunaResult.runId, runIds: lunaResult.runIds, usage: lunaResult.usage, investigationUsage: lunaResult.investigationUsage, investigation: lunaResult.investigation } : null, externalPublicWeb: externalVerification ? { reviewRunId: externalVerification.runId, resultCount: externalVerification.result.results.length, evidenceScope: "EXTERNAL_PUBLIC_WEB" } : null, materialDisagreements, criticRunId: criticRunId ?? null, scoreAuthority: "deterministic" };
+  const scoreInputs = { assessmentCoverage, validatedFindings: [...candidates, ...retainedForScore].filter(isScorableCandidate).map((candidate) => ({ ruleKey: candidate.ruleKey, riskTheme: candidate.riskTheme ?? null, severity: candidate.severity, confidence: candidate.confidence, materiality: candidate.materiality ?? null, commercialProminence: candidate.commercialProminence ?? null, productAssociation: candidate.productAssociation ?? null, visualSignificance: candidate.visualSignificance ?? null, mitigation: candidate.mitigation ?? null, evidenceRecordIds: candidate.evidenceRecordIds ?? [], adjudicationId: candidate.adjudicationId ?? null })) };
+  const intelligence = { version: "orbit-agentic-audit-v1", riskScore: 100 - score.total, healthScore: score.total, coverage: { overall: scanCoveragePercent, surfaces: coverageSurfaces, inaccessibleAreas }, evidenceGraph, dualReview, scoreInputs, visual: { ...visual.stats, merchantImages: collectedImages }, documents: { stats: documents.stats, records: documents.documents.map((document) => ({ url: document.url, sourcePageUrl: document.sourcePageUrl, documentType: document.documentType, hash: document.hash, storageKey: document.storageKey, pageCount: document.pageCount, metadata: document.metadata })) }, model: { semantic: semanticStats, estimatedCostUsd, fallbackIncomplete: env.DUAL_REVIEW_MODE === "enforced" ? !lunaResult : !websiteAnalyzer || Boolean((semanticStats?.failures ?? 0) + visual.stats.failures + documents.stats.failures) }, methodologyLimitations: [...(crawlCapReached ? [`Discovery reached the configured ${crawlPageLimit}-page cap; coverage is partial and is not reported as 100%.`] : []), ...(env.DUAL_REVIEW_MODE === "enforced" && !lunaResult ? ["Primary holistic Luna review was unavailable; semantic signals were retained as NEEDS_REVIEW and excluded from scoring."] : []), ...(visual.stats.selectionCapped ? [`Visual page selection reached its configured budget after ${visual.stats.pagesSelected} of ${visual.stats.pagesEligible} eligible pages.`] : []), ...(visual.stats.failures ? [`${visual.stats.failures} visual evidence collection attempt(s) failed.`] : []), ...(documents.stats.extracted < documents.stats.discovered ? [`${documents.stats.discovered - documents.stats.extracted} discovered public document(s) were not extracted within the budget or failed.`] : []), ...(documents.stats.failures ? [`${documents.stats.failures} public document extraction attempt(s) failed.`] : []), ...(collectedImages.failed ? [`${collectedImages.failed} public image retrieval attempt(s) failed.`] : []), ...(["NOT_OBSERVED", "UNKNOWN"].includes(coverageSurfaces.checkout.state) ? ["A populated public checkout state was not observable without an explicitly enabled anonymous cart action."] : [])] };
   await db.scan.update({ where: { id: scanId }, data: { intelligence: intelligence as unknown as Prisma.InputJsonValue } });
   const previousScore = await db.healthScore.findFirst({ where: { merchantId: scan.merchantId, scanId: { not: scanId } }, orderBy: { createdAt: "desc" } });
   const scoreComponents = score.components.map((component) => ({ key: component.key, label: component.label, score: component.score, deductions: component.deductions as unknown as Prisma.InputJsonValue }));

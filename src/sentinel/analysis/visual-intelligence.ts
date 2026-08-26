@@ -42,7 +42,9 @@ export interface VisualAsset {
 }
 
 export interface VisualIntelligenceStats {
+  pagesEligible: number;
   pagesSelected: number;
+  selectionCapped: boolean;
   pagesAnalyzed: number;
   assetsDiscovered: number;
   assetsAnalyzed: number;
@@ -94,7 +96,8 @@ async function capturePageAssets(scanId: string, input: SemanticPageInput, maxim
     const hash = digest(bytes);
     const storageKey = `${scanId}/visual/${hash}.jpg`;
     await evidenceStorage().put(storageKey, bytes);
-    await persistArtifactEvidence({ scanId, kind: "SCREENSHOT", url: input.url, mimeType: "image/jpeg", storageKey, sha256: hash, metadata: { pageType: input.pageType, visualKind: kind, selector }, records: [{ evidenceType: kind, selector, value: { widthContext: "rendered-page", pageType: input.pageType } }] });
+    const composition = { widthContext: "rendered-page", pageType: input.pageType, pageUrl: input.url, visibleText: input.content.visibleText.slice(0, 8_000), surroundingDom: input.content.domEvidence.slice(0, 80), linksAndCtas: input.content.linkCtas.slice(0, 40), categories: input.content.productCategories, productName: input.content.productName ?? null, prominence: ["PRODUCT", "CATEGORY", "COLLECTION", "HOME", "LANDING", "CHECKOUT", "CART"].includes(input.pageType) ? "COMMERCIAL" : ["ARTICLE", "BLOG"].includes(input.pageType) ? "EDITORIAL" : "SUPPORTING" };
+    await persistArtifactEvidence({ scanId, kind: "SCREENSHOT", url: input.url, mimeType: "image/jpeg", storageKey, sha256: hash, metadata: { pageType: input.pageType, visualKind: kind, selector, composition }, records: [{ evidenceType: kind, selector, value: composition }] });
     assets.push({ pageUrl: input.url, pageType: input.pageType, kind, selector, hash, storageKey, mimeType: "image/jpeg", bytes });
   };
   try {
@@ -104,6 +107,8 @@ async function capturePageAssets(scanId: string, input: SemanticPageInput, maxim
     if (assets.length < maximum) await retain("FULL_PAGE", "html", await jpegScreenshot(page, true)).catch(() => undefined);
     const selectorGroups: Array<[string, VisualAsset["kind"]]> = [
       ["main [class*='hero' i],main [class*='banner' i],header [class*='hero' i]", input.pageType === "CATEGORY" || input.pageType === "COLLECTION" ? "CATEGORY_BANNER" : "HERO_BANNER"],
+      ["main [class*='carousel' i],main [class*='slider' i],main [aria-roledescription='carousel']", "PROMOTIONAL_GRAPHIC"],
+      ["main [style*='background-image' i],main [class*='background' i]", "PROMOTIONAL_GRAPHIC"],
       ["main img,article img", input.pageType === "PRODUCT" ? "PRODUCT_IMAGE" : input.pageType === "ARTICLE" || input.pageType === "BLOG" ? "BLOG_GRAPHIC" : "PROMOTIONAL_GRAPHIC"],
     ];
     for (const [selector, kind] of selectorGroups) {
@@ -173,8 +178,9 @@ export function visualCandidates(page: SemanticPageInput, assets: VisualAsset[],
 
 export async function runVisualIntelligence(scanId: string, pages: SemanticPageInput[], options: { analyzeSemantic?: boolean } = {}) {
   const env = getServerEnv();
-  const selected = [...pages].filter((page) => page.httpStatus === undefined || page.httpStatus < 400).sort((left, right) => visualPagePriority(right) - visualPagePriority(left)).slice(0, env.AI_VISUAL_MAX_PAGES);
-  const stats: VisualIntelligenceStats = { pagesSelected: selected.length, pagesAnalyzed: 0, assetsDiscovered: pages.reduce((sum, page) => sum + page.content.images.length, 0), assetsAnalyzed: 0, cacheHits: 0, failures: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
+  const eligible = [...pages].filter((page) => page.httpStatus === undefined || page.httpStatus < 400).sort((left, right) => visualPagePriority(right) - visualPagePriority(left));
+  const selected = eligible.slice(0, Math.min(env.AI_VISUAL_MAX_PAGES, env.AI_AUDIT_MAX_PAGES));
+  const stats: VisualIntelligenceStats = { pagesEligible: eligible.length, pagesSelected: selected.length, selectionCapped: selected.length < eligible.length, pagesAnalyzed: 0, assetsDiscovered: pages.reduce((sum, page) => sum + page.content.images.length, 0), assetsAnalyzed: 0, cacheHits: 0, failures: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
   if (!selected.length) return { candidates: [] as CandidateFinding[], assets: [] as VisualAsset[], stats };
   const analyzeSemantic = options.analyzeSemantic ?? true;
   if (analyzeSemantic && (env.AI_PROVIDER !== "openai-compatible" || !env.AI_API_KEY)) return { candidates: [] as CandidateFinding[], assets: [] as VisualAsset[], stats };
@@ -185,7 +191,9 @@ export async function runVisualIntelligence(scanId: string, pages: SemanticPageI
   try {
     for (const page of selected) {
       try {
-        const captured = await capturePageAssets(scanId, page, env.AI_VISUAL_MAX_ASSETS_PER_PAGE, browser.context);
+        const remainingRegions = Math.max(0, env.AI_AUDIT_MAX_IMAGE_REGIONS - stats.assetsAnalyzed);
+        if (!remainingRegions) break;
+        const captured = await capturePageAssets(scanId, page, Math.min(env.AI_VISUAL_MAX_ASSETS_PER_PAGE, remainingRegions), browser.context);
         const assets = captured.filter((asset) => !seenHashes.has(asset.hash));
         for (const asset of assets) seenHashes.add(asset.hash);
         if (!assets.length) continue;

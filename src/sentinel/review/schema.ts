@@ -17,6 +17,11 @@ export const lunaObservationSchema = z.object({
   confidence: z.number().min(0).max(1),
   materiality: z.enum(["MATERIAL", "NON_MATERIAL"]),
   proposedSeverity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]),
+  commercialProminence: z.enum(["HIGH", "MEDIUM", "LOW"]).nullable().optional(),
+  productAssociation: z.enum(["DIRECT", "CATEGORY", "EDITORIAL", "NONE"]).nullable().optional(),
+  visualSignificance: z.enum(["MATERIAL", "SUPPORTING", "NONE"]).nullable().optional(),
+  mitigation: z.enum(["MATERIAL", "PARTIAL", "NONE"]).nullable().optional(),
+  remediation: z.string().trim().min(1).max(3_000).nullable().optional(),
   humanReviewRequired: z.boolean(),
   evidence: z.array(reviewEvidenceReferenceSchema).min(1).max(12),
   externalVerificationRequest: z.object({
@@ -54,6 +59,13 @@ export const criticDecisionSchema = z.object({
 function strictJsonSchema(schema: z.ZodType) {
   const generated = z.toJSONSchema(schema) as Record<string, unknown>;
   delete generated.$schema;
+  const requireAllProperties = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    if (record.type === "object" && record.properties && typeof record.properties === "object") record.required = Object.keys(record.properties as Record<string, unknown>);
+    for (const nested of Object.values(record)) if (Array.isArray(nested)) nested.forEach(requireAllProperties); else requireAllProperties(nested);
+  };
+  requireAllProperties(generated);
   return generated;
 }
 

@@ -6,6 +6,7 @@ const weights: Record<ScoreComponentKey, number> = { POLICY_COVERAGE: 0.22, PROD
 const deductions = { CRITICAL: 35, HIGH: 16, MEDIUM: 8, LOW: 3, INFO: 0 } as const;
 const severityRank = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 } as const;
 const prominenceMultiplier: Record<NonNullable<CandidateFinding["prominence"]>, number> = { PRIMARY_COMMERCIAL: 1.2, PRODUCT_DESCRIPTION: 1.1, NAVIGATION: 1.05, SITEWIDE: 1, EDITORIAL: 0.75, TECHNICAL: 0.65 };
+const lunaProminenceMultiplier: Record<NonNullable<CandidateFinding["commercialProminence"]>, number> = { HIGH: 1.2, MEDIUM: 1, LOW: 0.75 };
 
 function inferredProminence(finding: CandidateFinding): NonNullable<CandidateFinding["prominence"]> {
   if (finding.prominence) return finding.prominence;
@@ -26,12 +27,14 @@ export function calculateHealthScore(findings: CandidateFinding[], assessmentCov
       const primary = [...themedFindings].sort((left, right) => severityRank[right.severity] - severityRank[left.severity] || right.confidence - left.confidence)[0];
       const occurrenceUrls = new Set(themedFindings.flatMap((finding) => finding.affectedUrls ?? [finding.url]));
       const base = deductions[primary.severity];
-      const prominence = Math.max(...themedFindings.map((finding) => prominenceMultiplier[inferredProminence(finding)]));
+      const prominence = Math.max(...themedFindings.map((finding) => finding.commercialProminence ? lunaProminenceMultiplier[finding.commercialProminence] : prominenceMultiplier[inferredProminence(finding)]));
       const confidence = Math.max(...themedFindings.map((finding) => finding.confidence));
       const confidenceMultiplier = 0.85 + Math.min(1, confidence) * 0.15;
-      const hasMitigation = themedFindings.some((finding) => (finding.mitigatingEvidence?.length ?? 0) > 0);
-      const mitigationMultiplier = hasMitigation && !theme.startsWith("CONTRADICTION:") ? 0.9 : 1;
-      const adjustedBase = Math.max(base ? 1 : 0, Math.round(base * prominence * confidenceMultiplier * mitigationMultiplier));
+      const mitigation = themedFindings.some((finding) => finding.mitigation === "MATERIAL") ? "MATERIAL" : themedFindings.some((finding) => finding.mitigation === "PARTIAL" || (finding.mitigatingEvidence?.length ?? 0) > 0) ? "PARTIAL" : "NONE";
+      const mitigationMultiplier = !theme.startsWith("CONTRADICTION:") ? mitigation === "MATERIAL" ? 0.85 : mitigation === "PARTIAL" ? 0.9 : 1 : 1;
+      const productAssociationMultiplier = themedFindings.some((finding) => finding.productAssociation === "DIRECT") ? 1.08 : themedFindings.every((finding) => finding.productAssociation === "EDITORIAL") ? 0.8 : 1;
+      const visualMultiplier = themedFindings.some((finding) => finding.visualSignificance === "MATERIAL") ? 1.05 : 1;
+      const adjustedBase = Math.max(base ? 1 : 0, Math.round(base * prominence * confidenceMultiplier * mitigationMultiplier * productAssociationMultiplier * visualMultiplier));
       return { ruleKey: theme, severity: primary.severity, points: adjustedBase, title: occurrenceUrls.size > 1 ? `${primary.title} (${occurrenceUrls.size} pages; one theme deduction)` : primary.title };
     });
     const observedScore = Math.max(0, 100 - deductionRows.reduce((sum, row) => sum + row.points, 0));

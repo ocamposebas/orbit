@@ -121,6 +121,11 @@ export interface CandidateFinding {
   evidenceRecordIds?: string[];
   adjudicationId?: string;
   scoreEligible?: boolean;
+  materiality?: "MATERIAL" | "NON_MATERIAL";
+  commercialProminence?: "HIGH" | "MEDIUM" | "LOW";
+  productAssociation?: "DIRECT" | "CATEGORY" | "EDITORIAL" | "NONE";
+  visualSignificance?: "MATERIAL" | "SUPPORTING" | "NONE";
+  mitigation?: "MATERIAL" | "PARTIAL" | "NONE";
 }
 
 export type ScoreComponentKey = "POLICY_COVERAGE" | "PRODUCT_INTEGRITY" | "RESEARCH_CONTROLS" | "MARKETING_RISK" | "SITE_CONTROLS" | "OPERATIONAL_CONSISTENCY";
