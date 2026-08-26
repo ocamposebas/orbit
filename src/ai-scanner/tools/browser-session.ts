@@ -540,9 +540,40 @@ export class LunaBrowserTools {
     const result = await this.openUrl(input);
     const page = this.requirePage();
     this.coverageState.checkoutStatesInspected.add(page.url());
-    const forms = await page.evaluate(() => [...document.forms].map((form) => ({ action: form.action, method: form.method, controls: [...form.elements].slice(0, 80).map((control) => ({ name: (control as HTMLInputElement).name || null, type: (control as HTMLInputElement).type || control.tagName, required: (control as HTMLInputElement).required || false })) })).slice(0, 20));
-    const evidence = await this.retainEvidence({ toolName: "inspect_checkout_read_only", kind: "CHECKOUT_STATE", sourceUrl: page.url(), surroundingDom: { forms }, metadata: { readOnly: true, noFormsSubmitted: true } });
-    return { ...result, evidenceIds: [...result.evidenceIds, evidence.id], data: { ...(result.data as object), forms, readOnly: true, noFormsSubmitted: true } };
+    const checkout = await page.evaluate(() => ({
+      visibleText: (document.body.innerText || "").replace(/\s+/g, " ").trim().slice(0, 30_000),
+      forms: [...document.forms].map((form) => ({
+        action: form.action,
+        method: form.method,
+        controls: [...form.elements].slice(0, 80).map((control) => {
+          const element = control as HTMLInputElement;
+          const explicitLabels = "labels" in element && element.labels
+            ? [...element.labels].map((label) => (label.innerText || label.textContent || "").replace(/\s+/g, " ").trim()).filter(Boolean)
+            : [];
+          const nearbyText = (element.closest("label, fieldset, section, div")?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 800);
+          return {
+            id: element.id || null,
+            name: element.name || null,
+            type: element.type || element.tagName.toLowerCase(),
+            required: element.required || element.getAttribute("aria-required") === "true",
+            checked: typeof element.checked === "boolean" ? element.checked : null,
+            disabled: element.disabled,
+            ariaLabel: element.getAttribute("aria-label"),
+            labels: explicitLabels,
+            nearbyText,
+          };
+        }),
+      })).slice(0, 20),
+    }));
+    const evidence = await this.retainEvidence({
+      toolName: "inspect_checkout_read_only",
+      kind: "CHECKOUT_STATE",
+      sourceUrl: page.url(),
+      exactText: checkout.visibleText,
+      surroundingDom: { forms: checkout.forms },
+      metadata: { readOnly: true, noFormsSubmitted: true },
+    });
+    return { ...result, evidenceIds: [...result.evidenceIds, evidence.id], data: { ...(result.data as object), ...checkout, readOnly: true, noFormsSubmitted: true, checkoutEvidenceId: evidence.id } };
   }
 
   private async inspectRegionWithLocator(locator: Locator, kind: EvidenceKind, toolName: string) {

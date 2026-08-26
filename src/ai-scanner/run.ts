@@ -76,6 +76,7 @@ export async function runAiScan(scanId: string, request?: typeof fetch) {
     return { status, coverage, usage, score };
   } catch (error) {
     const coverage = tools.coverage();
+    usage = coverage.tokenUsage;
     const incomplete = lunaStarted && !(error instanceof LunaUnavailableError);
     const status = incomplete ? "AI_SCAN_INCOMPLETE" as const : "AI_SCAN_FAILED" as const;
     const failureCode = incomplete ? "AI_SCAN_INCOMPLETE" as const : "AI_SCAN_FAILED" as const;

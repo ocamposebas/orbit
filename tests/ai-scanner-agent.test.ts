@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LunaQuotaError, LunaRateLimitError, parseRetryAfterMs, runLunaAudit, type LunaToolRuntime } from "@/ai-scanner/luna/agent";
+import { LunaAuditIncompleteError, LunaQuotaError, LunaRateLimitError, LunaUnavailableError, parseRetryAfterMs, runLunaAudit, type LunaToolRuntime } from "@/ai-scanner/luna/agent";
 import type { AuditCoverage, AuditUsage, ToolExecutionResult } from "@/ai-scanner/types";
 
 function modelResponse(body: unknown) { return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }); }
 function rateLimitResponse(body: unknown, headers: Record<string, string> = {}) { return new Response(JSON.stringify(body), { status: 429, headers: { "content-type": "application/json", ...headers } }); }
 
 class FakeTools implements LunaToolRuntime {
-  readonly budget = { maximumRuntimeMs: 60_000, maximumToolCalls: 20, maximumTokens: 100_000, maximumCostUsd: 10 };
   private calls: string[] = [];
   private usage: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
+  constructor(readonly budget = { maximumRuntimeMs: 60_000, maximumToolCalls: 20, maximumTokens: 100_000, maximumCostUsd: 10 }) {}
   setUsage(usage: AuditUsage) { this.usage = usage; }
   budgetExceeded() { return false; }
   coverage(): AuditCoverage { return { urlsDiscovered: ["https://merchant.example/", "https://merchant.example/products/a"], pagesOpened: ["https://merchant.example/", "https://merchant.example/products/a"], pagesVisuallyReviewed: ["https://merchant.example/", "https://merchant.example/products/a"], visualRegionsInspected: 3, imagesInspected: 1, categoriesInspected: ["Catalog"], productsDiscovered: 1, productsVerified: 1, documentsInspected: [], checkoutStatesInspected: [], totalLunaToolCalls: this.calls.length, auditRuntimeMs: 500, tokenUsage: this.usage }; }
@@ -40,6 +40,70 @@ describe("Luna-first audit loop", () => {
     expect(JSON.stringify(requests[0].input)).toContain("https://merchant.example/");
     expect(JSON.stringify(requests[0].input)).not.toContain("Material representation requires review");
     expect(JSON.stringify(requests[1].input)).toContain("input_image");
+    expect(String(requests[0].instructions)).toContain("canonical URL paths/slugs");
+    expect(String(requests[0].instructions)).toContain("syringes, needles");
+    expect(String(requests[0].instructions)).toContain("explicit, required age confirmation");
+    expect(String(requests[0].instructions)).toContain("terms, privacy, shipping/delivery, refund/returns");
+  });
+
+  it("reserves token headroom and forces a no-tools final audit before the global token ceiling", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const tools = new FakeTools({ maximumRuntimeMs: 300_000, maximumToolCalls: 20, maximumTokens: 120_000, maximumCostUsd: 10 });
+    const responses = [
+      modelResponse({ status: "completed", usage: { input_tokens: 50_000, output_tokens: 10_000 }, output: [{ type: "function_call", call_id: "call-1", name: "open_url", arguments: JSON.stringify({ url: "https://merchant.example/" }) }] }),
+      modelResponse({ status: "completed", usage: { input_tokens: 52_000, output_tokens: 1_000 }, output_text: JSON.stringify({ summary: "Finalized before exhausting the cumulative token budget.", observations: [{ text: "Retained page evidence was assessed.", evidenceIds: ["evidence-1"] }], findings: [], limitations: ["Further surfaces were not inspected because finalization headroom was reserved."] }) }),
+    ];
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return responses.shift()!;
+    });
+
+    const result = await runLunaAudit({
+      scanId: "scan-finalization-reserve",
+      merchantId: "merchant-1",
+      merchantName: "Merchant",
+      merchantUrl: "https://merchant.example/",
+      tools,
+      request: request as typeof fetch,
+    });
+
+    expect(result.result.summary).toContain("Finalized");
+    expect(tools.executedCalls()).toEqual(["open_url"]);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(requests[1].tool_choice).toBe("none");
+    expect(requests[1].tools).toEqual([]);
+    expect(requests[1].max_output_tokens).toBe(32_000);
+    expect(JSON.stringify(requests[1].input)).toContain("Investigation is now closed");
+    expect(JSON.stringify(requests[1].input)).toContain("evidence-1");
+  });
+
+  it("recovers an output-token-truncated turn by finalizing from completed evidence", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const tools = new FakeTools();
+    const responses = [
+      modelResponse({ status: "completed", usage: { input_tokens: 100, output_tokens: 20 }, output: [{ type: "function_call", call_id: "call-1", name: "open_url", arguments: JSON.stringify({ url: "https://merchant.example/" }) }] }),
+      modelResponse({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: { input_tokens: 200, output_tokens: 16_000 }, output: [] }),
+      modelResponse({ status: "completed", usage: { input_tokens: 220, output_tokens: 500 }, output_text: JSON.stringify({ summary: "Recovered structured audit.", observations: [{ text: "The completed browser evidence was retained.", evidenceIds: ["evidence-1"] }], findings: [], limitations: [] }) }),
+    ];
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return responses.shift()!;
+    });
+
+    const result = await runLunaAudit({
+      scanId: "scan-output-recovery",
+      merchantId: "merchant-1",
+      merchantName: "Merchant",
+      merchantUrl: "https://merchant.example/",
+      tools,
+      request: request as typeof fetch,
+    });
+
+    expect(result.result.summary).toBe("Recovered structured audit.");
+    expect(tools.executedCalls()).toEqual(["open_url"]);
+    expect(requests[2].tool_choice).toBe("none");
+    expect(requests[2].tools).toEqual([]);
+    expect(JSON.stringify(requests[2].input)).toContain("evidence-1");
   });
 
   it("retries only a TPM-throttled Luna turn, respects Retry-After, and preserves completed tool work", async () => {
@@ -137,12 +201,15 @@ describe("Luna-first audit loop", () => {
       random: () => 0,
     });
 
-    await expect(attempt).rejects.toMatchObject({
+    const error = await attempt.catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
       name: "LunaRateLimitError",
       kind: "TOKENS_PER_MINUTE",
       retries: 5,
     });
-    await expect(attempt).rejects.toBeInstanceOf(LunaRateLimitError);
+    expect(error).toBeInstanceOf(LunaRateLimitError);
+    expect(error).toBeInstanceOf(LunaAuditIncompleteError);
+    expect(error).not.toBeInstanceOf(LunaUnavailableError);
     expect(request).toHaveBeenCalledTimes(6);
   });
 

@@ -64,18 +64,20 @@ export const lunaAuditJsonSchema = {
     summary: { type: "string" },
     observations: {
       type: "array",
+      maxItems: 100,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["text", "evidenceIds"],
         properties: {
           text: { type: "string" },
-          evidenceIds: { type: "array", items: { type: "string" } },
+          evidenceIds: { type: "array", minItems: 1, maxItems: 30, items: { type: "string" } },
         },
       },
     },
     findings: {
       type: "array",
+      maxItems: 100,
       items: {
         type: "object",
         additionalProperties: false,
@@ -100,15 +102,15 @@ export const lunaAuditJsonSchema = {
           affectedProduct: { type: ["string", "null"] },
           affectedCategory: { type: ["string", "null"] },
           verifiedSku: { type: ["string", "null"] },
-          adverseEvidence: { type: "array", items: { $ref: "#/$defs/evidenceReference" } },
-          mitigatingEvidence: { type: "array", items: { $ref: "#/$defs/evidenceReference" } },
-          neutralEvidence: { type: "array", items: { $ref: "#/$defs/evidenceReference" } },
-          screenshotEvidenceIds: { type: "array", items: { type: "string" } },
+          adverseEvidence: { type: "array", minItems: 1, maxItems: 40, items: { $ref: "#/$defs/evidenceReference" } },
+          mitigatingEvidence: { type: "array", maxItems: 40, items: { $ref: "#/$defs/evidenceReference" } },
+          neutralEvidence: { type: "array", maxItems: 40, items: { $ref: "#/$defs/evidenceReference" } },
+          screenshotEvidenceIds: { type: "array", maxItems: 20, items: { type: "string" } },
           remediation: { type: "string" },
         },
       },
     },
-    limitations: { type: "array", items: { type: "string" } },
+    limitations: { type: "array", maxItems: 100, items: { type: "string" } },
   },
   $defs: {
     evidenceReference: {

@@ -73,13 +73,15 @@ Open `http://localhost:3000/sentinel`. The seeded workspace uses an intentionall
 | `AI_SCANNER_MAX_TOKENS` | Global cumulative token budget |
 | `AI_SCANNER_MAX_COST_USD` | Global approximate monetary budget |
 | `AI_SCANNER_MAX_OUTPUT_TOKENS` | Maximum output for one Luna turn |
+| `AI_SCANNER_FINALIZATION_MAX_OUTPUT_TOKENS` | Output allowance for the final strict structured audit |
+| `AI_SCANNER_FINALIZATION_TOKEN_RESERVE` | Cumulative token headroom reserved before Luna is forced to finalize |
 | `AI_SCANNER_MAX_EVIDENCE_BYTES` | Maximum retained API/PDF/image payload |
 | `AI_SCANNER_INPUT_COST_PER_MILLION` | Configurable approximate input-token rate |
 | `AI_SCANNER_OUTPUT_COST_PER_MILLION` | Configurable approximate output-token rate |
 | `AI_SCANNER_BROWSER_HEADLESS` | Playwright headless mode |
 | `SCREENSHOT_STORAGE` | Evidence storage root |
 
-Global budgets are stop conditions, never coverage targets. Reports list actual URLs discovered/opened, visually reviewed pages, visual regions, images, categories, products discovered/verified, documents, checkout states, tool calls, runtime, tokens, and approximate cost. They do not report 100% because a limit was reached.
+Global budgets are stop conditions, never coverage targets. Before the token, tool, runtime, or cost ceiling is reached, the scanner reserves enough headroom and forces a no-more-tools finalization turn so completed evidence becomes a strict structured audit instead of being discarded at the limit. Reports list actual URLs discovered/opened, visually reviewed pages, visual regions, images, categories, products discovered/verified, documents, checkout states, tool calls, runtime, tokens, and approximate cost. They do not report 100% because a limit was reached.
 
 Temporary OpenAI request or token-per-minute throttles retry only the failed Responses request. `Retry-After` is treated as a minimum; otherwise the scanner uses capped exponential backoff with jitter. Completed browser calls and retained evidence stay in the current Luna conversation. Credit, billing, spend-limit, and usage-quota errors are terminal and are not retried.
 

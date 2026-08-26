@@ -137,6 +137,8 @@ describe("AI Scanner report", () => {
     expect(html).toContain("Revise the cited composition on the affected product page.");
     expect(html).toContain("Authenticated account areas were not available.");
     expect(html).toContain("https://merchant.example/privacy");
+    expect(html).toContain("LINK OBSERVED");
+    expect(html).toContain("Research / acceptable use");
     expect(mocks.pdf).toHaveBeenCalledWith(expect.objectContaining({
       displayHeaderFooter: true,
       footerTemplate: expect.stringContaining("pageNumber"),
