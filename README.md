@@ -64,6 +64,10 @@ Open `http://localhost:3000/sentinel`. The seeded workspace uses an intentionall
 | `OPENAI_API_KEY` | Server-only Responses API credential |
 | `OPENAI_BASE_URL` | Responses API base URL |
 | `AI_SCANNER_REQUEST_TIMEOUT_MS` | Timeout for one Luna/critic request |
+| `AI_SCANNER_OPENAI_MAX_RETRIES` | Maximum temporary 429 retries for the same Luna request |
+| `AI_SCANNER_OPENAI_RETRY_BASE_MS` | Initial exponential-backoff delay when `Retry-After` is absent |
+| `AI_SCANNER_OPENAI_RETRY_MAX_MS` | Maximum fallback backoff delay before jitter |
+| `AI_SCANNER_OPENAI_RETRY_TOTAL_MS` | Maximum cumulative temporary rate-limit cooldown for one Luna request |
 | `AI_SCANNER_MAX_RUNTIME_MS` | Global audit runtime budget |
 | `AI_SCANNER_MAX_TOOL_CALLS` | Global Luna browser/tool budget |
 | `AI_SCANNER_MAX_TOKENS` | Global cumulative token budget |
@@ -76,6 +80,8 @@ Open `http://localhost:3000/sentinel`. The seeded workspace uses an intentionall
 | `SCREENSHOT_STORAGE` | Evidence storage root |
 
 Global budgets are stop conditions, never coverage targets. Reports list actual URLs discovered/opened, visually reviewed pages, visual regions, images, categories, products discovered/verified, documents, checkout states, tool calls, runtime, tokens, and approximate cost. They do not report 100% because a limit was reached.
+
+Temporary OpenAI request or token-per-minute throttles retry only the failed Responses request. `Retry-After` is treated as a minimum; otherwise the scanner uses capped exponential backoff with jitter. Completed browser calls and retained evidence stay in the current Luna conversation. Credit, billing, spend-limit, and usage-quota errors are terminal and are not retried.
 
 Shared ORBIT configuration also includes `DATABASE_URL`, `REDIS_URL`, `APP_URL`, `INTERNAL_JOB_SECRET`, `ORBIT_SECRET_ENCRYPTION_KEY`, session/seed variables, and Stripe variables documented in `.env.example`.
 

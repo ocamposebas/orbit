@@ -24,12 +24,32 @@ type ModelResponse = {
   error?: { message?: string; code?: string; type?: string };
 };
 
+export type OpenAiLimitKind = "TOKENS_PER_MINUTE" | "REQUESTS_PER_MINUTE" | "TEMPORARY_RATE_LIMIT" | "QUOTA_OR_BILLING";
+
+type RateLimitClassification =
+  | { kind: "QUOTA_OR_BILLING"; retryable: false; code: string | null }
+  | { kind: Exclude<OpenAiLimitKind, "QUOTA_OR_BILLING">; retryable: true; code: string | null };
+
 export class LunaUnavailableError extends Error {
   constructor(message: string) { super(message); this.name = "LunaUnavailableError"; }
 }
 
 export class LunaAuditIncompleteError extends Error {
   constructor(message: string, readonly result?: LunaAuditResult) { super(message); this.name = "LunaAuditIncompleteError"; }
+}
+
+export class LunaRateLimitError extends LunaAuditIncompleteError {
+  constructor(message: string, readonly kind: Exclude<OpenAiLimitKind, "QUOTA_OR_BILLING">, readonly retries: number) {
+    super(message);
+    this.name = "LunaRateLimitError";
+  }
+}
+
+export class LunaQuotaError extends LunaUnavailableError {
+  constructor(message: string, readonly code: string | null) {
+    super(message);
+    this.name = "LunaQuotaError";
+  }
 }
 
 export interface LunaToolRuntime {
@@ -62,30 +82,150 @@ function responseText(response: ModelResponse) {
   return (response.output ?? []).flatMap((item) => item.content ?? []).filter((item) => item.type === "output_text" && typeof item.text === "string").map((item) => item.text).join("").trim();
 }
 
-async function requestResponse(body: Record<string, unknown>, request = fetch): Promise<ModelResponse> {
+const quotaOrBillingCodes = new Set([
+  "billing_hard_limit_reached",
+  "billing_not_active",
+  "credit_balance_exhausted",
+  "insufficient_quota",
+  "organization_spend_limit_exceeded",
+  "organization_usage_limit_exceeded",
+  "project_spend_limit_exceeded",
+  "quota_exceeded",
+]);
+
+export function classifyOpenAi429(response: ModelResponse, headers: Headers): RateLimitClassification {
+  const code = typeof response.error?.code === "string" ? response.error.code.toLowerCase() : null;
+  const type = typeof response.error?.type === "string" ? response.error.type.toLowerCase() : "";
+  const message = typeof response.error?.message === "string" ? response.error.message.toLowerCase() : "";
+  const quotaOrBilling = Boolean(code && quotaOrBillingCodes.has(code))
+    || (type === "insufficient_quota" && code !== "rate_limit_exceeded")
+    || /(?:credit balance|billing|spend limit|usage limit|quota exhausted|quota exceeded)/.test(message);
+  if (quotaOrBilling) return { kind: "QUOTA_OR_BILLING", retryable: false, code };
+
+  const tokenHeadersExhausted = ["x-ratelimit-remaining-tokens", "x-ratelimit-remaining-project-tokens"]
+    .some((name) => headers.get(name)?.trim() === "0");
+  if (tokenHeadersExhausted || /tokens? per min|tokens?_per_min|\btpm\b/.test(message)) {
+    return { kind: "TOKENS_PER_MINUTE", retryable: true, code };
+  }
+  if (headers.get("x-ratelimit-remaining-requests")?.trim() === "0" || /requests? per min|requests?_per_min|\brpm\b/.test(message)) {
+    return { kind: "REQUESTS_PER_MINUTE", retryable: true, code };
+  }
+  return { kind: "TEMPORARY_RATE_LIMIT", retryable: true, code };
+}
+
+export function parseRetryAfterMs(value: string | null, now = Date.now()) {
+  if (!value?.trim()) return null;
+  const seconds = Number(value.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+function retryWaitMs(input: {
+  retryNumber: number;
+  retryAfter: string | null;
+  baseMs: number;
+  maximumMs: number;
+  random: () => number;
+}) {
+  const retryAfterMs = parseRetryAfterMs(input.retryAfter);
+  const base = retryAfterMs ?? Math.min(input.maximumMs, input.baseMs * (2 ** Math.max(0, input.retryNumber - 1)));
+  const jitterWindow = retryAfterMs === null
+    ? Math.min(1_000, Math.max(1, Math.round(base * 0.25)))
+    : Math.min(1_000, Math.max(100, Math.round(base * 0.05)));
+  return Math.ceil(base + Math.max(0, Math.min(1, input.random())) * jitterWindow);
+}
+
+async function requestResponse(body: Record<string, unknown>, options: {
+  scanId: string;
+  request?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
+  canWait?: (milliseconds: number) => boolean;
+}): Promise<ModelResponse> {
   const env = getServerEnv();
   if (!env.OPENAI_API_KEY) throw new LunaUnavailableError("OPENAI_API_KEY is not configured");
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  const request = options.request ?? fetch;
+  const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const random = options.random ?? Math.random;
+  const serializedBody = JSON.stringify(body);
+  let transientRetries = 0;
+  let rateLimitRetries = 0;
+  let rateLimitWaitMs = 0;
+
+  while (true) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), env.AI_SCANNER_REQUEST_TIMEOUT_MS);
+    let response: Response;
+    let raw: ModelResponse;
     try {
-      const response = await request(`${env.OPENAI_BASE_URL.replace(/\/$/, "")}/responses`, {
+      response = await request(`${env.OPENAI_BASE_URL.replace(/\/$/, "")}/responses`, {
         method: "POST",
         signal: controller.signal,
         headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: serializedBody,
       });
-      const raw = await response.json() as ModelResponse;
-      if (!response.ok) throw new Error(raw.error?.message || `Responses API returned HTTP ${response.status}`);
-      return raw;
+      raw = await response.json().catch(() => ({})) as ModelResponse;
     } catch (error) {
-      lastError = error;
-      if (attempt === 3) break;
-      logger.warn({ attempt, error: serializeErrorForLog(error) }, "Luna audit turn failed; retrying the failed turn");
+      transientRetries++;
+      if (transientRetries >= 3) {
+        throw new LunaUnavailableError(error instanceof Error ? sanitizeLogText(error.message) : "Luna Responses API request failed");
+      }
+      logger.warn({ scanId: options.scanId, retryCount: transientRetries, maxRetries: 2, error: serializeErrorForLog(error) }, "Luna request transport failed; retrying the same request");
+      continue;
     } finally { clearTimeout(timer); }
+
+    if (response.ok) return raw;
+
+    if (response.status === 429) {
+      const classification = classifyOpenAi429(raw, response.headers);
+      const requestId = sanitizeLogText(response.headers.get("x-request-id") ?? "not-provided", 160);
+      if (!classification.retryable) {
+        logger.error({ scanId: options.scanId, rateLimitKind: classification.kind, errorCode: classification.code, requestId }, "OpenAI quota or billing limit requires operator action");
+        throw new LunaQuotaError(`OpenAI quota or billing access is unavailable${classification.code ? ` (${classification.code})` : ""}`, classification.code);
+      }
+      if (rateLimitRetries >= env.AI_SCANNER_OPENAI_MAX_RETRIES) {
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} remained active after ${rateLimitRetries} retries`, classification.kind, rateLimitRetries);
+      }
+
+      const retryNumber = rateLimitRetries + 1;
+      const waitMs = retryWaitMs({
+        retryNumber,
+        retryAfter: response.headers.get("retry-after"),
+        baseMs: env.AI_SCANNER_OPENAI_RETRY_BASE_MS,
+        maximumMs: env.AI_SCANNER_OPENAI_RETRY_MAX_MS,
+        random,
+      });
+      const withinRetryBudget = rateLimitWaitMs + waitMs <= env.AI_SCANNER_OPENAI_RETRY_TOTAL_MS;
+      if (!withinRetryBudget || (options.canWait && !options.canWait(waitMs))) {
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exceeded the remaining retry or audit budget`, classification.kind, rateLimitRetries);
+      }
+
+      rateLimitRetries = retryNumber;
+      logger.warn({
+        scanId: options.scanId,
+        retryCount: rateLimitRetries,
+        maxRetries: env.AI_SCANNER_OPENAI_MAX_RETRIES,
+        waitMs,
+        rateLimitKind: classification.kind,
+        retryAfterPresent: response.headers.has("retry-after"),
+        requestId,
+      }, "OpenAI temporary rate limit; retrying the same Luna request after cooldown");
+      await sleep(waitMs);
+      rateLimitWaitMs += waitMs;
+      if (options.canWait && !options.canWait(0)) {
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exhausted the remaining audit budget`, classification.kind, rateLimitRetries);
+      }
+      continue;
+    }
+
+    if (response.status >= 500 && transientRetries < 2) {
+      transientRetries++;
+      logger.warn({ scanId: options.scanId, retryCount: transientRetries, maxRetries: 2, httpStatus: response.status }, "Luna request received a transient server error; retrying the same request");
+      continue;
+    }
+    throw new LunaUnavailableError(sanitizeLogText(raw.error?.message || `Responses API returned HTTP ${response.status}`));
   }
-  throw new LunaUnavailableError(lastError instanceof Error ? lastError.message : "Luna Responses API request failed");
 }
 
 export async function runLunaAudit(input: {
@@ -95,6 +235,8 @@ export async function runLunaAudit(input: {
   merchantUrl: string;
   tools: LunaToolRuntime;
   request?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  random?: () => number;
 }): Promise<{ result: LunaAuditResult; usage: AuditUsage }> {
   const env = getServerEnv();
   const usage: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
@@ -128,7 +270,16 @@ export async function runLunaAudit(input: {
       parallel_tool_calls: false,
       text: { format: { type: "json_schema", name: "orbit_ai_scanner_audit", strict: true, schema: lunaAuditJsonSchema } },
       input: conversation,
-    }, input.request);
+    }, {
+      scanId: input.scanId,
+      request: input.request,
+      sleep: input.sleep,
+      random: input.random,
+      canWait: (milliseconds) => {
+        const coverage = input.tools.coverage();
+        return !input.tools.budgetExceeded() && coverage.auditRuntimeMs + milliseconds <= input.tools.budget.maximumRuntimeMs;
+      },
+    });
     updateUsage(response);
     if (response.status && !new Set(["completed", "in_progress"]).has(response.status)) {
       throw new LunaAuditIncompleteError(`Luna response ended with status ${response.status}: ${response.incomplete_details?.reason ?? "unknown reason"}`);

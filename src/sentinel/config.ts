@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const int = (fallback: number) => z.coerce.number().int().positive().default(fallback);
+const nonNegativeInt = (fallback: number) => z.coerce.number().int().min(0).default(fallback);
 const nonNegative = (fallback: number) => z.coerce.number().min(0).default(fallback);
 const optionalNonEmpty = z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().trim().min(1).optional());
 
@@ -14,6 +15,10 @@ const serverEnvSchema = z.object({
   OPENAI_API_KEY: optionalNonEmpty,
   OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   AI_SCANNER_REQUEST_TIMEOUT_MS: int(60_000),
+  AI_SCANNER_OPENAI_MAX_RETRIES: nonNegativeInt(5),
+  AI_SCANNER_OPENAI_RETRY_BASE_MS: int(1_000),
+  AI_SCANNER_OPENAI_RETRY_MAX_MS: int(60_000),
+  AI_SCANNER_OPENAI_RETRY_TOTAL_MS: int(300_000),
   AI_SCANNER_MAX_RUNTIME_MS: int(900_000),
   AI_SCANNER_MAX_TOOL_CALLS: int(120),
   AI_SCANNER_MAX_TOKENS: int(500_000),

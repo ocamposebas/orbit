@@ -18,6 +18,7 @@
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "worker:ai-scanner": "tsx src/workers/ai-scanner.ts",
+    "sample:ai-scanner-report": "tsx scripts/generate-ai-scanner-report-sample.ts",
     "workers": "tsx src/workers/all.ts",
     "postinstall": "prisma generate"
   },
