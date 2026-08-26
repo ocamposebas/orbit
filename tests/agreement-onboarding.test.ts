@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agreementDocumentHtml, MONTHLY_SERVICE_FEE_USD, PLATFORM_SERVICE_FEE_PERCENT, safeContractFilename, sha256 } from "@/contracts/document";
+import { agreementDocumentHtml, MONTHLY_SERVICE_FEE_USD, PLATFORM_SERVICE_FEE_PERCENT, safeContractFilename, sha256, STANDARD_STRIPE_PROCESSING_FEE_PERCENT, TOTAL_TRANSFER_FEE_PERCENT } from "@/contracts/document";
 import { AGREEMENT_TERMS_VERSION, agreementAdminState, createInvitationCredentials, hashInvitationToken, publicAgreementState } from "@/contracts/service";
 import { merchantAgreementIntakeSchema, SIGNED_CONTRACT_MAX_BYTES } from "@/contracts/schema";
 
@@ -123,11 +123,15 @@ describe("contractual onboarding", () => {
     expect(html).toContain("does not perform KYC/KYB");
     expect(html).toContain("are not certifications");
     expect(html).toContain("USD $350.00 per month");
-    expect(html).toContain("3.0% of Gross Transaction Value");
+    expect(html).toContain("5.9% of Gross Transaction Value");
+    expect(html).toContain("3.0% ORBIT Platform Service Fee");
+    expect(html).toContain("2.9% standard Stripe processing fee");
     expect(html).toContain("data:image/png;base64,");
     expect(html).toContain('lang="en"');
     expect(MONTHLY_SERVICE_FEE_USD).toBe(350);
     expect(PLATFORM_SERVICE_FEE_PERCENT).toBe(3);
+    expect(STANDARD_STRIPE_PROCESSING_FEE_PERCENT).toBe(2.9);
+    expect(TOTAL_TRANSFER_FEE_PERCENT).toBe(5.9);
   });
 
   it("provides deterministic integrity helpers and safe filenames", () => {

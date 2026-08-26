@@ -85,6 +85,8 @@ Global budgets are stop conditions, never coverage targets. Before the token, to
 
 Temporary OpenAI request or token-per-minute throttles retry only the failed Responses request. `Retry-After` is treated as a minimum; otherwise the scanner uses capped exponential backoff with jitter. Completed browser calls and retained evidence stay in the current Luna conversation. Credit, billing, spend-limit, and usage-quota errors are terminal and are not retried.
 
+Initial browser navigation also has bounded recovery. AI Scanner tries the registered URL and safe first-party `www`/protocol equivalents, treats a slow `DOMContentLoaded` event as non-fatal after the document commits, and preserves completed HTML/text evidence when a viewport capture fails. Luna cannot finalize an otherwise healthy-budget audit immediately after one failed open; it must perform a bounded retry and continue without repeating completed evidence work.
+
 Shared ORBIT configuration also includes `DATABASE_URL`, `REDIS_URL`, `APP_URL`, `INTERNAL_JOB_SECRET`, `ORBIT_SECRET_ENCRYPTION_KEY`, session/seed variables, and Stripe variables documented in `.env.example`.
 
 ## API and scheduling

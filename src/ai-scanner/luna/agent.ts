@@ -293,6 +293,8 @@ export async function runLunaAudit(input: {
   let forceFinalization: string | null = null;
   let finalizationNoticeAdded = false;
   let finalizationAttempts = 0;
+  let investigationRecoveryPrompts = 0;
+  let forceOpenRecovery = false;
   while (true) {
     const pressure = firstTurn ? null : forceFinalization ?? finalizationPressure();
     const finalizing = pressure !== null;
@@ -318,7 +320,7 @@ export async function runLunaAudit(input: {
       max_output_tokens: finalizing ? env.AI_SCANNER_FINALIZATION_MAX_OUTPUT_TOKENS : env.AI_SCANNER_MAX_OUTPUT_TOKENS,
       instructions: systemPrompt,
       tools: finalizing ? [] : aiScannerToolDefinitions,
-      tool_choice: finalizing ? "none" : firstTurn ? { type: "function", name: "open_url" } : "auto",
+      tool_choice: finalizing ? "none" : firstTurn || forceOpenRecovery ? { type: "function", name: "open_url" } : "auto",
       parallel_tool_calls: false,
       text: { format: { type: "json_schema", name: "orbit_ai_scanner_audit", strict: true, schema: lunaAuditJsonSchema } },
       input: conversation,
@@ -332,6 +334,7 @@ export async function runLunaAudit(input: {
         return !input.tools.budgetExceeded() && coverage.auditRuntimeMs + milliseconds <= input.tools.budget.maximumRuntimeMs;
       },
     });
+    forceOpenRecovery = false;
     updateUsage(response);
     if (response.status && !new Set(["completed", "in_progress"]).has(response.status)) {
       if (response.incomplete_details?.reason === "max_output_tokens" && !firstTurn && finalizationAttempts < 2) {
@@ -345,6 +348,28 @@ export async function runLunaAudit(input: {
     const toolCalls = calls(response);
     if (finalizing && toolCalls.length) throw new LunaAuditIncompleteError("Luna requested a tool after the investigation was closed for structured finalization");
     if (!toolCalls.length) {
+      const coverage = input.tools.coverage();
+      const additionalToolCalls = Math.max(0, 3 - coverage.totalLunaToolCalls);
+      const missingCoverage = [
+        coverage.pagesOpened.length === 0 ? "an opened first-party page" : null,
+        coverage.pagesVisuallyReviewed.length === 0 ? "rendered-pixel evidence" : null,
+        coverage.visualRegionsInspected === 0 ? "a retained visual region" : null,
+        additionalToolCalls > 0 ? `${additionalToolCalls} additional substantive tool call${additionalToolCalls === 1 ? "" : "s"}` : null,
+      ].filter((item): item is string => item !== null);
+      if (!finalizing && coverage.totalLunaToolCalls > 0 && missingCoverage.length && investigationRecoveryPrompts < 2 && !input.tools.budgetExceeded()) {
+        investigationRecoveryPrompts++;
+        forceOpenRecovery = coverage.pagesOpened.length === 0;
+        conversation.push({
+          role: "user",
+          content: [{
+            type: "input_text",
+            text: `Do not finalize yet. The attempted audit still lacks ${missingCoverage.join(", ")}. ${forceOpenRecovery ? `Retry open_url for the registered merchant URL ${input.merchantUrl}; the browser will safely try equivalent first-party endpoints and retain partial page evidence if a screenshot fails.` : "Continue the read-only rendered-page investigation with the most relevant evidence tools."} Do not repeat completed work, and do not claim that the merchant URL is unavailable unless the bounded recovery also fails.`,
+          }],
+        });
+        logger.warn({ scanId: input.scanId, recoveryPrompt: investigationRecoveryPrompts, forceOpenRecovery, missingCoverage, counters: coverage }, "Luna attempted to finalize before minimum investigation; requiring bounded recovery");
+        firstTurn = false;
+        continue;
+      }
       const output = responseText(response);
       if (!output) throw new LunaAuditIncompleteError("Luna ended the audit without structured output");
       let parsed: unknown;

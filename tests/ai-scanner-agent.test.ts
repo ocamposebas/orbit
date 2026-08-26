@@ -17,6 +17,41 @@ class FakeTools implements LunaToolRuntime {
   executedCalls() { return [...this.calls]; }
 }
 
+class RecoveringTools implements LunaToolRuntime {
+  readonly budget = { maximumRuntimeMs: 60_000, maximumToolCalls: 20, maximumTokens: 100_000, maximumCostUsd: 10 };
+  private calls: string[] = [];
+  private opened = false;
+  private usage: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
+  setUsage(usage: AuditUsage) { this.usage = usage; }
+  budgetExceeded() { return false; }
+  coverage(): AuditCoverage {
+    return {
+      urlsDiscovered: this.opened ? ["https://merchant.example/"] : [],
+      pagesOpened: this.opened ? ["https://merchant.example/"] : [],
+      pagesVisuallyReviewed: this.opened ? ["https://merchant.example/"] : [],
+      visualRegionsInspected: this.opened ? 1 : 0,
+      imagesInspected: 0,
+      categoriesInspected: [],
+      productsDiscovered: 0,
+      productsVerified: 0,
+      documentsInspected: [],
+      checkoutStatesInspected: [],
+      totalLunaToolCalls: this.calls.length,
+      auditRuntimeMs: 500,
+      tokenUsage: this.usage,
+    };
+  }
+  async execute(_callId: string, name: string): Promise<ToolExecutionResult> {
+    this.calls.push(name);
+    if (this.calls.length === 1) return { ok: false, evidenceIds: [], error: "Transient browser navigation failure" };
+    this.opened = true;
+    const id = `recovered-evidence-${this.calls.length}`;
+    return { ok: true, evidenceIds: [id], imageEvidenceIds: [id], data: { url: "https://merchant.example/" } };
+  }
+  async imageInputs(evidenceIds: string[]) { return evidenceIds.map((evidenceId) => ({ evidenceId, mimeType: "image/jpeg", dataUrl: "data:image/jpeg;base64,AA==" })); }
+  executedCalls() { return [...this.calls]; }
+}
+
 describe("Luna-first audit loop", () => {
   beforeEach(() => {
     process.env.OPENAI_API_KEY = "test-key-not-secret";
@@ -44,6 +79,31 @@ describe("Luna-first audit loop", () => {
     expect(String(requests[0].instructions)).toContain("syringes, needles");
     expect(String(requests[0].instructions)).toContain("explicit, required age confirmation");
     expect(String(requests[0].instructions)).toContain("terms, privacy, shipping/delivery, refund/returns");
+  });
+
+  it("requires bounded recovery when Luna tries to finalize after a failed initial page open", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const tools = new RecoveringTools();
+    const responses = [
+      modelResponse({ status: "completed", output: [{ type: "function_call", call_id: "call-1", name: "open_url", arguments: JSON.stringify({ url: "https://merchant.example/" }) }] }),
+      modelResponse({ status: "completed", output_text: JSON.stringify({ summary: "The URL could not be opened.", observations: [], findings: [], limitations: ["No page evidence was available."] }) }),
+      modelResponse({ status: "completed", output: [{ type: "function_call", call_id: "call-2", name: "open_url", arguments: JSON.stringify({ url: "https://merchant.example/" }) }] }),
+      modelResponse({ status: "completed", output_text: JSON.stringify({ summary: "The page was opened after bounded recovery.", observations: [{ text: "Recovered rendered merchant evidence.", evidenceIds: ["recovered-evidence-2"] }], findings: [], limitations: [] }) }),
+      modelResponse({ status: "completed", output: [{ type: "function_call", call_id: "call-3", name: "inspect_navigation", arguments: "{}" }] }),
+      modelResponse({ status: "completed", output_text: JSON.stringify({ summary: "Recovered and completed the minimum investigation.", observations: [{ text: "Recovered rendered merchant evidence.", evidenceIds: ["recovered-evidence-2", "recovered-evidence-3"] }], findings: [], limitations: [] }) }),
+    ];
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return responses.shift()!;
+    });
+
+    const result = await runLunaAudit({ scanId: "scan-browser-recovery", merchantId: "merchant-1", merchantName: "Merchant", merchantUrl: "https://merchant.example/", tools, request: request as typeof fetch });
+
+    expect(result.result.summary).toContain("Recovered and completed");
+    expect(tools.executedCalls()).toEqual(["open_url", "open_url", "inspect_navigation"]);
+    expect(requests[2].tool_choice).toEqual({ type: "function", name: "open_url" });
+    expect(JSON.stringify(requests[2].input)).toContain("Do not finalize yet");
+    expect(JSON.stringify(requests[2].input)).toContain("Transient browser navigation failure");
   });
 
   it("reserves token headroom and forces a no-tools final audit before the global token ceiling", async () => {

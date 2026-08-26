@@ -47,6 +47,24 @@ const EMPTY_USAGE: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens
 const textLimit = (value: string, maximum = 50_000) => value.length > maximum ? `${value.slice(0, maximum)}…[truncated]` : value;
 const json = (value: unknown) => value as Prisma.InputJsonValue;
 
+export function safeNavigationCandidates(input: string) {
+  const requested = normalizePublicUrl(input);
+  const counterpartHost = requested.hostname.startsWith("www.") ? requested.hostname.slice(4) : `www.${requested.hostname}`;
+  const protocols: Array<"http:" | "https:"> = requested.protocol === "https:" ? ["https:", "http:"] : ["http:", "https:"];
+  const candidates: string[] = [];
+  for (const protocol of protocols) {
+    for (const hostname of [requested.hostname, counterpartHost]) {
+      const candidate = new URL(requested);
+      candidate.protocol = protocol;
+      candidate.hostname = hostname;
+      if ((protocol === "https:" && candidate.port === "80") || (protocol === "http:" && candidate.port === "443")) candidate.port = "";
+      const normalized = candidate.toString();
+      if (!candidates.includes(normalized)) candidates.push(normalized);
+    }
+  }
+  return candidates;
+}
+
 export class LunaBrowserTools {
   private browser?: Browser;
   private context?: BrowserContext;
@@ -225,35 +243,72 @@ export class LunaBrowserTools {
 
   private async openUrl(input: string) {
     const page = this.requirePage();
-    const target = await this.firstPartyUrl(input);
-    await page.goto(target.toString(), { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(350);
-    const finalUrl = await this.firstPartyUrl(page.url());
+    const attempts: Array<{ url: string; error: string }> = [];
+    let finalUrl: URL | undefined;
+    let requestedUrl: URL | undefined;
+    let httpStatus: number | undefined;
+    for (const candidate of safeNavigationCandidates(input)) {
+      const label = this.navigationLabel(candidate);
+      try {
+        requestedUrl = await this.firstPartyUrl(candidate);
+        const response = await page.goto(requestedUrl.toString(), { waitUntil: "commit" });
+        await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => undefined);
+        await page.waitForTimeout(500);
+        finalUrl = await this.firstPartyUrl(page.url());
+        httpStatus = response?.status();
+        break;
+      } catch (error) {
+        const rawMessage = error instanceof Error ? error.message : "Navigation failed";
+        const message = sanitizeLogText(rawMessage.replaceAll(candidate, label), 240);
+        attempts.push({ url: label, error: message });
+        logger.warn({ scanId: this.scanId, url: label, attempt: attempts.length, error: message }, "Luna browser navigation failed; trying a safe first-party equivalent");
+      }
+    }
+    if (!finalUrl || !requestedUrl) {
+      const detail = attempts.map((attempt) => `${attempt.url}: ${attempt.error}`).join("; ");
+      throw new Error(`Merchant page could not be opened after ${attempts.length} safe first-party attempts${detail ? ` (${textLimit(detail, 900)})` : ""}`);
+    }
     this.coverageState.pagesOpened.add(finalUrl.toString());
     this.coverageState.urlsDiscovered.add(finalUrl.toString());
     const snapshot = await this.pageSnapshot(true);
-    return { ...snapshot, data: { ...(snapshot.data as object), navigationUrl: finalUrl.toString() } };
+    return {
+      ...snapshot,
+      data: {
+        ...(snapshot.data as object),
+        requestedUrl: requestedUrl.toString(),
+        navigationUrl: finalUrl.toString(),
+        httpStatus,
+        recoveredWithEquivalentUrl: requestedUrl.toString() !== safeNavigationCandidates(input)[0],
+        failedNavigationAttempts: attempts,
+      },
+    };
   }
 
   private async pageSnapshot(includeScreenshot: boolean) {
     const page = this.requirePage();
     const url = page.url();
     const [title, visibleText, html, links] = await Promise.all([
-      page.title(),
+      page.title().catch(() => ""),
       page.locator("body").innerText().catch(() => ""),
       page.locator("body").evaluate((node) => node.outerHTML).catch(() => ""),
-      this.collectLinks(100),
+      this.collectLinks(100).catch(() => []),
     ]);
     links.forEach((link) => this.coverageState.urlsDiscovered.add(link.href));
     const evidence = await this.retainEvidence({ toolName: "get_page_snapshot", kind: "PAGE_SNAPSHOT", sourceUrl: url, exactText: textLimit(visibleText), surroundingDom: { html: textLimit(html, 30_000), links }, metadata: { title, viewport: page.viewportSize() } });
     const evidenceIds = [evidence.id];
     const imageEvidenceIds: string[] = [];
+    let screenshotWarning: string | null = null;
     if (includeScreenshot) {
-      const screenshot = await this.capturePage(false, "get_page_snapshot");
-      evidenceIds.push(...screenshot.evidenceIds);
-      imageEvidenceIds.push(...(screenshot.imageEvidenceIds ?? []));
+      try {
+        const screenshot = await this.capturePage(false, "get_page_snapshot");
+        evidenceIds.push(...screenshot.evidenceIds);
+        imageEvidenceIds.push(...(screenshot.imageEvidenceIds ?? []));
+      } catch (error) {
+        screenshotWarning = sanitizeLogText(error instanceof Error ? error.message : "Viewport capture failed", 240);
+        logger.warn({ scanId: this.scanId, url: this.navigationLabel(url), error: screenshotWarning }, "Luna viewport capture failed; preserving completed page evidence");
+      }
     }
-    return { ok: true, evidenceIds, imageEvidenceIds, data: { url, title, visibleText: textLimit(visibleText, 20_000), links, viewport: page.viewportSize(), domExcerpt: textLimit(html, 12_000) } };
+    return { ok: true, evidenceIds, imageEvidenceIds, data: { url, title, visibleText: textLimit(visibleText, 20_000), links, viewport: page.viewportSize(), domExcerpt: textLimit(html, 12_000), screenshotCaptured: imageEvidenceIds.length > 0, screenshotWarning } };
   }
 
   private async visibleText(maxChars: number) {
@@ -407,7 +462,7 @@ export class LunaBrowserTools {
 
   private async capturePage(fullPage: boolean, toolName: string) {
     const page = this.requirePage();
-    const bytes = await page.screenshot({ type: "jpeg", quality: 85, fullPage });
+    const bytes = await page.screenshot({ type: "jpeg", quality: 85, fullPage, animations: "disabled", caret: "hide" });
     const metrics = await page.evaluate(() => ({ scrollX: window.scrollX, scrollY: window.scrollY, innerWidth: window.innerWidth, innerHeight: window.innerHeight, documentWidth: document.documentElement.scrollWidth, documentHeight: document.documentElement.scrollHeight }));
     const evidence = await this.retainEvidence({ toolName, kind: "SCREENSHOT", sourceUrl: page.url(), bytes, mimeType: "image/jpeg", metadata: { fullPage, metrics } });
     this.coverageState.pagesVisuallyReviewed.add(page.url());
@@ -657,6 +712,12 @@ export class LunaBrowserTools {
   }
 
   private isFirstParty(url: URL) { return this.allowedHosts.has(url.hostname.toLowerCase()); }
+  private navigationLabel(input: string | URL) {
+    try {
+      const url = normalizePublicUrl(input.toString());
+      return `${url.protocol}//${url.host}${url.pathname}`.slice(0, 300);
+    } catch { return "invalid first-party URL"; }
+  }
   private requirePage() { if (!this.page) throw new Error("Browser session has not started"); return this.page; }
   private objectArgs(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
   private string(value: unknown) { if (typeof value !== "string" || !value.trim()) throw new Error("A non-empty string argument is required"); return value; }
