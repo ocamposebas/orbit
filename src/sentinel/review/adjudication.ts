@@ -2,12 +2,14 @@ import { evidenceRiskTheme, evidenceRiskThemes, type EvidenceRiskTheme } from "@
 import { getDatabase } from "@/sentinel/db";
 import type { EvidenceManifest, EvidenceManifestRecord } from "@/sentinel/evidence/schema";
 import { contentHash } from "@/sentinel/extraction/normalize";
+import { childLogger } from "@/sentinel/logger";
 import type { CandidateFinding, ScoreComponentKey, SentinelPageType } from "@/sentinel/types";
 import type { VerifiedFact } from "@/sentinel/verification/schema";
 import type { LunaCritic, MaterialDisagreement } from "./critic";
 import type { LunaMerchantReview, LunaObservation } from "./schema";
 
 export type AdjudicationDomain = "SEMANTIC_CONTEXT" | "OBJECTIVE_FACT" | "MIXED";
+export type CriticEscalationReason = "LUNA_VERIFIER_DISAGREEMENT" | "AMBIGUOUS_MATERIAL_FINDING" | "CONTRADICTORY_EVIDENCE";
 
 const semanticRules = /^(?:SEM-|MKT-|RSRCH-ADMIN|MKT-INTENDED|RX-REVIEW|POSITION-|VISUAL-|DOCUMENT-)/;
 
@@ -152,13 +154,29 @@ export async function adjudicateDualReview(input: { scanId: string; merchantId: 
   const assertions = await db.verificationAssertion.findMany({ where: { scanId: input.scanId } });
   const assertionId = new Map(assertions.map((item) => [item.issueKey, item.id]));
   const accepted: CandidateFinding[] = [];
-  let objectiveDisagreements = 0;
+  const observationConflicts: Array<{ candidate: CandidateFinding; observation: LunaObservation; verifier?: VerifiedFact; objectiveConflict: boolean; escalationReason: CriticEscalationReason; disagreement: MaterialDisagreement }> = [];
 
   for (const observation of input.review?.observations ?? []) {
     const candidate = lunaObservationCandidate(observation, input.manifest);
     const verifier = verifierFactForObservation(observation, input.manifest, input.verifierFacts);
     const objectiveConflict = Boolean(candidate && ((observation.productAssociation === "DIRECT" || observation.riskTheme === "CHECKOUT_DARK_PATTERN") && verifier?.state !== "VERIFIED"));
-    if (objectiveConflict && observation.materiality === "MATERIAL") objectiveDisagreements++;
+    const escalationReason = criticEscalationReason(observation, objectiveConflict);
+    if (candidate && escalationReason) {
+      observationConflicts.push({
+        candidate,
+        observation,
+        verifier,
+        objectiveConflict,
+        escalationReason,
+        disagreement: {
+          issueKey: `luna:${observation.issueKey}`,
+          luna: observation,
+          verifierFact: verifier,
+          evidenceRecordIds: [...new Set(observation.evidence.map((reference) => reference.evidenceRecordId))],
+        },
+      });
+      continue;
+    }
     const stored = await decision({ scanId: input.scanId, issueKey: `luna:${observation.issueKey}`, domain: objectiveConflict ? "MIXED" : "SEMANTIC_CONTEXT", material: observation.materiality === "MATERIAL", outcome: objectiveConflict ? "NEEDS_REVIEW" : "ACCEPTED_LUNA", reason: objectiveConflict ? "Luna's semantic conclusion is retained, but a verifier-owned product or checkout fact was not confirmed." : `Luna has priority for the supported semantic/context conclusion classified ${observation.classification}.`, scoreEligible: Boolean(candidate) && !objectiveConflict, primaryObservationId: observationId.get(observation.issueKey), verificationAssertionId: verifier ? assertionId.get(verifier.issueKey) : undefined });
     if (candidate) accepted.push({ ...candidate, status: objectiveConflict ? "NEEDS_REVIEW" : candidate.status, adjudicationId: stored.id, scoreEligible: !objectiveConflict });
   }
@@ -187,9 +205,24 @@ export async function adjudicateDualReview(input: { scanId: string; merchantId: 
     accepted.push({ ...candidate, status: "NEEDS_REVIEW", adjudicationId: stored.id, scoreEligible: false });
   }
 
-  const selected = conflicts.slice(0, input.maxDisagreements);
+  const allDisagreements = [...observationConflicts.map((item) => item.disagreement), ...conflicts.map((item) => item.disagreement)];
+  const selected = allDisagreements.slice(0, input.maxDisagreements);
   let criticResult: Awaited<ReturnType<LunaCritic["review"]>> | undefined;
-  if (selected.length && input.critic) criticResult = await input.critic.review({ scanId: input.scanId, merchantId: input.merchantId, manifest: input.manifest, disagreements: selected.map((item) => item.disagreement) });
+  if (selected.length && input.critic) {
+    try {
+      criticResult = await input.critic.review({ scanId: input.scanId, merchantId: input.merchantId, manifest: input.manifest, disagreements: selected });
+    } catch (error) {
+      childLogger({ scanId: input.scanId }).error({ error, stage: "critic", materialDisagreements: selected.length }, "Luna critic failed; disputed findings require review");
+    }
+  }
+  for (const conflict of observationConflicts) {
+    const criticDecision = criticResult?.decisions.decisions.find((item) => item.issueKey === conflict.disagreement.issueKey);
+    const supportsLuna = criticDecision?.decision === "SUPPORT_LUNA" && !conflict.objectiveConflict;
+    const outcome = supportsLuna ? "ACCEPTED_CRITIC" as const : "NEEDS_REVIEW" as const;
+    const reason = criticDecision?.explanation ?? `Critic escalation ${conflict.escalationReason} was unavailable or inconclusive; the finding requires review.`;
+    const stored = await decision({ scanId: input.scanId, issueKey: conflict.disagreement.issueKey, domain: conflict.objectiveConflict ? "MIXED" : "SEMANTIC_CONTEXT", material: true, outcome, reason, scoreEligible: supportsLuna, primaryObservationId: observationId.get(conflict.observation.issueKey), verificationAssertionId: conflict.verifier ? assertionId.get(conflict.verifier.issueKey) : undefined, criticRunId: criticResult?.runId });
+    accepted.push({ ...conflict.candidate, status: supportsLuna ? conflict.candidate.status : "NEEDS_REVIEW", adjudicationId: stored.id, scoreEligible: supportsLuna });
+  }
   for (const conflict of conflicts) {
     const criticDecision = criticResult?.decisions.decisions.find((item) => item.issueKey === conflict.disagreement.issueKey);
     const supportsDeterministic = criticDecision?.decision === "SUPPORT_VERIFIER";
@@ -198,5 +231,14 @@ export async function adjudicateDualReview(input: { scanId: string; merchantId: 
     const stored = await decision({ scanId: input.scanId, issueKey: conflict.disagreement.issueKey, domain: candidateDomain(conflict.candidate), material: true, outcome, reason: criticDecision?.explanation ?? "The material disagreement could not be resolved and requires review.", scoreEligible: supportsDeterministic, primaryObservationId: observationId.get(conflict.observation.issueKey), criticRunId: criticResult?.runId });
     if (supportsDeterministic || !supportsLuna) accepted.push({ ...conflict.candidate, status: supportsDeterministic ? conflict.candidate.status : "NEEDS_REVIEW", adjudicationId: stored.id, scoreEligible: supportsDeterministic });
   }
-  return { candidates: accepted, materialDisagreements: conflicts.length + objectiveDisagreements, criticRunId: criticResult?.runId };
+  return { candidates: accepted, materialDisagreements: allDisagreements.length, criticRunId: criticResult?.runId };
+}
+
+export function criticEscalationReason(observation: LunaObservation, objectiveConflict: boolean): CriticEscalationReason | undefined {
+  if (observation.materiality !== "MATERIAL" || observation.classification !== "ADVERSE") return undefined;
+  if (objectiveConflict) return "LUNA_VERIFIER_DISAGREEMENT";
+  const classifications = new Set(observation.evidence.map((reference) => reference.classification));
+  if (classifications.has("ADVERSE") && (classifications.has("MITIGATING") || observation.evidence.some((reference) => reference.role === "CONTRADICTING"))) return "CONTRADICTORY_EVIDENCE";
+  if (["CRITICAL", "HIGH"].includes(observation.proposedSeverity) && (observation.humanReviewRequired || observation.confidence < 0.9)) return "AMBIGUOUS_MATERIAL_FINDING";
+  return undefined;
 }

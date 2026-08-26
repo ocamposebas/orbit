@@ -601,8 +601,9 @@ export class LunaMerchantReviewer {
     }
     let investigation = agent?.trace ?? workspace.trace();
     const investigationUsage = agent?.usage ?? { inputTokens: 0, outputTokens: 0, cachedTokens: 0, calls: 0 };
-    if (!investigation.plan || !investigation.toolCalls.some((call) => call.status === "COMPLETED")) {
-      const error = new Error(!investigation.plan ? "Luna agent completed without creating an investigation plan." : "Luna agent completed without executing a successful tool call.");
+    const substantiveEvidenceCall = investigation.toolCalls.some((call) => call.tool !== "record_investigation_plan" && call.status === "COMPLETED" && call.evidenceRecordIds.length > 0);
+    if (!investigation.plan || !substantiveEvidenceCall || investigation.surfaceCounts.pagesSemanticallyReviewed < 1) {
+      const error = new Error(!investigation.plan ? "Luna agent completed without creating an investigation plan." : !substantiveEvidenceCall ? "Luna agent completed without executing a successful evidence tool call." : "Luna agent completed without semantically reviewing a merchant page.");
       error.name = "LunaAgentInvariantError";
       const failure = agenticFailureLogFields(error, "agent_invariant");
       fallbackReason = failure.message;

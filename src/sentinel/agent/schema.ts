@@ -6,17 +6,37 @@ export const lunaAuditToolNames = [
   "open_rendered_page",
   "inspect_visible_text",
   "inspect_dom_structure",
+  "inspect_headings",
+  "inspect_navigation_footer",
   "inspect_metadata",
+  "inspect_open_graph",
   "inspect_structured_data",
   "enumerate_categories",
+  "inspect_category_collection",
   "enumerate_products",
+  "inspect_product",
+  "inspect_product_variations",
+  "inspect_product_sku",
+  "inspect_product_price_inventory",
+  "inspect_product_cta",
   "retrieve_product_commerce",
+  "inspect_link_destination",
   "inspect_visual_composition",
   "inspect_image_region",
   "inspect_page_imagery",
+  "capture_full_page_screenshot",
+  "capture_viewport",
+  "capture_dom_element",
+  "inspect_carousel_slider",
+  "inspect_css_background_images",
+  "inspect_product_category_imagery",
+  "inspect_image_pixels",
+  "read_image_text",
   "inspect_documents",
+  "inspect_pdf_document",
   "inspect_public_api",
   "inspect_read_only_checkout",
+  "inspect_safe_public_cart_checkout",
   "follow_internal_links",
 ] as const;
 
@@ -61,5 +81,19 @@ export interface AgenticAuditTrace {
   unresolvedItems: string[];
   budget: AuditBudget;
   budgetUsed: { toolCalls: number; pages: number; imageRegions: number; documents: number; elapsedMs: number };
+  surfaceCounts: {
+    urlsDiscovered: number;
+    pagesOpened: number;
+    pagesSemanticallyReviewed: number;
+    visualRegionsReviewed: number;
+    imagesReviewed: number;
+    categoriesInvestigated: number;
+    productsDiscovered: number;
+    productsVerifierConfirmed: number;
+    productsInvestigated: number;
+    documentsInspected: number;
+    checkoutStatesInspected: number;
+    lunaToolCalls: number;
+  };
   coverage: Record<string, { discovered: number; inspected: number; percent: number | null; complete: boolean; capped: boolean }>;
 }

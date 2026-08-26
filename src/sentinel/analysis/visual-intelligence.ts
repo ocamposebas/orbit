@@ -33,7 +33,7 @@ export type VisualAnalysis = z.infer<typeof visualAnalysisSchema>;
 export interface VisualAsset {
   pageUrl: string;
   pageType: SentinelPageType;
-  kind: "FULL_PAGE" | "VIEWPORT" | "HERO_BANNER" | "CATEGORY_BANNER" | "PRODUCT_IMAGE" | "PROMOTIONAL_GRAPHIC" | "BLOG_GRAPHIC" | "CHECKOUT";
+  kind: "FULL_PAGE" | "VIEWPORT" | "HERO_BANNER" | "CATEGORY_BANNER" | "CATEGORY_CARD" | "PRODUCT_GRID" | "PRODUCT_IMAGE" | "ANNOUNCEMENT_BAR" | "CAROUSEL_SLIDE" | "CSS_BACKGROUND" | "PROMOTIONAL_GRAPHIC" | "BLOG_GRAPHIC" | "CHECKOUT";
   selector: string;
   hash: string;
   storageKey: string;
@@ -65,8 +65,8 @@ Never decide merchant approval, compliance, legality, certification, processor e
 
 function digest(bytes: Uint8Array) { return createHash("sha256").update(bytes).digest("hex"); }
 
-function visualPagePriority(page: SemanticPageInput) {
-  const weights: Partial<Record<SentinelPageType, number>> = { PRODUCT: 100, COLLECTION: 92, CATEGORY: 92, CHECKOUT: 90, CART: 86, HOME: 84, LANDING: 80, ARTICLE: 60, BLOG: 55 };
+export function visualPagePriority(page: SemanticPageInput) {
+  const weights: Partial<Record<SentinelPageType, number>> = { HOME: 120, LANDING: 112, CATEGORY: 108, COLLECTION: 108, PRODUCT: 100, CHECKOUT: 96, CART: 96, POLICY: 55, FAQ: 48, ARTICLE: 30, BLOG: 25 };
   const commercial = page.content.claims.length * 4 + page.content.images.length * 2 + page.content.prices.length * 3;
   return (weights[page.pageType] ?? 20) + Math.min(commercial, 30);
 }
@@ -96,7 +96,7 @@ async function capturePageAssets(scanId: string, input: SemanticPageInput, maxim
     const hash = digest(bytes);
     const storageKey = `${scanId}/visual/${hash}.jpg`;
     await evidenceStorage().put(storageKey, bytes);
-    const composition = { widthContext: "rendered-page", pageType: input.pageType, pageUrl: input.url, visibleText: input.content.visibleText.slice(0, 8_000), surroundingDom: input.content.domEvidence.slice(0, 80), linksAndCtas: input.content.linkCtas.slice(0, 40), categories: input.content.productCategories, productName: input.content.productName ?? null, prominence: ["PRODUCT", "CATEGORY", "COLLECTION", "HOME", "LANDING", "CHECKOUT", "CART"].includes(input.pageType) ? "COMMERCIAL" : ["ARTICLE", "BLOG"].includes(input.pageType) ? "EDITORIAL" : "SUPPORTING" };
+    const composition = { widthContext: "rendered-page", pageType: input.pageType, pageUrl: input.url, title: input.content.title, headings: input.content.headingRecords.slice(0, 40), visibleText: input.content.visibleText.slice(0, 8_000), surroundingDom: input.content.domEvidence.slice(0, 80), linksAndCtas: [...input.content.linkCtas, ...input.content.navigation, ...input.content.footer].slice(0, 80), destinationUrls: [...new Set([...input.content.linkCtas, ...input.content.navigation, ...input.content.footer].map((item) => item.href).filter(Boolean))], categories: input.content.productCategories, productName: input.content.productName ?? null, position: selector, prominence: ["PRODUCT", "CATEGORY", "COLLECTION", "HOME", "LANDING", "CHECKOUT", "CART"].includes(input.pageType) ? "COMMERCIAL" : ["ARTICLE", "BLOG"].includes(input.pageType) ? "EDITORIAL" : "SUPPORTING" };
     await persistArtifactEvidence({ scanId, kind: "SCREENSHOT", url: input.url, mimeType: "image/jpeg", storageKey, sha256: hash, metadata: { pageType: input.pageType, visualKind: kind, selector, composition }, records: [{ evidenceType: kind, selector, value: composition }] });
     assets.push({ pageUrl: input.url, pageType: input.pageType, kind, selector, hash, storageKey, mimeType: "image/jpeg", bytes });
   };
@@ -106,9 +106,12 @@ async function capturePageAssets(scanId: string, input: SemanticPageInput, maxim
     await retain(input.pageType === "CHECKOUT" || input.pageType === "CART" ? "CHECKOUT" : "VIEWPORT", "viewport", await jpegScreenshot(page, false));
     if (assets.length < maximum) await retain("FULL_PAGE", "html", await jpegScreenshot(page, true)).catch(() => undefined);
     const selectorGroups: Array<[string, VisualAsset["kind"]]> = [
+      ["header [class*='announcement' i],header [class*='promo' i],[role='banner'] [class*='announcement' i]", "ANNOUNCEMENT_BAR"],
       ["main [class*='hero' i],main [class*='banner' i],header [class*='hero' i]", input.pageType === "CATEGORY" || input.pageType === "COLLECTION" ? "CATEGORY_BANNER" : "HERO_BANNER"],
-      ["main [class*='carousel' i],main [class*='slider' i],main [aria-roledescription='carousel']", "PROMOTIONAL_GRAPHIC"],
-      ["main [style*='background-image' i],main [class*='background' i]", "PROMOTIONAL_GRAPHIC"],
+      ["main [class*='category' i] a,main [class*='collection' i] a", "CATEGORY_CARD"],
+      ["main [class*='product-grid' i],main [class*='products' i],main [data-product-grid]", "PRODUCT_GRID"],
+      ["main [class*='carousel' i],main [class*='slider' i],main [aria-roledescription='carousel'],main [class*='slide' i]", "CAROUSEL_SLIDE"],
+      ["main [style*='background-image' i],main [class*='background' i]", "CSS_BACKGROUND"],
       ["main img,article img", input.pageType === "PRODUCT" ? "PRODUCT_IMAGE" : input.pageType === "ARTICLE" || input.pageType === "BLOG" ? "BLOG_GRAPHIC" : "PROMOTIONAL_GRAPHIC"],
     ];
     for (const [selector, kind] of selectorGroups) {
@@ -121,6 +124,19 @@ async function capturePageAssets(scanId: string, input: SemanticPageInput, maxim
         if (bytes) await retain(kind, `${selector}:nth-match(${index + 1})`, new Uint8Array(bytes));
       }
       if (assets.length >= maximum) break;
+    }
+    const carousels = page.locator("main [class*='carousel' i],main [class*='slider' i],main [aria-roledescription='carousel']");
+    for (let carouselIndex = 0; carouselIndex < Math.min(await carousels.count().catch(() => 0), 10) && assets.length < maximum; carouselIndex++) {
+      const carousel = carousels.nth(carouselIndex);
+      const next = carousel.locator("button[aria-label*='next' i],button[title*='next' i],[role='button'][aria-label*='next' i]").first();
+      if (!await next.count().catch(() => 0)) continue;
+      for (let slide = 1; slide <= Math.min(8, maximum - assets.length); slide++) {
+        if (!await next.isEnabled().catch(() => false)) break;
+        await next.click({ timeout: 1_500 }).catch(() => undefined);
+        await page.waitForTimeout(120);
+        const bytes = await carousel.screenshot({ type: "jpeg", quality: 72, animations: "disabled", caret: "hide" }).catch(() => null);
+        if (bytes) await retain("CAROUSEL_SLIDE", `carousel:nth-match(${carouselIndex + 1}):slide(${slide + 1})`, new Uint8Array(bytes));
+      }
     }
     return [...new Map(assets.map((asset) => [asset.hash, asset])).values()];
   } finally { await page.close(); }
@@ -178,11 +194,12 @@ export function visualCandidates(page: SemanticPageInput, assets: VisualAsset[],
 
 export async function runVisualIntelligence(scanId: string, pages: SemanticPageInput[], options: { analyzeSemantic?: boolean } = {}) {
   const env = getServerEnv();
+  const analyzeSemantic = options.analyzeSemantic ?? true;
+  const agenticCollection = env.DUAL_REVIEW_MODE === "enforced" && !analyzeSemantic;
   const eligible = [...pages].filter((page) => page.httpStatus === undefined || page.httpStatus < 400).sort((left, right) => visualPagePriority(right) - visualPagePriority(left));
-  const selected = eligible.slice(0, Math.min(env.AI_VISUAL_MAX_PAGES, env.AI_AUDIT_MAX_PAGES));
+  const selected = eligible.slice(0, agenticCollection ? env.AI_AUDIT_MAX_PAGES : Math.min(env.AI_VISUAL_MAX_PAGES, env.AI_AUDIT_MAX_PAGES));
   const stats: VisualIntelligenceStats = { pagesEligible: eligible.length, pagesSelected: selected.length, selectionCapped: selected.length < eligible.length, pagesAnalyzed: 0, assetsDiscovered: pages.reduce((sum, page) => sum + page.content.images.length, 0), assetsAnalyzed: 0, cacheHits: 0, failures: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
   if (!selected.length) return { candidates: [] as CandidateFinding[], assets: [] as VisualAsset[], stats };
-  const analyzeSemantic = options.analyzeSemantic ?? true;
   if (analyzeSemantic && (env.AI_PROVIDER !== "openai-compatible" || !env.AI_API_KEY)) return { candidates: [] as CandidateFinding[], assets: [] as VisualAsset[], stats };
   const browser = await secureVisualContext();
   const candidates: CandidateFinding[] = [];
@@ -193,7 +210,8 @@ export async function runVisualIntelligence(scanId: string, pages: SemanticPageI
       try {
         const remainingRegions = Math.max(0, env.AI_AUDIT_MAX_IMAGE_REGIONS - stats.assetsAnalyzed);
         if (!remainingRegions) break;
-        const captured = await capturePageAssets(scanId, page, Math.min(env.AI_VISUAL_MAX_ASSETS_PER_PAGE, remainingRegions), browser.context);
+        const adaptivePageAllowance = agenticCollection ? Math.min(remainingRegions, Math.max(20, Math.ceil(env.AI_AUDIT_MAX_IMAGE_REGIONS / Math.max(selected.length, 1)))) : Math.min(env.AI_VISUAL_MAX_ASSETS_PER_PAGE, remainingRegions);
+        const captured = await capturePageAssets(scanId, page, adaptivePageAllowance, browser.context);
         const assets = captured.filter((asset) => !seenHashes.has(asset.hash));
         for (const asset of assets) seenHashes.add(asset.hash);
         if (!assets.length) continue;
@@ -213,6 +231,7 @@ export async function runVisualIntelligence(scanId: string, pages: SemanticPageI
       }
     }
   } finally { await browser.close(); }
+  stats.assetsDiscovered = Math.max(stats.assetsDiscovered, retainedAssets.length);
   stats.estimatedCostUsd = Number(stats.estimatedCostUsd.toFixed(6));
   return { candidates, assets: retainedAssets, stats };
 }
