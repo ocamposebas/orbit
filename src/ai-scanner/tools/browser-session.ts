@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Browser, BrowserContext, Locator, Page } from "playwright";
+import type { Browser, BrowserContext, Locator, Page, Response as PlaywrightResponse } from "playwright";
 import { chromium } from "playwright";
 import type { Prisma } from "@/generated/prisma/client";
 import { getDatabase } from "@/sentinel/db";
@@ -65,6 +65,23 @@ export function safeNavigationCandidates(input: string) {
   return candidates;
 }
 
+export function redirectedCanonicalHost(input: {
+  requestedUrl: string;
+  finalUrl: string;
+  redirectChain: string[];
+  allowedHosts: ReadonlySet<string>;
+}) {
+  try {
+    if (input.redirectChain.length < 2 || input.redirectChain.length > 6) return null;
+    const requested = normalizePublicUrl(input.requestedUrl);
+    const final = normalizePublicUrl(input.finalUrl);
+    const chain = input.redirectChain.map((url) => normalizePublicUrl(url));
+    if (chain[0].toString() !== requested.toString() || chain.at(-1)?.toString() !== final.toString()) return null;
+    if (!input.allowedHosts.has(requested.hostname.toLowerCase())) return null;
+    return final.hostname.toLowerCase();
+  } catch { return null; }
+}
+
 export class LunaBrowserTools {
   private browser?: Browser;
   private context?: BrowserContext;
@@ -84,10 +101,7 @@ export class LunaBrowserTools {
     private readonly allowedHosts: Set<string>,
     readonly budget: AuditBudget,
   ) {
-    for (const host of [...allowedHosts]) {
-      this.allowedHosts.add(host.toLowerCase());
-      this.allowedHosts.add(host.toLowerCase().startsWith("www.") ? host.toLowerCase().slice(4) : `www.${host.toLowerCase()}`);
-    }
+    for (const host of [...allowedHosts]) this.allowFirstPartyHost(host);
   }
 
   async start() {
@@ -244,18 +258,27 @@ export class LunaBrowserTools {
   private async openUrl(input: string) {
     const page = this.requirePage();
     const attempts: Array<{ url: string; error: string }> = [];
+    const candidates = safeNavigationCandidates(input);
     let finalUrl: URL | undefined;
     let requestedUrl: URL | undefined;
     let httpStatus: number | undefined;
-    for (const candidate of safeNavigationCandidates(input)) {
+    for (let index = 0; index < candidates.length && index < 8; index++) {
+      const candidate = candidates[index];
       const label = this.navigationLabel(candidate);
       try {
-        requestedUrl = await this.firstPartyUrl(candidate);
-        const response = await page.goto(requestedUrl.toString(), { waitUntil: "commit" });
+        const requestedCandidate = await this.firstPartyUrl(candidate);
+        const response = await page.goto(requestedCandidate.toString(), { waitUntil: "commit" });
         await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => undefined);
         await page.waitForTimeout(500);
-        finalUrl = await this.firstPartyUrl(page.url());
-        httpStatus = response?.status();
+        const resolvedFinalUrl = await this.acceptCanonicalRedirect(requestedCandidate, page.url(), response);
+        const resolvedStatus = response?.status();
+        if (resolvedStatus !== undefined && resolvedStatus >= 500) {
+          for (const retry of safeNavigationCandidates(resolvedFinalUrl.toString())) if (!candidates.includes(retry)) candidates.push(retry);
+          throw new Error(`Merchant endpoint returned transient HTTP ${resolvedStatus}`);
+        }
+        requestedUrl = requestedCandidate;
+        finalUrl = resolvedFinalUrl;
+        httpStatus = resolvedStatus;
         break;
       } catch (error) {
         const rawMessage = error instanceof Error ? error.message : "Navigation failed";
@@ -278,7 +301,7 @@ export class LunaBrowserTools {
         requestedUrl: requestedUrl.toString(),
         navigationUrl: finalUrl.toString(),
         httpStatus,
-        recoveredWithEquivalentUrl: requestedUrl.toString() !== safeNavigationCandidates(input)[0],
+        recoveredWithEquivalentUrl: requestedUrl.toString() !== candidates[0] || finalUrl.toString() !== requestedUrl.toString(),
         failedNavigationAttempts: attempts,
       },
     };
@@ -709,6 +732,35 @@ export class LunaBrowserTools {
     const url = await validatePublicUrl(input);
     if (!this.isFirstParty(url)) throw new Error(`Navigation outside registered merchant hosts is blocked: ${url.hostname}`);
     return url;
+  }
+
+  private async acceptCanonicalRedirect(requestedUrl: URL, pageUrl: string, response: PlaywrightResponse | null) {
+    const finalUrl = await validatePublicUrl(pageUrl);
+    if (this.isFirstParty(finalUrl)) return finalUrl;
+    const redirectChain = this.redirectChain(response);
+    const canonicalHost = redirectedCanonicalHost({ requestedUrl: requestedUrl.toString(), finalUrl: finalUrl.toString(), redirectChain, allowedHosts: this.allowedHosts });
+    if (!canonicalHost) throw new Error(`Navigation outside registered merchant hosts is blocked: ${finalUrl.hostname}`);
+    for (const redirectUrl of redirectChain) await validatePublicUrl(redirectUrl);
+    this.allowFirstPartyHost(canonicalHost);
+    this.validPublicHosts.add(canonicalHost);
+    logger.info({ scanId: this.scanId, fromHost: requestedUrl.hostname, canonicalHost, redirects: redirectChain.length - 1 }, "Accepted canonical merchant host from a verified HTTP redirect chain");
+    return finalUrl;
+  }
+
+  private redirectChain(response: PlaywrightResponse | null) {
+    const chain: string[] = [];
+    let request = response?.request();
+    while (request) {
+      chain.unshift(request.url());
+      request = request.redirectedFrom() ?? undefined;
+    }
+    return chain;
+  }
+
+  private allowFirstPartyHost(input: string) {
+    const host = input.toLowerCase();
+    this.allowedHosts.add(host);
+    this.allowedHosts.add(host.startsWith("www.") ? host.slice(4) : `www.${host}`);
   }
 
   private isFirstParty(url: URL) { return this.allowedHosts.has(url.hostname.toLowerCase()); }
