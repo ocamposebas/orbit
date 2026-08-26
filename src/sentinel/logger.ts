@@ -10,7 +10,7 @@ function truncate(value: string, maximumLength: number) {
 }
 
 export function sanitizeLogText(value: string, maximumLength = MAX_ERROR_MESSAGE_LENGTH) {
-  const configuredApiKey = process.env.AI_API_KEY;
+  const configuredApiKey = process.env.OPENAI_API_KEY;
   const withoutConfiguredApiKey = configuredApiKey ? value.split(configuredApiKey).join("[REDACTED]") : value;
   return truncate(withoutConfiguredApiKey, maximumLength)
     .replace(/\bBearer\s+[^\s"'`,;]+/gi, "Bearer [REDACTED]")
@@ -40,12 +40,12 @@ export function serializeErrorForLog(value: unknown) {
 
 export const logger = pino({
   level: process.env.LOG_LEVEL ?? "info",
-  base: { service: "orbit-sentinel" },
+  base: { service: "orbit" },
   serializers: {
     error: serializeErrorForLog,
     err: serializeErrorForLog,
   },
-  redact: ["req.headers.authorization", "AI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "clientSecret", "password", "encryptedConfig", "secret", "signature"],
+  redact: ["req.headers.authorization", "OPENAI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "clientSecret", "password", "encryptedConfig", "secret", "signature"],
 });
 
 export function childLogger(context: Record<string, string | number | undefined>) {

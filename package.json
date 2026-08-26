@@ -17,11 +17,8 @@
     "db:migrate": "prisma migrate dev --name init",
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
-    "worker:crawler": "tsx src/workers/crawler.ts",
-    "worker:analysis": "tsx src/workers/analysis.ts",
-    "worker:evidence": "tsx src/workers/evidence.ts",
+    "worker:ai-scanner": "tsx src/workers/ai-scanner.ts",
     "workers": "tsx src/workers/all.ts",
-    "fixture:serve": "tsx tests/fixtures/server.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

@@ -33,7 +33,7 @@ export function ProfileSecurity({ email, role }: { email: string; role: string }
     <header className="border-b border-white/[.07] pb-6">
       <p className="text-[9px] font-semibold uppercase tracking-[.16em] text-[#8083ed]">Account</p>
       <h1 className="mt-2 text-2xl font-medium tracking-[-.04em]">Profile & security</h1>
-      <p className="mt-2 text-xs text-[#72767f]">Manage your ORBIT Sentinel access.</p>
+      <p className="mt-2 text-xs text-[#72767f]">Manage your ORBIT workspace access.</p>
     </header>
     <div className="mt-7 grid gap-5 md:grid-cols-2">
       <section className="border border-white/[.075] bg-[#0c0e12] p-5">

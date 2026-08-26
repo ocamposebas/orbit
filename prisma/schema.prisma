@@ -22,6 +22,7 @@ model Organization {
   alerts                  Alert[]
   auditLogs               AuditLog[]
   findings                Finding[]
+  aiFindings              AiFinding[]
   integrations            Integration[]
   memberships             Membership[]
   merchants               Merchant[]
@@ -94,6 +95,8 @@ model Merchant {
   auditLogs             AuditLog[]
   findings              Finding[]
   healthScores          HealthScore[]
+  aiFindings            AiFinding[]
+  aiScans               AiScan[]
   accessGrants          MerchantAccess[]
   agreement             MerchantAgreement?
   organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -294,6 +297,7 @@ model MerchantSite {
   products                 Product[]
   scans                    Scan[]
   pages                    ScanPage[]
+  aiScans                  AiScan[]
 
   @@unique([merchantId, normalizedUrl])
   @@index([hostname])
@@ -683,6 +687,7 @@ model AuditLog {
   actorId        String?
   merchantId     String?
   scanId         String?
+  aiScanId       String?
   action         String
   targetType     String
   targetId       String
@@ -693,9 +698,11 @@ model AuditLog {
   merchant       Merchant?    @relation(fields: [merchantId], references: [id])
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   scan           Scan?        @relation(fields: [scanId], references: [id])
+  aiScan         AiScan?      @relation(fields: [aiScanId], references: [id])
 
   @@index([organizationId, createdAt])
   @@index([merchantId, createdAt])
+  @@index([aiScanId, createdAt])
 }
 
 model WorkerHeartbeat {
@@ -707,6 +714,176 @@ model WorkerHeartbeat {
   metadata      Json       @default("{}")
   lastSeenAt    DateTime   @default(now())
   startedAt     DateTime   @default(now())
+}
+
+/// ORBIT AI Scanner v1 audit job. Legacy scanner tables above remain mapped only
+/// so existing data can be recovered without a destructive migration.
+model AiScan {
+  id             String           @id @default(cuid())
+  merchantId     String
+  siteId         String
+  status         AiScanStatus     @default(QUEUED)
+  model          String           @default("gpt-5.6-luna")
+  criticModel    String?
+  budget         Json
+  coverage       Json             @default("{}")
+  usage          Json             @default("{}")
+  observations   Json             @default("[]")
+  summary        String?
+  limitations    Json             @default("[]")
+  score          Int?
+  scoreBreakdown Json             @default("{}")
+  runtimeMs      Int              @default(0)
+  toolCalls      Int              @default(0)
+  failureCode    AiFailureCode?
+  error          String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  merchant       Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  site           MerchantSite     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  evidence       AiEvidence[]
+  findings       AiFinding[]
+  products       AiProduct[]
+  toolEvents     AiToolEvent[]
+  criticReviews  AiCriticReview[]
+  auditLogs      AuditLog[]
+
+  @@index([merchantId, createdAt])
+  @@index([siteId, status, createdAt])
+}
+
+model AiEvidence {
+  id             String              @id @default(cuid())
+  scanId         String
+  toolName       String
+  kind           AiEvidenceKind
+  sourceUrl      String
+  destinationUrl String?
+  firstParty     Boolean             @default(true)
+  exactText      String?
+  surroundingDom Json?
+  storageKey     String?
+  mimeType       String?
+  sha256         String
+  metadata       Json                @default("{}")
+  validated      Boolean             @default(false)
+  capturedAt     DateTime            @default(now())
+  scan           AiScan              @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  findingLinks   AiFindingEvidence[]
+
+  @@unique([scanId, sha256])
+  @@index([scanId, kind, capturedAt])
+  @@index([sourceUrl])
+}
+
+model AiFinding {
+  id                    String              @id @default(cuid())
+  scanId                String
+  organizationId        String
+  merchantId            String
+  title                 String
+  severity              AiSeverity
+  confidence            Float
+  theme                 String
+  category              String
+  materiality           AiMateriality
+  materialityWeight     Float
+  commercialProminence  Float
+  visualProminence      Float
+  productAssociation    Boolean             @default(false)
+  mitigation            Float               @default(0)
+  ambiguous             Boolean             @default(false)
+  contradictoryEvidence Boolean             @default(false)
+  explanation           String
+  affectedUrl           String
+  contentType           String
+  affectedProduct       String?
+  affectedCategory      String?
+  verifiedSku           String?
+  remediation           String
+  status                AiFindingStatus     @default(OPEN)
+  criticStatus          AiCriticStatus      @default(NOT_REQUESTED)
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  scan                  AiScan              @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  organization          Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  merchant              Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  evidence              AiFindingEvidence[]
+  criticReview          AiCriticReview?
+
+  @@index([scanId, severity])
+  @@index([merchantId, status, severity])
+  @@index([organizationId, status])
+}
+
+model AiFindingEvidence {
+  id         String         @id @default(cuid())
+  findingId  String
+  evidenceId String
+  role       AiEvidenceRole
+  rationale  String?
+  finding    AiFinding      @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  evidence   AiEvidence     @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@unique([findingId, evidenceId, role])
+  @@index([evidenceId])
+}
+
+model AiProduct {
+  id               String   @id @default(cuid())
+  scanId           String
+  canonicalUrl     String
+  name             String
+  sku              String?
+  price            String?
+  currency         String?
+  variants         Json     @default("[]")
+  categories       Json     @default("[]")
+  objectiveSignals Json     @default("{}")
+  verified         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  scan             AiScan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@unique([scanId, canonicalUrl])
+  @@index([scanId, verified])
+}
+
+model AiToolEvent {
+  id            String       @id @default(cuid())
+  scanId        String
+  callId        String
+  name          String
+  status        AiToolStatus @default(REQUESTED)
+  input         Json         @default("{}")
+  outputSummary Json         @default("{}")
+  evidenceCount Int          @default(0)
+  durationMs    Int?
+  error         String?
+  startedAt     DateTime     @default(now())
+  completedAt   DateTime?
+  scan          AiScan       @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@unique([scanId, callId])
+  @@index([scanId, startedAt])
+}
+
+model AiCriticReview {
+  id          String         @id @default(cuid())
+  scanId      String
+  findingId   String         @unique
+  model       String
+  status      AiCriticStatus @default(REQUESTED)
+  result      Json           @default("{}")
+  usage       Json           @default("{}")
+  error       String?
+  createdAt   DateTime       @default(now())
+  completedAt DateTime?
+  scan        AiScan         @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  finding     AiFinding      @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  @@index([scanId, status])
 }
 
 model SemanticAnalysis {
@@ -1173,4 +1350,80 @@ enum WorkerType {
   CRAWLER
   ANALYSIS
   EVIDENCE
+  AI_SCANNER
+}
+
+enum AiScanStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  AI_SCAN_FAILED
+  AI_SCAN_INCOMPLETE
+  CANCELLED
+}
+
+enum AiFailureCode {
+  AI_SCAN_FAILED
+  AI_SCAN_INCOMPLETE
+}
+
+enum AiSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum AiMateriality {
+  MATERIAL
+  NON_MATERIAL
+}
+
+enum AiEvidenceKind {
+  PAGE_SNAPSHOT
+  VISIBLE_TEXT
+  DOM
+  LINK
+  METADATA
+  STRUCTURED_DATA
+  SCREENSHOT
+  VISUAL_REGION
+  IMAGE
+  BACKGROUND_IMAGE
+  CAROUSEL
+  PDF
+  PUBLIC_API
+  CHECKOUT_STATE
+  PRODUCT_FACT
+  CATEGORY_FACT
+}
+
+enum AiEvidenceRole {
+  ADVERSE
+  MITIGATING
+  NEUTRAL
+}
+
+enum AiFindingStatus {
+  OPEN
+  NEEDS_REVIEW
+  CONFIRMED
+  FALSE_POSITIVE
+  ACCEPTED_RISK
+  RESOLVED
+  IGNORED
+}
+
+enum AiCriticStatus {
+  NOT_REQUESTED
+  REQUESTED
+  COMPLETED
+  FAILED
+}
+
+enum AiToolStatus {
+  REQUESTED
+  COMPLETED
+  FAILED
 }

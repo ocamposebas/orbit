@@ -144,7 +144,7 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
   const stripe = getStripeClient();
   try {
     const requestOptions = { stripeContext: transaction.stripeAccountId };
-    let paymentIntent = transaction.stripePaymentIntentId
+    const paymentIntent = transaction.stripePaymentIntentId
       ? await stripe.paymentIntents.retrieve(transaction.stripePaymentIntentId, {}, requestOptions)
       : await stripe.paymentIntents.create({
           amount: transaction.amountMinor,
@@ -212,6 +212,7 @@ function customerPublishableKey() {
 }
 
 export async function createCustomerCheckout(checkoutToken: string, _confirmationTokenId?: string) {
+  void _confirmationTokenId;
   const authorizedOrder = await verifyCheckoutToken(checkoutToken);
   const transaction = await preparePaymentTransaction(authorizedOrder.merchantId, authorizedOrder.wooOrderId);
   if (transaction.status !== "REQUIRES_PAYMENT" && !transaction.stripePaymentIntentId) {

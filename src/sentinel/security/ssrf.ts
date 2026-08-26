@@ -65,7 +65,7 @@ export async function safeFetchBinary(input: string | URL, options: SafeFetchOpt
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const headers = new Headers(options.headers);
-      headers.set("user-agent", "ORBIT-Sentinel/1.0 (+compliance-monitoring)");
+      headers.set("user-agent", "ORBIT-AI-Scanner/1.0 (+merchant-audit)");
       headers.set("accept", options.accept ?? "text/html,application/xml,text/plain;q=0.9");
       const response = await fetch(current, { method: options.method ?? "GET", body: options.body, redirect: "manual", signal: controller.signal, headers });
       if (response.status >= 300 && response.status < 400) {
