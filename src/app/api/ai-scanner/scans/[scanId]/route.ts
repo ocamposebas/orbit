@@ -13,8 +13,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { scanId } = await params;
     const scan = await getDatabase().aiScan.findFirst({ where: { id: scanId, merchant: merchantScope(session) }, include: aiScanDetailInclude });
     if (!scan) throw new HttpError(404, "AI scan not found");
-    const { resumeCheckpoint, manualReportStorageKey, ...publicScan } = scan;
-    void manualReportStorageKey;
+    const { resumeCheckpoint, importedReportStorageKey, ...publicScan } = scan;
+    void importedReportStorageKey;
     const pausedForManualResume = scan.status === "AI_SCAN_INCOMPLETE" || (scan.status === "QUEUED" && scan.resumeCount > 0);
     return NextResponse.json({ scan: { ...publicScan, resumeAvailable: pausedForManualResume && hasAiScanResumeCheckpoint(resumeCheckpoint) } });
   } catch (error) { return apiError(error); }
