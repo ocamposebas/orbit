@@ -736,6 +736,13 @@ model AiScan {
   resumeCheckpoint Json             @default("{}")
   resumeAfter      DateTime?
   resumeCount      Int              @default(0)
+  manualReportStorageKey String?
+  manualReportOriginalName String?
+  manualReportMimeType String?
+  manualReportSizeBytes Int?
+  manualReportSha256 String?
+  manualReportUploadedAt DateTime?
+  manualReportUploadedById String?
   runtimeMs        Int              @default(0)
   toolCalls        Int              @default(0)
   failureCode      AiFailureCode?
