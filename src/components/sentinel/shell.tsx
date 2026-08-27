@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, Bell, Boxes, ChevronDown, FileClock, LogOut, Menu, Radar, Search, Settings, ShieldCheck, X } from "lucide-react";
+import { Activity, Bell, Boxes, FileClock, LogOut, Menu, Radar, Search, Settings, ShieldCheck, X } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { SentinelRoleProvider } from "./auth-context";
@@ -25,9 +25,9 @@ export function SentinelShell({ children, workspace, userName, role }: { childre
       <button onClick={() => setOpen(true)} className="mr-3 grid size-8 place-items-center rounded-md border border-white/10 md:hidden" aria-label="Open navigation"><Menu className="size-4" /></button>
       <div className="flex min-w-0 items-center gap-2 text-[12px] text-[#777b84]"><span className="hidden sm:inline">ORBIT AI Scanner</span><span className="hidden text-[#3f434b] sm:inline">/</span><span className="truncate text-[#c8cac5]">{pathname.includes("/merchant/") ? "Merchant intelligence" : pathname.includes("/scan/") ? "Luna audit" : "Watchtower"}</span></div>
       <div className="ml-auto flex items-center gap-2">
-        <button className="hidden h-8 items-center gap-2 rounded-md border border-white/[.08] bg-white/[.025] px-3 text-[11px] text-[#888c94] sm:flex"><Search className="size-3.5" /> Search <kbd className="ml-2 font-mono text-[9px] text-[#555962]">⌘K</kbd></button>
-        <button className="grid size-8 place-items-center rounded-md border border-white/[.08] text-[#888c94]" aria-label="Notifications"><Bell className="size-3.5" /></button>
-        <button className="flex h-8 items-center gap-2 rounded-md border border-white/[.08] px-2 text-[11px]"><span className="grid size-4 place-items-center rounded bg-[#7274ea] text-[8px] font-bold">{workspace.slice(0, 1).toUpperCase()}</span><span className="hidden sm:inline">{workspace}</span><ChevronDown className="size-3 text-[#666a72]" /></button>
+        <Link href="/sentinel#merchants" className="hidden h-8 items-center gap-2 rounded-md border border-white/[.08] bg-white/[.025] px-3 text-[11px] text-[#888c94] transition hover:border-white/[.14] hover:text-white sm:flex"><Search className="size-3.5" /> Find merchant</Link>
+        <Link href="/sentinel#review" className="grid size-8 place-items-center rounded-md border border-white/[.08] text-[#888c94] transition hover:border-white/[.14] hover:text-white" aria-label="Open review queue"><Bell className="size-3.5" /></Link>
+        <div className="flex h-8 items-center gap-2 rounded-md border border-white/[.08] px-2 text-[11px]" aria-label={`Current workspace: ${workspace}`}><span className="grid size-4 place-items-center rounded bg-[#7274ea] text-[8px] font-bold">{workspace.slice(0, 1).toUpperCase()}</span><span className="hidden sm:inline">{workspace}</span></div>
       </div>
     </header>
     <aside className={cn("fixed inset-y-0 left-0 z-[60] w-[228px] border-r border-white/[.07] bg-[#0a0c0f] transition-transform md:translate-x-0", open ? "translate-x-0" : "-translate-x-full")}>

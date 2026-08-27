@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Database, FileClock, FileSearch, Globe2, KeyRound, Layers3, LockKeyhole, ShieldCheck, SlidersHorizontal, Users } from "lucide-react";
+import { ArrowRight, Check, Database, FileClock, FileSearch, Globe2, KeyRound, Layers3, LayoutTemplate, LockKeyhole, ShieldCheck, SlidersHorizontal, Sparkles, Users } from "lucide-react";
 import { MonitoringScanner } from "@/components/dashboard-demo/monitoring-scanner";
 import { HealthDashboard } from "@/components/dashboard-demo/health-dashboard";
 import { ChangeDiff } from "@/components/dashboard-demo/change-diff";
@@ -87,6 +87,11 @@ export function MerchantHealthSection() {
       </div>
     </section>
   );
+}
+
+export function CustomComplianceSection() {
+  const deliverables = ["Merchant-ready storefront design", "Policy and disclosure architecture", "Age and research-use controls", "Checkout UX and evidence capture"];
+  return <section className="relative overflow-hidden border-y border-[#d6d0c3] bg-[#ece8de] py-24 text-[#171713] sm:py-32"><div className="absolute inset-0 opacity-40 [background-image:radial-gradient(circle_at_80%_10%,rgba(92,88,180,.2),transparent_28%),linear-gradient(rgba(20,20,16,.05)_1px,transparent_1px),linear-gradient(90deg,rgba(20,20,16,.05)_1px,transparent_1px)] [background-size:auto,56px_56px,56px_56px]"/><div className="container-shell relative"><div className="grid gap-14 lg:grid-cols-[.8fr_1.2fr] lg:items-end"><Reveal><p className="text-[10px] font-semibold uppercase tracking-[.2em] text-[#62605a]">Custom compliance web design</p><h2 className="mt-6 max-w-xl text-balance text-4xl font-medium leading-[.96] tracking-[-.055em] sm:text-6xl">A serious storefront, designed around the controls your business needs.</h2></Reveal><Reveal delay={.08}><p className="max-w-xl text-base leading-8 text-[#595750]">ORBIT combines custom web design with merchant-risk structure: clear product positioning, disciplined claims, usable policies, age or intended-use gates, and checkout disclosures that are built into the customer journey.</p><ButtonLink href="/custom-compliance" className="mt-7 bg-[#171713] text-white hover:bg-black">Explore custom web design</ButtonLink></Reveal></div><div className="mt-16 grid overflow-hidden rounded-[28px] border border-black/10 bg-[#f7f4ec] shadow-[0_30px_100px_rgba(42,38,26,.14)] lg:grid-cols-[1.15fr_.85fr]"><div className="p-7 sm:p-10"><div className="flex items-center justify-between"><span className="inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[.16em] text-[#6b6961]"><LayoutTemplate className="size-4"/> Design system</span><Sparkles className="size-4 text-[#7770c8]"/></div><div className="mt-20 max-w-lg"><p className="text-sm text-[#727068]">Built for credibility</p><h3 className="mt-3 text-3xl font-medium tracking-[-.045em] sm:text-5xl">Beautiful enough for customers. Structured enough for risk review.</h3></div></div><div className="border-t border-black/10 bg-[#1a1a17] p-7 text-white lg:border-l lg:border-t-0 sm:p-10"><p className="text-[10px] uppercase tracking-[.16em] text-white/45">Included foundation</p><ul className="mt-10 space-y-5">{deliverables.map((item,index)=><li key={item} className="flex items-center gap-4 border-b border-white/10 pb-5"><span className="font-mono text-[9px] text-[#9994e8]">0{index+1}</span><span className="text-sm text-white/80">{item}</span><Check className="ml-auto size-4 text-[#8ed7b5]"/></li>)}</ul></div></div></div></section>;
 }
 
 export function ChangesSection() {

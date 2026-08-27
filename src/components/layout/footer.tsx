@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Logo } from "@/components/ui/logo";
 
 const groups = [
-  { title: "Product", links: [["Monitoring", "/monitoring"], ["Findings", "/product#findings"], ["Change Intelligence", "/product#changes"], ["Audit Trail", "/product#audit-trail"]] },
+  { title: "Product", links: [["Monitoring", "/monitoring"], ["Findings", "/product#findings"], ["Web design", "/custom-compliance"], ["Audit Trail", "/product#audit-trail"]] },
   { title: "Company", links: [["About", "/about"], ["Contact", "/contact"]] },
   { title: "Legal", links: [["Privacy", "/privacy"], ["Terms", "/terms"], ["Refund & Cancellation", "/refund"]] },
 ] as const;
