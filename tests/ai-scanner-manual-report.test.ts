@@ -38,4 +38,10 @@ describe("AI Scanner manual PDF report", () => {
   it("rejects arbitrary PDFs that are not recognizable ORBIT reports", () => {
     expect(() => parseOrbitReportMetrics("Generic PDF with unrelated content", 1)).toThrowError();
   });
+
+  it("extracts Spanish ORBIT coverage and a slash-form Health Score", () => {
+    const metrics = parseOrbitReportMetrics(`ORBIT\nEscáner de IA ORBIT v1\nPáginas abiertas\n6\nPáginas visuales\n6\nRegiones visuales\n8\nImágenes\n2\nCategorías\n1\nProductos verificados\n0\nDocumentos\n0\nEstados de pago\n1\nHerramientas Luna\n12\nPuntuación del escáner de IA transparente\n87/100`, 4);
+    expect(metrics.healthScore).toBe(87);
+    expect(metrics.coverage).toMatchObject({ pagesOpened: 6, pagesVisuallyReviewed: 6, visualRegionsInspected: 8, imagesInspected: 2, categoriesInspected: 1, productsVerified: 0, documentsInspected: 0, checkoutStatesInspected: 1, totalLunaToolCalls: 12 });
+  });
 });

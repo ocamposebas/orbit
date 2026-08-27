@@ -29,7 +29,7 @@ export type ImportedReportMetrics = {
   severity: Record<"critical" | "high" | "medium" | "low", number>;
 };
 
-function nearbyInteger(lines: string[], label: string) {
+function nearbyInteger(lines: string[], label: string, preferAfter = false) {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const line of lines) {
     const after = line.match(new RegExp(`${escaped}\\s+(\\d{1,9})(?:\\b|$)`, "i"));
@@ -39,42 +39,56 @@ function nearbyInteger(lines: string[], label: string) {
   }
   const index = lines.findIndex((line) => line.toLowerCase() === label.toLowerCase());
   if (index < 0) return undefined;
-  for (const offset of [-1, 1, -2, 2]) {
+  for (const offset of preferAfter ? [1, 2, -1, -2] : [-1, 1, -2, 2]) {
     const match = lines[index + offset]?.replaceAll(",", "").match(/^\d{1,9}$/);
     if (match) return Number(match[0]);
   }
   return undefined;
 }
 
+function nearbyIntegerForLabels(lines: string[], labels: string[], preferAfter = false) {
+  for (const label of labels) {
+    const value = nearbyInteger(lines, label, preferAfter);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 export function parseOrbitReportMetrics(text: string, pageCount: number): ImportedReportMetrics {
   const normalized = text.replace(/\s+/g, " ");
-  if (!/\bORBIT\b/i.test(normalized) || !/(AI SCANNER|SENTINEL)/i.test(normalized)) {
+  if (!/\bORBIT\b/i.test(normalized) || !/(AI SCANNER|ESC[AÁ]NER DE IA|SENTINEL)/i.test(normalized)) {
     throw new HttpError(422, "The PDF is readable but is not a recognized ORBIT report");
   }
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const healthScore = nearbyInteger(lines, "Health Score");
+  const integerLine = (value?: string) => Boolean(value && /^\d{1,9}$/.test(value.replaceAll(",", "")));
+  const firstMetricLabel = lines.findIndex((line) => /^(URLs discovered|URLs descubiertas|Pages opened|Páginas abiertas)$/i.test(line));
+  const valuesFollowLabels = firstMetricLabel >= 0
+    && integerLine(lines[firstMetricLabel + 1])
+    && !integerLine(lines[firstMetricLabel - 1]);
+  const scoreMatch = normalized.match(/(?:Health\s+Score|Puntuaci[oó]n(?:\s+del)?(?:\s+esc[aá]ner(?:\s+de\s+IA)?|\s+de\s+salud)?)\D{0,40}(\d{1,3})\s*\/\s*100/i);
+  const healthScore = scoreMatch ? Number(scoreMatch[1]) : nearbyIntegerForLabels(lines, ["Health Score", "Puntuación de salud", "Puntuación del escáner de IA transparente"]);
   const labels = {
-    urlsDiscovered: "URLs discovered",
-    pagesOpened: "Pages opened",
-    pagesVisuallyReviewed: "Pages visually reviewed",
-    visualRegionsInspected: "Visual regions inspected",
-    imagesInspected: "Images inspected",
-    categoriesInspected: "Categories inspected",
-    productsDiscovered: "Products discovered",
-    productsVerified: "Products verified",
-    documentsInspected: "Documents inspected",
-    checkoutStatesInspected: "Checkout states inspected",
-    totalLunaToolCalls: "Luna tool calls",
+    urlsDiscovered: ["URLs discovered", "URLs descubiertas"],
+    pagesOpened: ["Pages opened", "Páginas abiertas"],
+    pagesVisuallyReviewed: ["Pages visually reviewed", "Visual pages", "Páginas visuales", "Páginas revisadas visualmente"],
+    visualRegionsInspected: ["Visual regions inspected", "Visual regions", "Regiones visuales", "Regiones visuales inspeccionadas"],
+    imagesInspected: ["Images inspected", "Images", "Imágenes", "Imágenes inspeccionadas"],
+    categoriesInspected: ["Categories inspected", "Categories", "Categorías", "Categorías inspeccionadas"],
+    productsDiscovered: ["Products discovered", "Productos descubiertos"],
+    productsVerified: ["Products verified", "Productos verificados"],
+    documentsInspected: ["Documents inspected", "Documents", "Documentos", "Documentos inspeccionados"],
+    checkoutStatesInspected: ["Checkout states inspected", "Checkout states", "Estados de checkout", "Estados de pago"],
+    totalLunaToolCalls: ["Luna tool calls", "Luna tools", "Herramientas Luna"],
   } as const;
-  const coverage = Object.fromEntries(Object.entries(labels).flatMap(([key, label]) => {
-    const value = nearbyInteger(lines, label);
+  const coverage = Object.fromEntries(Object.entries(labels).flatMap(([key, aliases]) => {
+    const value = nearbyIntegerForLabels(lines, [...aliases], valuesFollowLabels);
     return value === undefined ? [] : [[key, value]];
   }));
   const severity = {
-    critical: nearbyInteger(lines, "Critical") ?? 0,
-    high: nearbyInteger(lines, "High") ?? 0,
-    medium: nearbyInteger(lines, "Medium") ?? 0,
-    low: nearbyInteger(lines, "Low") ?? 0,
+    critical: nearbyIntegerForLabels(lines, ["Critical", "Crítico", "Crítica"], valuesFollowLabels) ?? 0,
+    high: nearbyIntegerForLabels(lines, ["High", "Alto", "Alta"], valuesFollowLabels) ?? 0,
+    medium: nearbyIntegerForLabels(lines, ["Medium", "Medio", "Media"], valuesFollowLabels) ?? 0,
+    low: nearbyIntegerForLabels(lines, ["Low", "Bajo", "Baja"], valuesFollowLabels) ?? 0,
   };
   if (healthScore === undefined && Object.keys(coverage).length < 2 && !Object.values(severity).some(Boolean)) {
     throw new HttpError(422, "The ORBIT PDF does not contain enough recognizable report metrics");
