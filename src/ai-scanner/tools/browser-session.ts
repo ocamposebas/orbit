@@ -7,7 +7,7 @@ import { getServerEnv } from "@/sentinel/config";
 import { logger, sanitizeLogText, serializeErrorForLog } from "@/sentinel/logger";
 import { evidenceStorage } from "@/sentinel/storage";
 import { normalizePublicUrl, safeFetchBinary, safeFetchText, validatePublicUrl } from "@/sentinel/security/ssrf";
-import type { AuditBudget, AuditCoverage, AuditUsage, ToolExecutionResult } from "../types";
+import type { AuditBudget, AuditCoverage, AuditUsage, PolicyPageInspection, PolicySurfaceType, ToolExecutionResult } from "../types";
 import { aiScannerToolNames } from "./definitions";
 
 type EvidenceKind =
@@ -29,6 +29,8 @@ type RetainEvidenceInput = {
 
 type CoverageState = {
   urlsDiscovered: Set<string>;
+  firstPartyUrlsDiscovered: Set<string>;
+  siteInventoryInspected: boolean;
   pagesOpened: Set<string>;
   pagesVisuallyReviewed: Set<string>;
   visualRegionsInspected: number;
@@ -36,8 +38,13 @@ type CoverageState = {
   categoriesInspected: Set<string>;
   productsDiscovered: Set<string>;
   productsVerified: number;
+  productPagesWithImagesInspected: Set<string>;
   documentsInspected: Set<string>;
+  policyPagesInspected: Map<PolicySurfaceType, string>;
+  publicAccessGatesDismissed: Set<string>;
+  commerceSignalsObserved: boolean;
   checkoutStatesInspected: Set<string>;
+  checkoutFormsInspected: number;
   totalLunaToolCalls: number;
 };
 
@@ -82,18 +89,34 @@ export function redirectedCanonicalHost(input: {
   } catch { return null; }
 }
 
+export function isRestrictedAuditRoute(pathname: string) {
+  return /(?:^|\/)(?:cart|checkout|payment|order|account)(?:\/|$)/i.test(pathname);
+}
+
+export function isSafePublicGateControl(input: { label: string; inForm: boolean; type: string | null; destinationPathname?: string | null }) {
+  const affirmative = /^(?:i\s+agree|agree|i\s+accept|accept|enter|continue|confirm|yes|i\s+am\s+(?:18|21)(?:\+|\s+or\s+older)?|acepto|aceptar|entrar|continuar|confirmar|s[ií]|soy\s+mayor)(?:\b|$)/i.test(input.label);
+  const negative = /(?:disagree|reject|decline|leave|exit|under|no\s+acepto|rechazar|salir|menor)/i.test(input.label);
+  return affirmative
+    && !negative
+    && !input.inForm
+    && input.type !== "submit"
+    && !isRestrictedAuditRoute(input.destinationPathname ?? "");
+}
+
 export class LunaBrowserTools {
   private browser?: Browser;
   private context?: BrowserContext;
   private page?: Page;
   private readonly startedAt = Date.now();
   private readonly validPublicHosts = new Set<string>();
+  private readonly canonicalHostAliases = new Map<string, string>();
   private usage: AuditUsage = { ...EMPTY_USAGE };
   private readonly coverageState: CoverageState = {
-    urlsDiscovered: new Set(), pagesOpened: new Set(), pagesVisuallyReviewed: new Set(),
+    urlsDiscovered: new Set(), firstPartyUrlsDiscovered: new Set(), siteInventoryInspected: false, pagesOpened: new Set(), pagesVisuallyReviewed: new Set(),
     visualRegionsInspected: 0, imagesInspected: 0, categoriesInspected: new Set(),
-    productsDiscovered: new Set(), productsVerified: 0, documentsInspected: new Set(),
-    checkoutStatesInspected: new Set(), totalLunaToolCalls: 0,
+    productsDiscovered: new Set(), productsVerified: 0, productPagesWithImagesInspected: new Set(), documentsInspected: new Set(),
+    policyPagesInspected: new Map(), publicAccessGatesDismissed: new Set(), commerceSignalsObserved: false,
+    checkoutStatesInspected: new Set(), checkoutFormsInspected: 0, totalLunaToolCalls: 0,
   };
 
   constructor(
@@ -145,17 +168,28 @@ export class LunaBrowserTools {
   setUsage(usage: AuditUsage) { this.usage = { ...usage }; }
 
   coverage(): AuditCoverage {
+    const normalizedPagesOpened = [...new Set([...this.coverageState.pagesOpened].map((url) => this.inventoryUrl(url) ?? url))];
+    const opened = new Set(normalizedPagesOpened);
+    const firstPartyUrlsRemaining = [...this.coverageState.firstPartyUrlsDiscovered].filter((url) => !opened.has(url));
     return {
       urlsDiscovered: [...this.coverageState.urlsDiscovered],
-      pagesOpened: [...this.coverageState.pagesOpened],
+      firstPartyUrlsDiscovered: [...this.coverageState.firstPartyUrlsDiscovered],
+      firstPartyUrlsRemaining,
+      siteInventoryInspected: this.coverageState.siteInventoryInspected,
+      pagesOpened: normalizedPagesOpened,
       pagesVisuallyReviewed: [...this.coverageState.pagesVisuallyReviewed],
       visualRegionsInspected: this.coverageState.visualRegionsInspected,
       imagesInspected: this.coverageState.imagesInspected,
       categoriesInspected: [...this.coverageState.categoriesInspected],
       productsDiscovered: this.coverageState.productsDiscovered.size,
       productsVerified: this.coverageState.productsVerified,
+      productPagesWithImagesInspected: [...this.coverageState.productPagesWithImagesInspected],
       documentsInspected: [...this.coverageState.documentsInspected],
+      policyPagesInspected: [...this.coverageState.policyPagesInspected].map(([type, url]): PolicyPageInspection => ({ type, url })),
+      publicAccessGatesDismissed: [...this.coverageState.publicAccessGatesDismissed],
+      commerceSignalsObserved: this.coverageState.commerceSignalsObserved,
       checkoutStatesInspected: [...this.coverageState.checkoutStatesInspected],
+      checkoutFormsInspected: this.coverageState.checkoutFormsInspected,
       totalLunaToolCalls: this.coverageState.totalLunaToolCalls,
       auditRuntimeMs: Date.now() - this.startedAt,
       tokenUsage: { ...this.usage },
@@ -227,16 +261,20 @@ export class LunaBrowserTools {
     switch (name) {
       case "open_url": return this.openUrl(this.string(args.url));
       case "get_page_snapshot": return this.pageSnapshot(Boolean(args.includeScreenshot));
+      case "get_audit_coverage": return { ok: true, evidenceIds: [], data: this.coverage() };
       case "get_visible_text": return this.visibleText(this.integer(args.maxChars, 20_000));
       case "get_dom": return this.dom(typeof args.selector === "string" ? args.selector : null, this.integer(args.maxChars, 20_000));
       case "get_links": return this.links(this.string(args.scope), this.integer(args.limit, 50));
+      case "discover_site_inventory": return this.discoverSiteInventory();
       case "get_metadata": return this.metadata();
       case "get_structured_data": return this.structuredData();
       case "scroll": return this.scroll(this.integer(args.deltaY, 800));
       case "go_back": return this.goBack();
       case "follow_internal_link": return this.openUrl(this.string(args.url));
       case "inspect_navigation": return this.inspectRegion("nav, [role='navigation']", "VISUAL_REGION", "inspect_navigation");
-      case "inspect_footer": return this.inspectRegion("footer, [role='contentinfo']", "VISUAL_REGION", "inspect_footer");
+      case "inspect_footer": return this.inspectFooter();
+      case "dismiss_public_access_gate": return this.dismissPublicAccessGate();
+      case "inspect_policy": return this.inspectPolicy(this.string(args.url), this.policyType(args.policyType));
       case "inspect_category": return this.inspectCategory(this.string(args.url), typeof args.label === "string" ? args.label : null);
       case "enumerate_products": return this.enumerateProducts(this.integer(args.limit, 50));
       case "inspect_product": return this.inspectProduct(this.string(args.url));
@@ -291,8 +329,9 @@ export class LunaBrowserTools {
       const detail = attempts.map((attempt) => `${attempt.url}: ${attempt.error}`).join("; ");
       throw new Error(`Merchant page could not be opened after ${attempts.length} safe first-party attempts${detail ? ` (${textLimit(detail, 900)})` : ""}`);
     }
+    this.coverageState.pagesOpened.add(requestedUrl.toString());
     this.coverageState.pagesOpened.add(finalUrl.toString());
-    this.coverageState.urlsDiscovered.add(finalUrl.toString());
+    this.rememberDiscoveredUrl(finalUrl.toString());
     const snapshot = await this.pageSnapshot(true);
     return {
       ...snapshot,
@@ -310,13 +349,20 @@ export class LunaBrowserTools {
   private async pageSnapshot(includeScreenshot: boolean) {
     const page = this.requirePage();
     const url = page.url();
-    const [title, visibleText, html, links] = await Promise.all([
+    const [title, visibleText, html, links, commerceSignals] = await Promise.all([
       page.title().catch(() => ""),
       page.locator("body").innerText().catch(() => ""),
       page.locator("body").evaluate((node) => node.outerHTML).catch(() => ""),
       this.collectLinks(100).catch(() => []),
+      page.evaluate(() => ({
+        commerceForm: Boolean(document.querySelector('form[action*="cart" i], form[action*="checkout" i], [itemprop="price"]')),
+        commerceNavigation: Boolean(document.querySelector('a[href*="/product" i], a[href*="/shop" i], a[href*="/catalog" i], a[href*="/cart" i], a[href*="/checkout" i]')),
+        productStructuredData: [...document.querySelectorAll<HTMLScriptElement>('script[type="application/ld+json"]')].some((node) => /["']@type["']\s*:\s*["']Product["']/i.test(node.textContent || "")),
+      })).catch(() => ({ commerceForm: false, commerceNavigation: false, productStructuredData: false })),
     ]);
-    links.forEach((link) => this.coverageState.urlsDiscovered.add(link.href));
+    links.forEach((link) => this.rememberDiscoveredUrl(link.href));
+    this.coverageState.commerceSignalsObserved ||= Object.values(commerceSignals).some(Boolean);
+    if (commerceSignals.productStructuredData) this.coverageState.productsDiscovered.add(page.url());
     const evidence = await this.retainEvidence({ toolName: "get_page_snapshot", kind: "PAGE_SNAPSHOT", sourceUrl: url, exactText: textLimit(visibleText), surroundingDom: { html: textLimit(html, 30_000), links }, metadata: { title, viewport: page.viewportSize() } });
     const evidenceIds = [evidence.id];
     const imageEvidenceIds: string[] = [];
@@ -331,7 +377,7 @@ export class LunaBrowserTools {
         logger.warn({ scanId: this.scanId, url: this.navigationLabel(url), error: screenshotWarning }, "Luna viewport capture failed; preserving completed page evidence");
       }
     }
-    return { ok: true, evidenceIds, imageEvidenceIds, data: { url, title, visibleText: textLimit(visibleText, 20_000), links, viewport: page.viewportSize(), domExcerpt: textLimit(html, 12_000), screenshotCaptured: imageEvidenceIds.length > 0, screenshotWarning } };
+    return { ok: true, evidenceIds, imageEvidenceIds, data: { url, title, visibleText: textLimit(visibleText, 20_000), links, commerceSignals, viewport: page.viewportSize(), domExcerpt: textLimit(html, 12_000), screenshotCaptured: imageEvidenceIds.length > 0, screenshotWarning } };
   }
 
   private async visibleText(maxChars: number) {
@@ -354,9 +400,74 @@ export class LunaBrowserTools {
     const current = new URL(page.url());
     const all = await this.collectLinks(maximum * 3);
     const selected = all.filter((link) => scope === "all" || (scope === "internal") === (new URL(link.href).hostname === current.hostname)).slice(0, maximum);
-    selected.forEach((link) => this.coverageState.urlsDiscovered.add(link.href));
+    selected.forEach((link) => this.rememberDiscoveredUrl(link.href));
     const evidence = await this.retainEvidence({ toolName: "get_links", kind: "LINK", sourceUrl: page.url(), surroundingDom: { scope, links: selected } });
     return { ok: true, evidenceIds: [evidence.id], data: { url: page.url(), links: selected } };
+  }
+
+  private async discoverSiteInventory() {
+    const page = this.requirePage();
+    const origin = new URL(page.url()).origin;
+    const sitemapQueue: string[] = [`${origin}/sitemap.xml`];
+    const fetched = new Set<string>();
+    const evidenceIds: string[] = [];
+    const warnings: string[] = [];
+    const discoveredBefore = this.coverageState.firstPartyUrlsDiscovered.size;
+
+    try {
+      const robotsTarget = await this.firstPartyUrl(`${origin}/robots.txt`);
+      const robots = await safeFetchText(robotsTarget, { maxBytes: 1_000_000, timeoutMs: 20_000 });
+      await this.firstPartyUrl(robots.url.toString());
+      if (robots.status >= 200 && robots.status < 300) {
+        for (const match of robots.text.matchAll(/^\s*Sitemap:\s*(\S+)\s*$/gim)) {
+          try {
+            const sitemap = (await this.firstPartyUrl(new URL(match[1], robots.url).toString())).toString();
+            if (!sitemapQueue.includes(sitemap)) sitemapQueue.push(sitemap);
+          } catch { /* cross-party sitemap declarations are not followed */ }
+        }
+        const evidence = await this.retainEvidence({ toolName: "discover_site_inventory", kind: "LINK", sourceUrl: robots.url.toString(), exactText: textLimit(robots.text, 30_000), metadata: { endpoint: "robots", status: robots.status } });
+        evidenceIds.push(evidence.id);
+      }
+    } catch (error) {
+      warnings.push(`robots: ${sanitizeLogText(error instanceof Error ? error.message : "unavailable", 180)}`);
+    }
+
+    while (sitemapQueue.length && fetched.size < 12) {
+      const sitemapUrl = sitemapQueue.shift()!;
+      if (fetched.has(sitemapUrl)) continue;
+      fetched.add(sitemapUrl);
+      try {
+        const target = await this.firstPartyUrl(sitemapUrl);
+        const response = await safeFetchText(target, { maxBytes: 2_000_000, timeoutMs: 25_000, accept: "application/xml,text/xml,text/plain;q=0.9" });
+        await this.firstPartyUrl(response.url.toString());
+        if (response.status < 200 || response.status >= 300) {
+          warnings.push(`${this.navigationLabel(sitemapUrl)}: HTTP ${response.status}`);
+          continue;
+        }
+        const locations = [...response.text.matchAll(/<loc\b[^>]*>([\s\S]*?)<\/loc>/gi)]
+          .map((match) => match[1].replaceAll("&amp;", "&").trim())
+          .slice(0, 5_000);
+        const sitemapIndex = /<sitemapindex\b/i.test(response.text);
+        for (const location of locations) {
+          try {
+            const firstParty = (await this.firstPartyUrl(location)).toString();
+            if (sitemapIndex) {
+              if (!fetched.has(firstParty) && !sitemapQueue.includes(firstParty)) sitemapQueue.push(firstParty);
+            } else {
+              this.rememberDiscoveredUrl(firstParty);
+            }
+          } catch { /* malformed and cross-party locations do not enter the audit inventory */ }
+        }
+        const evidence = await this.retainEvidence({ toolName: "discover_site_inventory", kind: "LINK", sourceUrl: response.url.toString(), exactText: textLimit(response.text, 50_000), metadata: { endpoint: sitemapIndex ? "sitemap-index" : "urlset", status: response.status, locationCount: locations.length } });
+        evidenceIds.push(evidence.id);
+      } catch (error) {
+        warnings.push(`${this.navigationLabel(sitemapUrl)}: ${sanitizeLogText(error instanceof Error ? error.message : "unavailable", 180)}`);
+      }
+    }
+
+    this.coverageState.siteInventoryInspected = true;
+    const inventory = [...this.coverageState.firstPartyUrlsDiscovered];
+    return { ok: true, evidenceIds, data: { inventoryCount: inventory.length, newlyDiscovered: inventory.length - discoveredBefore, urls: inventory.slice(0, 2_000), sitemapEndpointsInspected: fetched.size, warnings } };
   }
 
   private async metadata() {
@@ -404,6 +515,92 @@ export class LunaBrowserTools {
     return { ...result, evidenceIds: [...result.evidenceIds, fact.id], data: { ...(result.data as object), categoryLabel: label } };
   }
 
+  private async inspectFooter() {
+    const result = await this.inspectRegion("footer, [role='contentinfo']", "VISUAL_REGION", "inspect_footer");
+    const data = result.data as { visibleText?: string; controls?: Array<{ destination?: string | null }> } | undefined;
+    const contactObserved = data?.controls?.some((control) => /^(?:mailto|tel):/i.test(control.destination ?? ""))
+      || /\b[^\s@]+@[^\s@]+\.[^\s@]+\b/.test(data?.visibleText ?? "");
+    if (contactObserved) this.coverageState.policyPagesInspected.set("CONTACT", this.requirePage().url());
+    return { ...result, data: { ...(result.data as object), directContactObserved: Boolean(contactObserved) } };
+  }
+
+  private async dismissPublicAccessGate() {
+    const page = this.requirePage();
+    const current = normalizePublicUrl(page.url());
+    if (isRestrictedAuditRoute(current.pathname)) {
+      throw new Error("Public access gates cannot be acknowledged from cart, checkout, payment, order, or account routes");
+    }
+    const gate = await this.publicAccessGate();
+    if (!gate) throw new Error("No visible public site-entry age or consent gate was mechanically verified");
+
+    const beforeEvidenceId = await this.inspectRegionWithLocator(gate, "VISUAL_REGION", "dismiss_public_access_gate");
+    const controls = gate.locator("a[href], button, [role='button'], input[type='button'], input[type='submit']");
+    let selected: Locator | null = null;
+    let selectedLabel = "";
+    for (let index = 0; index < await controls.count(); index++) {
+      const control = controls.nth(index);
+      if (!await control.isVisible().catch(() => false)) continue;
+      const details = await control.evaluate((node) => {
+        const element = node as HTMLInputElement | HTMLAnchorElement;
+        return {
+          label: ((element instanceof HTMLInputElement ? element.value : (element as HTMLElement).innerText) || element.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim(),
+          inForm: Boolean(element.closest("form")),
+          type: element.getAttribute("type")?.toLowerCase() ?? null,
+          href: element instanceof HTMLAnchorElement ? element.href : null,
+        };
+      });
+      let destinationPathname: string | null = null;
+      if (details.href) {
+        const destination = await this.firstPartyUrl(details.href);
+        destinationPathname = destination.pathname;
+      }
+      if (!isSafePublicGateControl({ ...details, destinationPathname })) continue;
+      selected = control;
+      selectedLabel = details.label;
+      break;
+    }
+    if (!selected) throw new Error("The access gate did not expose a mechanically safe affirmative entry control");
+
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10_000 }).catch(() => undefined),
+      selected.click({ timeout: 10_000 }),
+    ]);
+    await page.waitForTimeout(750);
+    await this.firstPartyUrl(page.url());
+    if (await this.publicAccessGate()) throw new Error("The verified access gate remained visible after acknowledgement");
+    this.coverageState.publicAccessGatesDismissed.add(current.toString());
+    this.coverageState.pagesOpened.add(page.url());
+    this.rememberDiscoveredUrl(page.url());
+    const after = await this.pageSnapshot(true);
+    return {
+      ...after,
+      evidenceIds: [beforeEvidenceId, ...after.evidenceIds],
+      imageEvidenceIds: [beforeEvidenceId, ...(after.imageEvidenceIds ?? [])],
+      data: { ...(after.data as object), acknowledgedLabel: selectedLabel, beforeUrl: current.toString(), afterUrl: page.url(), ephemeralBrowserStateOnly: true, noFormSubmitted: true },
+    };
+  }
+
+  private async inspectPolicy(url: string, policyType: PolicySurfaceType) {
+    const navigation = await this.openUrl(url);
+    const page = this.requirePage();
+    const gateVisible = Boolean(await this.publicAccessGate());
+    const [visibleText, html] = await Promise.all([
+      page.locator("body").innerText().catch(() => ""),
+      page.locator("body").evaluate((node) => node.outerHTML).catch(() => ""),
+    ]);
+    const substantive = !gateVisible && visibleText.replace(/\s+/g, " ").trim().length >= 80;
+    const evidence = await this.retainEvidence({
+      toolName: "inspect_policy",
+      kind: "PAGE_SNAPSHOT",
+      sourceUrl: page.url(),
+      exactText: textLimit(visibleText),
+      surroundingDom: { html: textLimit(html, 30_000) },
+      metadata: { policyType, substantive, accessGateVisible: gateVisible },
+    });
+    if (substantive) this.coverageState.policyPagesInspected.set(policyType, page.url());
+    return { ...navigation, evidenceIds: [...navigation.evidenceIds, evidence.id], data: { ...(navigation.data as object), policyType, substantive, accessGateVisible: gateVisible, policyEvidenceId: evidence.id, visibleText: textLimit(visibleText, 30_000) } };
+  }
+
   private async enumerateProducts(maximum: number) {
     const page = this.requirePage();
     const candidates = await page.evaluate((limitValue) => {
@@ -423,7 +620,7 @@ export class LunaBrowserTools {
       return { anchors, jsonLd };
     }, maximum);
     const unique = [...new Map(candidates.anchors.map((item) => [item.href, item])).values()].slice(0, maximum);
-    unique.forEach((item) => this.coverageState.urlsDiscovered.add(item.href));
+    unique.forEach((item) => this.rememberDiscoveredUrl(item.href));
     this.findTypedObjects(candidates.jsonLd, "Product").forEach((item, index) => {
       const record = item as Record<string, unknown>;
       this.coverageState.productsDiscovered.add(this.nonEmpty(record.url) ?? `structured-product:${page.url()}:${index}`);
@@ -460,7 +657,8 @@ export class LunaBrowserTools {
     const currency = this.nonEmpty(facts.currency) ?? this.nonEmpty(offers?.priceCurrency);
     const name = this.nonEmpty(product?.name) ?? facts.title;
     const canonicalFirstParty = (() => { try { return this.isFirstParty(normalizePublicUrl(facts.canonicalUrl)); } catch { return false; } })();
-    const verified = canonicalFirstParty && (productNodes.length > 0 || Boolean(price && facts.forms.some((form) => form.controls.length > 0)));
+    const accessGateVisible = Boolean(await this.publicAccessGate());
+    const verified = !accessGateVisible && canonicalFirstParty && (productNodes.length > 0 || Boolean(price && facts.forms.some((form) => form.controls.length > 0)));
     const evidence = await this.retainEvidence({ toolName: "inspect_product", kind: "PRODUCT_FACT", sourceUrl: page.url(), destinationUrl: facts.canonicalUrl, exactText: [name, sku, price, currency, ...facts.buttons].filter(Boolean).join("\n"), surroundingDom: { forms: facts.forms }, metadata: { ...facts, productNodes, verified } });
     if (verified) {
       await getDatabase().aiProduct.upsert({
@@ -470,7 +668,7 @@ export class LunaBrowserTools {
       });
       this.coverageState.productsVerified = await getDatabase().aiProduct.count({ where: { scanId: this.scanId, verified: true } });
     }
-    return { ...navigation, evidenceIds: [...navigation.evidenceIds, evidence.id], data: { ...facts, structuredProductCount: productNodes.length, verified, sku: sku ?? "Not observed", price, currency, evidenceId: evidence.id } };
+    return { ...navigation, evidenceIds: [...navigation.evidenceIds, evidence.id], data: { ...facts, structuredProductCount: productNodes.length, verified, accessGateVisible, sku: sku ?? "Not observed", price, currency, evidenceId: evidence.id } };
   }
 
   private async inspectVariants() {
@@ -524,6 +722,7 @@ export class LunaBrowserTools {
       }
     }
     this.coverageState.imagesInspected += evidenceIds.length;
+    if (evidenceIds.length && this.coverageState.productsDiscovered.has(page.url())) this.coverageState.productPagesWithImagesInspected.add(page.url());
     this.coverageState.pagesVisuallyReviewed.add(page.url());
     this.coverageState.visualRegionsInspected += evidenceIds.length;
     return { ok: true, evidenceIds, imageEvidenceIds: evidenceIds, data: { url: page.url(), images } };
@@ -617,7 +816,6 @@ export class LunaBrowserTools {
   private async inspectCheckout(input: string) {
     const result = await this.openUrl(input);
     const page = this.requirePage();
-    this.coverageState.checkoutStatesInspected.add(page.url());
     const checkout = await page.evaluate(() => ({
       visibleText: (document.body.innerText || "").replace(/\s+/g, " ").trim().slice(0, 30_000),
       forms: [...document.forms].map((form) => ({
@@ -643,6 +841,8 @@ export class LunaBrowserTools {
         }),
       })).slice(0, 20),
     }));
+    this.coverageState.checkoutStatesInspected.add(page.url());
+    this.coverageState.checkoutFormsInspected += checkout.forms.length;
     const evidence = await this.retainEvidence({
       toolName: "inspect_checkout_read_only",
       kind: "CHECKOUT_STATE",
@@ -728,6 +928,55 @@ export class LunaBrowserTools {
     await getDatabase().aiScan.update({ where: { id: this.scanId }, data: { toolCalls: coverage.totalLunaToolCalls, runtimeMs: coverage.auditRuntimeMs, coverage: json(coverage), usage: json(this.usage) } });
   }
 
+  private async publicAccessGate(): Promise<Locator | null> {
+    const page = this.requirePage();
+    const candidates = page.locator("[role='dialog'], [aria-modal='true'], [id*='age' i], [class*='age-confirm' i], [class*='age-verif' i], [role='region']");
+    for (let index = 0; index < await candidates.count(); index++) {
+      const candidate = candidates.nth(index);
+      if (!await candidate.isVisible().catch(() => false)) continue;
+      const context = await candidate.evaluate((node) => {
+        const element = node as HTMLElement;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          identity: `${element.id} ${element.className} ${element.getAttribute("aria-label") || ""}`,
+          text: (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 5_000),
+          fixedOrModal: style.position === "fixed" || style.position === "absolute" || element.getAttribute("role") === "dialog" || element.getAttribute("aria-modal") === "true",
+          viewportRatio: Math.min(1, Math.max(0, (rect.width * rect.height) / Math.max(1, innerWidth * innerHeight))),
+        };
+      });
+      const ageOrConsent = /(?:\bage\b|\b18\+?\b|\b21\+?\b|years?\s+of\s+age|adult|edad|a(?:ñ|n)os|mayor\s+de\s+edad)/i.test(`${context.identity} ${context.text}`);
+      const gateLanguage = /(?:agree|accept|enter|continue|confirm|disagree|verify|verification|acept|entrar|continuar|confirm|verific)/i.test(context.text);
+      if (ageOrConsent && gateLanguage && (context.fixedOrModal || context.viewportRatio >= 0.15)) return candidate;
+    }
+    return null;
+  }
+
+  private rememberDiscoveredUrl(input: string) {
+    try {
+      const normalized = normalizePublicUrl(input);
+      const absolute = normalized.toString();
+      this.coverageState.urlsDiscovered.add(absolute);
+      const inventory = this.inventoryUrl(absolute);
+      if (inventory) this.coverageState.firstPartyUrlsDiscovered.add(inventory);
+    } catch { /* only objective HTTP(S) URLs participate in coverage */ }
+  }
+
+  private inventoryUrl(input: string) {
+    try {
+      const url = normalizePublicUrl(input);
+      if (!this.isFirstParty(url)) return null;
+      if (/(?:^|\/)(?:account|login|logout|sign-in|signin|register|search)(?:\/|$)/i.test(url.pathname)) return null;
+      if (/\.(?:avif|bmp|css|csv|gif|ico|jpe?g|js|json|mp3|mp4|pdf|png|svg|webm|webp|woff2?|xml)$/i.test(url.pathname)) return null;
+      const canonicalHost = this.canonicalHostAliases.get(url.hostname.toLowerCase());
+      if (canonicalHost) url.hostname = canonicalHost;
+      url.hash = "";
+      url.search = "";
+      if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+      return url.toString();
+    } catch { return null; }
+  }
+
   private async firstPartyUrl(input: string) {
     const url = await validatePublicUrl(input);
     if (!this.isFirstParty(url)) throw new Error(`Navigation outside registered merchant hosts is blocked: ${url.hostname}`);
@@ -736,13 +985,18 @@ export class LunaBrowserTools {
 
   private async acceptCanonicalRedirect(requestedUrl: URL, pageUrl: string, response: PlaywrightResponse | null) {
     const finalUrl = await validatePublicUrl(pageUrl);
-    if (this.isFirstParty(finalUrl)) return finalUrl;
     const redirectChain = this.redirectChain(response);
+    if (this.isFirstParty(finalUrl)) {
+      const verifiedAlias = redirectedCanonicalHost({ requestedUrl: requestedUrl.toString(), finalUrl: finalUrl.toString(), redirectChain, allowedHosts: this.allowedHosts });
+      if (verifiedAlias && requestedUrl.hostname.toLowerCase() !== verifiedAlias) this.registerCanonicalAlias(requestedUrl.hostname, verifiedAlias);
+      return finalUrl;
+    }
     const canonicalHost = redirectedCanonicalHost({ requestedUrl: requestedUrl.toString(), finalUrl: finalUrl.toString(), redirectChain, allowedHosts: this.allowedHosts });
     if (!canonicalHost) throw new Error(`Navigation outside registered merchant hosts is blocked: ${finalUrl.hostname}`);
     for (const redirectUrl of redirectChain) await validatePublicUrl(redirectUrl);
     this.allowFirstPartyHost(canonicalHost);
     this.validPublicHosts.add(canonicalHost);
+    this.registerCanonicalAlias(requestedUrl.hostname, canonicalHost);
     logger.info({ scanId: this.scanId, fromHost: requestedUrl.hostname, canonicalHost, redirects: redirectChain.length - 1 }, "Accepted canonical merchant host from a verified HTTP redirect chain");
     return finalUrl;
   }
@@ -763,6 +1017,12 @@ export class LunaBrowserTools {
     this.allowedHosts.add(host.startsWith("www.") ? host.slice(4) : `www.${host}`);
   }
 
+  private registerCanonicalAlias(aliasInput: string, canonicalInput: string) {
+    const alias = aliasInput.toLowerCase().replace(/^www\./, "");
+    const canonical = canonicalInput.toLowerCase().replace(/^www\./, "");
+    for (const host of [alias, `www.${alias}`, canonical, `www.${canonical}`]) this.canonicalHostAliases.set(host, canonical);
+  }
+
   private isFirstParty(url: URL) { return this.allowedHosts.has(url.hostname.toLowerCase()); }
   private navigationLabel(input: string | URL) {
     try {
@@ -774,6 +1034,11 @@ export class LunaBrowserTools {
   private objectArgs(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
   private string(value: unknown) { if (typeof value !== "string" || !value.trim()) throw new Error("A non-empty string argument is required"); return value; }
   private integer(value: unknown, fallback: number) { return typeof value === "number" && Number.isInteger(value) ? value : fallback; }
+  private policyType(value: unknown): PolicySurfaceType {
+    const allowed = new Set<PolicySurfaceType>(["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT", "RESEARCH_USE", "AGE", "OTHER"]);
+    if (typeof value !== "string" || !allowed.has(value as PolicySurfaceType)) throw new Error("A supported policyType is required");
+    return value as PolicySurfaceType;
+  }
   private nonEmpty(value: unknown) { if (typeof value === "number") return String(value); return typeof value === "string" && value.trim() ? value.trim() : undefined; }
   private safeInput(value: Record<string, unknown>) { return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, typeof item === "string" ? textLimit(item, 2_000) : item])); }
 

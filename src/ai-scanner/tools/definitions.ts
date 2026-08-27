@@ -13,13 +13,16 @@ function tool(name: string, description: string, properties: Parameters, require
 const url = { type: "string", description: "Absolute first-party HTTP(S) URL." };
 const selector = { type: "string", description: "CSS selector for an element visible on the current rendered page." };
 const limit = { type: "integer", minimum: 1, maximum: 100 };
+const policyType = { type: "string", enum: ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT", "RESEARCH_USE", "AGE", "OTHER"] };
 
 export const aiScannerToolDefinitions = [
   tool("open_url", "Open an allowed first-party URL in the read-only browser and retain an objective viewport capture.", { url }),
   tool("get_page_snapshot", "Return the current rendered page URL, title, visible text, links, viewport, surrounding DOM excerpt, and optional retained screenshot.", { includeScreenshot: { type: "boolean" } }),
+  tool("get_audit_coverage", "Return the live objective coverage ledger, including exact discovered first-party URLs still unopened and mandatory surface counters, without discarding completed work.", {}),
   tool("get_visible_text", "Return objective visible text from the rendered page.", { maxChars: { type: "integer", minimum: 500, maximum: 50000 } }),
   tool("get_dom", "Return a bounded rendered DOM excerpt. Null selects the document body.", { selector: { type: ["string", "null"] }, maxChars: { type: "integer", minimum: 500, maximum: 50000 } }),
   tool("get_links", "Return rendered anchors and destinations without assigning semantic meaning.", { scope: { type: "string", enum: ["all", "internal", "external"] }, limit }),
+  tool("discover_site_inventory", "Inspect first-party robots/sitemap endpoints and merge their public page URLs with rendered links so Luna can exhaust a finite website inventory instead of stopping at the homepage.", {}),
   tool("get_metadata", "Return objective document metadata and canonical declarations.", {}),
   tool("get_structured_data", "Return retained public JSON-LD blocks from the current page.", {}),
   tool("scroll", "Scroll the rendered page by a bounded pixel distance and retain the resulting viewport.", { deltaY: { type: "integer", minimum: -5000, maximum: 5000 } }),
@@ -27,6 +30,8 @@ export const aiScannerToolDefinitions = [
   tool("follow_internal_link", "Open an allowed first-party link selected by Luna and retain the rendered viewport.", { url }),
   tool("inspect_navigation", "Return the rendered navigation composition, links, text, DOM context, and screenshot.", {}),
   tool("inspect_footer", "Return the rendered footer composition, links, text, DOM context, and screenshot.", {}),
+  tool("dismiss_public_access_gate", "Acknowledge only a visible public site-entry age/consent gate in the ephemeral audit browser after retaining before/after evidence. Mechanically refuses cart, checkout, payment, account, form-submit, negative, or ambiguous controls and never accepts transactional terms.", {}),
+  tool("inspect_policy", "Open and retain the full rendered contents of a Luna-selected first-party policy page, recording the policy surface only when substantive policy content is actually reachable beyond any public access gate.", { url, policyType }),
   tool("inspect_category", "Open a Luna-selected category/collection URL and return objective rendered composition evidence.", { url, label: { type: ["string", "null"] } }),
   tool("enumerate_products", "Return product candidates and objective commerce signals from rendered links and structured data; no candidate is semantically classified by the tool.", { limit }),
   tool("inspect_product", "Open a Luna-selected likely product and retain its exact canonical URL/slug, complete rendered description context, price, SKU, variant, add-to-cart, structured-data, DOM, and visual evidence.", { url }),

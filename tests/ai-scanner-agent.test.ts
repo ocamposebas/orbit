@@ -11,7 +11,7 @@ class FakeTools implements LunaToolRuntime {
   constructor(readonly budget = { maximumRuntimeMs: 60_000, maximumToolCalls: 20, maximumTokens: 100_000, maximumCostUsd: 10 }) {}
   setUsage(usage: AuditUsage) { this.usage = usage; }
   budgetExceeded() { return false; }
-  coverage(): AuditCoverage { return { urlsDiscovered: ["https://merchant.example/", "https://merchant.example/products/a"], pagesOpened: ["https://merchant.example/", "https://merchant.example/products/a"], pagesVisuallyReviewed: ["https://merchant.example/", "https://merchant.example/products/a"], visualRegionsInspected: 3, imagesInspected: 1, categoriesInspected: ["Catalog"], productsDiscovered: 1, productsVerified: 1, documentsInspected: [], checkoutStatesInspected: [], totalLunaToolCalls: this.calls.length, auditRuntimeMs: 500, tokenUsage: this.usage }; }
+  coverage(): AuditCoverage { return { urlsDiscovered: ["https://merchant.example/", "https://merchant.example/products/a"], firstPartyUrlsDiscovered: ["https://merchant.example/", "https://merchant.example/products/a"], firstPartyUrlsRemaining: [], siteInventoryInspected: true, pagesOpened: ["https://merchant.example/", "https://merchant.example/products/a"], pagesVisuallyReviewed: ["https://merchant.example/", "https://merchant.example/products/a"], visualRegionsInspected: 3, imagesInspected: 1, categoriesInspected: ["Catalog"], productsDiscovered: 1, productsVerified: 1, productPagesWithImagesInspected: ["https://merchant.example/products/a"], documentsInspected: [], policyPagesInspected: ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"].map((type) => ({ type: type as "TERMS" | "PRIVACY" | "REFUND" | "SHIPPING" | "CONTACT", url: `https://merchant.example/${type.toLowerCase()}` })), publicAccessGatesDismissed: [], commerceSignalsObserved: true, checkoutStatesInspected: ["https://merchant.example/checkout"], checkoutFormsInspected: 1, totalLunaToolCalls: this.calls.length, auditRuntimeMs: 500, tokenUsage: this.usage }; }
   async execute(_callId: string, name: string): Promise<ToolExecutionResult> { this.calls.push(name); const id = `evidence-${this.calls.length}`; return { ok: true, evidenceIds: [id], imageEvidenceIds: [id], data: { url: "https://merchant.example/", raw: true } }; }
   async imageInputs(evidenceIds: string[]) { return evidenceIds.map((evidenceId) => ({ evidenceId, mimeType: "image/jpeg", dataUrl: "data:image/jpeg;base64,AA==" })); }
   executedCalls() { return [...this.calls]; }
@@ -27,6 +27,9 @@ class RecoveringTools implements LunaToolRuntime {
   coverage(): AuditCoverage {
     return {
       urlsDiscovered: this.opened ? ["https://merchant.example/"] : [],
+      firstPartyUrlsDiscovered: this.opened ? ["https://merchant.example/"] : [],
+      firstPartyUrlsRemaining: [],
+      siteInventoryInspected: this.calls.length >= 3,
       pagesOpened: this.opened ? ["https://merchant.example/"] : [],
       pagesVisuallyReviewed: this.opened ? ["https://merchant.example/"] : [],
       visualRegionsInspected: this.opened ? 1 : 0,
@@ -34,8 +37,13 @@ class RecoveringTools implements LunaToolRuntime {
       categoriesInspected: [],
       productsDiscovered: 0,
       productsVerified: 0,
+      productPagesWithImagesInspected: [],
       documentsInspected: [],
+      policyPagesInspected: this.calls.length >= 3 ? ["TERMS", "PRIVACY", "REFUND", "SHIPPING", "CONTACT"].map((type) => ({ type: type as "TERMS" | "PRIVACY" | "REFUND" | "SHIPPING" | "CONTACT", url: `https://merchant.example/${type.toLowerCase()}` })) : [],
+      publicAccessGatesDismissed: [],
+      commerceSignalsObserved: false,
       checkoutStatesInspected: [],
+      checkoutFormsInspected: 0,
       totalLunaToolCalls: this.calls.length,
       auditRuntimeMs: 500,
       tokenUsage: this.usage,
@@ -79,6 +87,28 @@ describe("Luna-first audit loop", () => {
     expect(String(requests[0].instructions)).toContain("syringes, needles");
     expect(String(requests[0].instructions)).toContain("explicit, required age confirmation");
     expect(String(requests[0].instructions)).toContain("terms, privacy, shipping/delivery, refund/returns");
+    expect(requests[0].context_management).toEqual([{ type: "compaction", compact_threshold: 200_000 }]);
+  });
+
+  it("continues from server-side compaction without replaying the pre-compaction transcript", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const responses = [
+      { status: "completed", output: [{ type: "function_call", call_id: "call-1", name: "open_url", arguments: JSON.stringify({ url: "https://merchant.example/" }) }] },
+      { status: "completed", output: [{ type: "compaction", id: "cmp-1", encrypted_content: "opaque-state" }, { type: "function_call", call_id: "call-2", name: "inspect_navigation", arguments: "{}" }] },
+      { status: "completed", output: [{ type: "function_call", call_id: "call-3", name: "inspect_product", arguments: JSON.stringify({ url: "https://merchant.example/products/a" }) }] },
+      { status: "completed", output_text: JSON.stringify({ summary: "Completed after compaction.", observations: [{ text: "Evidence remained available.", evidenceIds: ["evidence-3"] }], findings: [], limitations: [] }) },
+    ];
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return modelResponse(responses.shift());
+    });
+
+    const result = await runLunaAudit({ scanId: "scan-compaction", merchantId: "merchant-1", merchantName: "Merchant", merchantUrl: "https://merchant.example/", tools: new FakeTools(), request: request as typeof fetch });
+
+    expect(result.result.summary).toContain("after compaction");
+    expect((requests[2].input as Array<Record<string, unknown>>)[0]).toMatchObject({ type: "compaction", id: "cmp-1", encrypted_content: "opaque-state" });
+    expect(JSON.stringify(requests[2].input)).not.toContain("Open the merchant URL");
+    expect(JSON.stringify(requests[2].input)).toContain("evidence-2");
   });
 
   it("requires bounded recovery when Luna tries to finalize after a failed initial page open", async () => {
@@ -132,7 +162,7 @@ describe("Luna-first audit loop", () => {
     expect(request).toHaveBeenCalledTimes(2);
     expect(requests[1].tool_choice).toBe("none");
     expect(requests[1].tools).toEqual([]);
-    expect(requests[1].max_output_tokens).toBe(32_000);
+    expect(requests[1].max_output_tokens).toBe(64_000);
     expect(JSON.stringify(requests[1].input)).toContain("Investigation is now closed");
     expect(JSON.stringify(requests[1].input)).toContain("evidence-1");
   });

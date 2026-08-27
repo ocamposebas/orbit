@@ -8,7 +8,7 @@ describe("ORBIT AI Scanner v1 contracts", () => {
     expect(AI_SCANNER_QUEUE).toBe("orbit-ai-scanner-v1");
     expect(AI_SCANNER_VERSION).toBe("orbit-ai-scanner-v1");
     const names = aiScannerToolDefinitions.map((tool) => tool.name);
-    expect(names).toEqual(expect.arrayContaining(["open_url", "get_page_snapshot", "inspect_navigation", "inspect_category", "enumerate_products", "inspect_product", "capture_viewport", "inspect_visual_region", "inspect_page_images", "inspect_background_images", "inspect_carousel", "inspect_pdf", "inspect_public_api", "inspect_checkout_read_only"]));
+    expect(names).toEqual(expect.arrayContaining(["open_url", "get_page_snapshot", "get_audit_coverage", "discover_site_inventory", "inspect_navigation", "dismiss_public_access_gate", "inspect_policy", "inspect_category", "enumerate_products", "inspect_product", "capture_viewport", "inspect_visual_region", "inspect_page_images", "inspect_background_images", "inspect_carousel", "inspect_pdf", "inspect_public_api", "inspect_checkout_read_only"]));
     expect(aiScannerToolDefinitions.every((tool) => tool.strict && tool.parameters.additionalProperties === false)).toBe(true);
   });
 

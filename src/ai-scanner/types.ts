@@ -17,8 +17,18 @@ export type AuditUsage = {
   approximateCostUsd: number;
 };
 
+export type PolicySurfaceType = "TERMS" | "PRIVACY" | "REFUND" | "SHIPPING" | "CONTACT" | "RESEARCH_USE" | "AGE" | "OTHER";
+
+export type PolicyPageInspection = {
+  type: PolicySurfaceType;
+  url: string;
+};
+
 export type AuditCoverage = {
   urlsDiscovered: string[];
+  firstPartyUrlsDiscovered: string[];
+  firstPartyUrlsRemaining: string[];
+  siteInventoryInspected: boolean;
   pagesOpened: string[];
   pagesVisuallyReviewed: string[];
   visualRegionsInspected: number;
@@ -26,8 +36,13 @@ export type AuditCoverage = {
   categoriesInspected: string[];
   productsDiscovered: number;
   productsVerified: number;
+  productPagesWithImagesInspected: string[];
   documentsInspected: string[];
+  policyPagesInspected: PolicyPageInspection[];
+  publicAccessGatesDismissed: string[];
+  commerceSignalsObserved: boolean;
   checkoutStatesInspected: string[];
+  checkoutFormsInspected: number;
   totalLunaToolCalls: number;
   auditRuntimeMs: number;
   tokenUsage: AuditUsage;

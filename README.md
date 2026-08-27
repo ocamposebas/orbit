@@ -72,6 +72,7 @@ Open `http://localhost:3000/sentinel`. The seeded workspace uses an intentionall
 | `AI_SCANNER_MAX_TOOL_CALLS` | Global Luna browser/tool budget |
 | `AI_SCANNER_MAX_TOKENS` | Global cumulative token budget |
 | `AI_SCANNER_MAX_COST_USD` | Global approximate monetary budget |
+| `AI_SCANNER_CONTEXT_COMPACT_THRESHOLD` | Responses server-side compaction threshold for long tool/image audits |
 | `AI_SCANNER_MAX_OUTPUT_TOKENS` | Maximum output for one Luna turn |
 | `AI_SCANNER_FINALIZATION_MAX_OUTPUT_TOKENS` | Output allowance for the final strict structured audit |
 | `AI_SCANNER_FINALIZATION_TOKEN_RESERVE` | Cumulative token headroom reserved before Luna is forced to finalize |

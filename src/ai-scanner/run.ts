@@ -8,6 +8,7 @@ import { LunaAuditIncompleteError, LunaUnavailableError, runLunaAudit } from "./
 import { persistValidatedAudit, validateLunaAudit } from "./validation";
 import { runOptionalCritics } from "./critic";
 import type { AuditCoverage, AuditUsage } from "./types";
+import { investigationCoverageGaps } from "./completeness";
 
 const json = (value: unknown) => value as Prisma.InputJsonValue;
 const EMPTY_USAGE: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
@@ -42,14 +43,11 @@ export async function runAiScan(scanId: string, request?: typeof fetch) {
     await persistValidatedAudit({ scanId, organizationId: scan.merchant.organizationId, merchantId: scan.merchantId, audit: validated.audit });
     await runOptionalCritics(scanId);
     const coverage = tools.coverage();
-    const enoughInvestigation = coverage.pagesOpened.length > 0
-      && coverage.pagesVisuallyReviewed.length > 0
-      && coverage.visualRegionsInspected > 0
-      && coverage.totalLunaToolCalls >= 3
-      && validated.audit.observations.length > 0;
+    const completionGaps = investigationCoverageGaps(coverage, validated.audit.observations.length);
+    const enoughInvestigation = completionGaps.length === 0;
     const limitations = enoughInvestigation
       ? validated.audit.limitations
-      : [...validated.audit.limitations, "Luna returned before completing a substantive rendered-page, visual, and follow-up investigation."];
+      : [...validated.audit.limitations, `ORBIT did not certify full investigation coverage: ${completionGaps.join("; ")}.`];
     const score = calculateAiScannerScore(validated.audit.findings, coverage, limitations);
     const status = enoughInvestigation ? "COMPLETED" as const : "AI_SCAN_INCOMPLETE" as const;
     const completedAt = new Date();
@@ -62,8 +60,8 @@ export async function runAiScan(scanId: string, request?: typeof fetch) {
         coverage: json(coverage),
         usage: json(usage),
         limitations: json(limitations),
-        score: score.score,
-        scoreBreakdown: json(score),
+        score: enoughInvestigation ? score.score : null,
+        scoreBreakdown: json({ ...score, completionGaps }),
         runtimeMs: completedAt.getTime() - startedAt.getTime(),
         toolCalls: coverage.totalLunaToolCalls,
         completedAt,

@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import type { Prisma } from "@/generated/prisma/client";
 import { getDatabase } from "@/sentinel/db";
 import { evidenceStorage } from "@/sentinel/storage";
+import { deriveAiPolicyCoverage } from "./policy-coverage";
 
 const severityRank: Record<string, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
 const activeFindingStatuses = new Set(["OPEN", "NEEDS_REVIEW", "CONFIRMED", "ACCEPTED_RISK"]);
@@ -82,49 +83,6 @@ export async function renderAiScanReportPdf(scanId: string) {
   }
 }
 
-function collectUrls(value: unknown, urls: Set<string>, depth = 0) {
-  if (depth > 6 || value === null || value === undefined) return;
-  if (typeof value === "string") {
-    for (const candidate of value.match(/https?:\/\/[^\s"'<>]+/gi) ?? []) {
-      try { urls.add(new URL(candidate.replace(/[),.;]+$/, "")).toString()); } catch { /* objective non-URL string */ }
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item) => collectUrls(item, urls, depth + 1));
-    return;
-  }
-  if (typeof value === "object") Object.values(value as Record<string, unknown>).forEach((item) => collectUrls(item, urls, depth + 1));
-}
-
-function policyCoverage(scan: AiScanReportData) {
-  const urls = new Set<string>();
-  for (const evidence of scan.evidence) {
-    collectUrls(evidence.sourceUrl, urls);
-    collectUrls(evidence.destinationUrl, urls);
-    collectUrls(evidence.metadata, urls);
-    collectUrls(evidence.surroundingDom, urls);
-  }
-  const definitions = [
-    { label: "Privacy", pattern: /(?:^|\/)(?:privacy|data-protection|privacy-policy)(?:\/|$)/i },
-    { label: "Terms", pattern: /(?:^|\/)(?:terms|terms-of-use|terms-of-service|terms-and-conditions|conditions)(?:\/|$)/i },
-    { label: "Refund / returns", pattern: /(?:^|\/)(?:refund|refunds|return|returns|return-policy)(?:\/|$)/i },
-    { label: "Shipping / delivery", pattern: /(?:^|\/)(?:shipping|delivery|shipping-policy)(?:\/|$)/i },
-    { label: "Contact / support", pattern: /(?:^|\/)(?:contact|contact-us|support|help)(?:\/|$)/i },
-    { label: "Research / acceptable use", pattern: /(?:^|\/)(?:research-use|acceptable-use|laboratory-use|usage-policy)(?:\/|$)/i },
-  ];
-  return definitions.map((definition) => {
-    const url = [...urls].find((value) => {
-      try { return definition.pattern.test(new URL(value).pathname); } catch { return false; }
-    }) ?? null;
-    const normalizedUrl = url ? new URL(url).toString() : null;
-    const inspected = normalizedUrl !== null && scan.evidence.some((evidence) => {
-      try { return new URL(evidence.sourceUrl).toString() === normalizedUrl; } catch { return false; }
-    });
-    return { label: definition.label, url, inspected };
-  });
-}
-
 function evidenceGroup(title: string, tone: string, evidence: FindingEvidenceLink[], images: Map<string, string>) {
   const cards = evidence.map((link) => {
     const item = link.evidence;
@@ -194,7 +152,7 @@ export function aiScanReportHtml(scan: AiScanReportData, imageData = new Map<str
     return `<tr><td><b>${escapeHtml(product.name)}</b><small>${escapeHtml(productCategories.join(" · ") || "No category retained")}</small></td><td class="sku">${escapeHtml(product.sku ?? "Not observed")}</td><td>${escapeHtml([product.price, product.currency].filter(Boolean).join(" ") || "Not observed")}</td><td>${variants.length}</td><td class="canonical-url">${escapeHtml(product.canonicalUrl)}</td></tr>`;
   }).join("") || '<tr><td colspan="5">No product was objectively verified during this assessment.</td></tr>';
 
-  const policies = policyCoverage(scan);
+  const policies = deriveAiPolicyCoverage(scan.evidence, scan.status === "COMPLETED");
   const policyRows = policies.map((policy) => {
     const state = policy.inspected ? "INSPECTED" : policy.url ? "LINK OBSERVED" : "NOT OBSERVED";
     const tone = policy.inspected ? "observed" : policy.url ? "linked" : "unobserved";

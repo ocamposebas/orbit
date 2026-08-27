@@ -6,6 +6,7 @@ import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { updateMerchantLegalCountrySchema } from "@/sentinel/services/merchants";
 import { safeRelayIntegration } from "@/commerce/woocommerce/service";
 import { agreementAdminState } from "@/contracts/service";
+import { deriveAiPolicyCoverage } from "@/ai-scanner/policy-coverage";
 
 export const runtime = "nodejs";
 const log = childLogger({ component: "merchant-api" });
@@ -58,13 +59,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const { aiScans: returnedAiScans, aiFindings: returnedAiFindings, ...merchantBase } = merchant;
     const aiScans = returnedAiScans ?? [];
     const aiFindings = returnedAiFindings ?? [];
-    const scans = aiScans.map((scan) => ({ ...scan, mode: "LUNA_AI", progress: scan.coverage, pagesProcessed: scanCoverageNumber(scan.coverage, "pagesOpened"), productsDetected: scanCoverageValue(scan.coverage, "productsVerified"), policiesDetected: 0, findingsCreated: scan._count.findings, findingsResolved: 0, scoreBefore: null, scoreAfter: scan.score }));
+    const scans = aiScans.map((scan) => ({ ...scan, mode: "LUNA_AI", progress: scan.coverage, pagesProcessed: scanCoverageNumber(scan.coverage, "pagesOpened"), productsDetected: scanCoverageValue(scan.coverage, "productsVerified"), policiesDetected: scanCoverageNumber(scan.coverage, "policyPagesInspected"), findingsCreated: scan._count.findings, findingsResolved: 0, scoreBefore: null, scoreAfter: scan.score }));
     const findings = aiFindings.map((finding) => ({ ...finding, description: finding.explanation, url: finding.affectedUrl, detectedText: null, reason: finding.explanation, recommendedAction: finding.remediation, lastDetectedAt: finding.createdAt, evidence: finding.evidence.map((link) => ({ ...link.evidence, pageUrl: link.evidence.sourceUrl, normalizedText: link.evidence.exactText, evidenceSnippet: link.evidence.exactText })) }));
     const latest = aiScans[0];
+    const latestEvidence = latest ? await db.aiEvidence.findMany({
+      where: { scanId: latest.id, validated: true },
+      select: { id: true, toolName: true, kind: true, sourceUrl: true, destinationUrl: true, exactText: true, metadata: true, surroundingDom: true },
+      orderBy: { capturedAt: "asc" },
+      take: 2_000,
+    }) : [];
+    const policies = deriveAiPolicyCoverage(latestEvidence, latest?.status === "COMPLETED");
     const scoreBreakdown = latest?.scoreBreakdown as { deductions?: unknown[] } | null;
     const healthScores = latest?.score === null || latest?.score === undefined ? [] : [{ total: latest.score, createdAt: latest.createdAt, components: [{ key: "AI_SCANNER_RISK", label: "Validated Luna findings", score: latest.score, deductions: scoreBreakdown?.deductions ?? [] }] }];
     const products = (latest?.products ?? []).map((product) => ({ ...product, currentPrice: product.price, claims: [], lastSeenAt: product.createdAt, snapshots: [] }));
-    return NextResponse.json({ merchant: { ...merchantBase, scans, healthScores, findings, products, policies: [], stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
+    return NextResponse.json({ merchant: { ...merchantBase, scans, healthScores, findings, products, policies, stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
   } catch (error) { return apiError(error); }
 }
 
