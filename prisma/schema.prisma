@@ -119,7 +119,7 @@ model MerchantAgreement {
   invitationTokenHash      String          @unique
   invitationExpiresAt      DateTime
   invitationIssuedAt       DateTime?
-  termsVersion             String          @default("orbit-msa-en-1.2")
+  termsVersion             String          @default("orbit-msa-en-1.3")
   selfServe                Boolean         @default(false)
   legalName                String?
   tradeName                String?
