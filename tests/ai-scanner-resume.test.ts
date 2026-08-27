@@ -98,21 +98,46 @@ describe("AI Scanner rate-limit continuation", () => {
     });
   });
 
-  it("pauses and requeues the same scan ID with its retained checkpoint", async () => {
+  it("pauses for manual continuation with its retained checkpoint", async () => {
     const result = await runAiScan("scan-1");
 
-    expect(result.status).toBe("QUEUED");
-    expect(enqueueAiScan).toHaveBeenCalledWith("scan-1", { delayMs: 90_000, resumeCount: 1 });
+    expect(result.status).toBe("AI_SCAN_INCOMPLETE");
+    expect(enqueueAiScan).not.toHaveBeenCalled();
     expect(database.aiScan.update).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: "scan-1" },
-      data: expect.objectContaining({ status: "QUEUED", resumeCount: 1, completedAt: null, failureCode: null }),
+      data: expect.objectContaining({ status: "AI_SCAN_INCOMPLETE", resumeAfter: null, failureCode: "AI_SCAN_INCOMPLETE" }),
     }));
     expect(database.aiScan.update).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ resumeCheckpoint: expect.objectContaining({ version: 1 }) }),
     }));
     expect(database.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ aiScanId: "scan-1", action: "ai_scanner.rate_limit_paused" }),
+      data: expect.objectContaining({ aiScanId: "scan-1", action: "ai_scanner.manual_resume_required" }),
     }));
     expect(tools.close).toHaveBeenCalledOnce();
+  });
+
+  it("converts a legacy automatic continuation job into a manual pause without calling Luna", async () => {
+    database.aiScan.findUniqueOrThrow.mockResolvedValue({
+      id: "scan-1",
+      merchantId: "merchant-1",
+      siteId: "site-1",
+      status: "QUEUED",
+      resumeCount: 12,
+      resumeCheckpoint: { version: 1, luna: { conversation: [] }, browser: { currentUrl: "https://merchant.example/" } },
+      coverage: tools.coverage(),
+      usage: tools.coverage().tokenUsage,
+      score: null,
+      merchant: { id: "merchant-1", businessName: "Merchant", organizationId: "org-1", sites: [{ hostname: "merchant.example" }] },
+      site: { id: "site-1", normalizedUrl: "https://merchant.example/", hostname: "merchant.example" },
+    });
+
+    const result = await runAiScan("scan-1");
+
+    expect(result.status).toBe("AI_SCAN_INCOMPLETE");
+    expect(runLunaAudit).not.toHaveBeenCalled();
+    expect(enqueueAiScan).not.toHaveBeenCalled();
+    expect(database.aiScan.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "AI_SCAN_INCOMPLETE", resumeAfter: null }),
+    }));
   });
 });

@@ -9,8 +9,6 @@ import { persistValidatedAudit, validateLunaAudit } from "./validation";
 import { runOptionalCritics } from "./critic";
 import type { AuditCoverage, AuditUsage } from "./types";
 import { investigationCoverageGaps } from "./completeness";
-import { enqueueAiScan } from "./queue";
-import { getServerEnv } from "@/sentinel/config";
 
 const json = (value: unknown) => value as Prisma.InputJsonValue;
 const EMPTY_USAGE: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
@@ -36,6 +34,26 @@ export async function runAiScan(scanId: string, request?: typeof fetch) {
   });
   if (["COMPLETED", "AI_SCAN_FAILED", "AI_SCAN_INCOMPLETE", "CANCELLED"].includes(scan.status)) {
     return { status: scan.status, coverage: scan.coverage, usage: scan.usage, score: scan.score };
+  }
+  if (scan.status === "QUEUED" && scan.resumeCount > 0) {
+    const message = "Temporary OpenAI rate limit cooldown ended; manual continuation is required and the retained checkpoint was not discarded";
+    await db.aiScan.update({
+      where: { id: scanId },
+      data: { status: "AI_SCAN_INCOMPLETE", failureCode: "AI_SCAN_INCOMPLETE", error: message, resumeAfter: null, completedAt: new Date() },
+    });
+    await db.merchant.update({ where: { id: scan.merchantId }, data: { status: "REVIEW_REQUIRED" } });
+    await db.auditLog.create({
+      data: {
+        organizationId: scan.merchant.organizationId,
+        merchantId: scan.merchantId,
+        aiScanId: scanId,
+        action: "ai_scanner.manual_resume_required",
+        targetType: "AiScan",
+        targetId: scanId,
+        metadata: json({ previousAutomaticResumeCount: scan.resumeCount, checkpointRetained: true }),
+      },
+    });
+    return { status: "AI_SCAN_INCOMPLETE" as const, coverage: scan.coverage, usage: scan.usage, error: message };
   }
   const checkpoint = storedResumeCheckpoint(scan.resumeCheckpoint);
   const startedAt = scan.startedAt ?? new Date();
@@ -102,42 +120,37 @@ export async function runAiScan(scanId: string, request?: typeof fetch) {
   } catch (error) {
     const coverage = tools.coverage();
     usage = coverage.tokenUsage;
-    if (error instanceof LunaRateLimitError && scan.resumeCount < getServerEnv().AI_SCANNER_OPENAI_MAX_RESUMES) {
-      const resumeCount = scan.resumeCount + 1;
-      const resumeAfter = new Date(Date.now() + error.resumeAfterMs);
+    if (error instanceof LunaRateLimitError) {
+      const message = `Temporary OpenAI ${error.kind.toLowerCase().replaceAll("_", " ")} remained active after ${error.retries} request retries; manual continuation is required and the retained checkpoint was not discarded`;
+      const completedAt = new Date();
       await db.aiScan.update({
         where: { id: scanId },
         data: {
-          status: "QUEUED",
-          failureCode: null,
-          error: `Temporary OpenAI ${error.kind.toLowerCase().replaceAll("_", " ")} cooldown; this scan will resume automatically`,
+          status: "AI_SCAN_INCOMPLETE",
+          failureCode: "AI_SCAN_INCOMPLETE",
+          error: message,
           coverage: json(coverage),
           usage: json(usage),
           runtimeMs: coverage.auditRuntimeMs,
           toolCalls: coverage.totalLunaToolCalls,
-          resumeAfter,
-          resumeCount,
-          completedAt: null,
+          resumeAfter: null,
+          completedAt,
         },
       });
+      await db.merchant.update({ where: { id: scan.merchantId }, data: { status: "REVIEW_REQUIRED" } });
       await db.auditLog.create({
         data: {
           organizationId: scan.merchant.organizationId,
           merchantId: scan.merchantId,
           aiScanId: scanId,
-          action: "ai_scanner.rate_limit_paused",
+          action: "ai_scanner.manual_resume_required",
           targetType: "AiScan",
           targetId: scanId,
-          metadata: json({ rateLimitKind: error.kind, retries: error.retries, resumeCount, resumeAfter, coverage, usage }),
+          metadata: json({ rateLimitKind: error.kind, retries: error.retries, waitMs: error.resumeAfterMs, checkpointRetained: true, coverage, usage }),
         },
       });
-      try {
-        await enqueueAiScan(scanId, { delayMs: error.resumeAfterMs, resumeCount });
-      } catch (queueError) {
-        logger.error({ scanId, resumeCount, resumeAfter, error: serializeErrorForLog(queueError) }, "AI Scanner resume could not be scheduled immediately; the due-scan scheduler can recover it");
-      }
-      logger.warn({ scanId, rateLimitKind: error.kind, resumeCount, resumeAfter, counters: coverage, usage }, "AI Scanner paused at its retained checkpoint for automatic rate-limit continuation");
-      return { status: "QUEUED" as const, coverage, usage, resumeAfter };
+      logger.warn({ scanId, rateLimitKind: error.kind, retries: error.retries, waitMs: error.resumeAfterMs, counters: coverage, usage }, "AI Scanner paused at its retained checkpoint for manual continuation");
+      return { status: "AI_SCAN_INCOMPLETE" as const, coverage, usage, error: message };
     }
     const incomplete = lunaStarted && !(error instanceof LunaUnavailableError);
     const status = incomplete ? "AI_SCAN_INCOMPLETE" as const : "AI_SCAN_FAILED" as const;
