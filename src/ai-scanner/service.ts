@@ -5,6 +5,7 @@ import { HttpError } from "@/sentinel/http";
 import { createAiScanSchema } from "./schemas";
 import { enqueueAiScan } from "./queue";
 import type { AuditBudget } from "./types";
+import { randomUUID } from "node:crypto";
 
 export function configuredAuditBudget(): AuditBudget {
   const env = getServerEnv();
@@ -62,6 +63,54 @@ export async function createAiScan(input: unknown) {
     },
   });
   return scan;
+}
+
+export function hasAiScanResumeCheckpoint(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const checkpoint = value as Record<string, unknown>;
+  return checkpoint.version === 1 && Boolean(checkpoint.luna) && Boolean(checkpoint.browser);
+}
+
+export async function resumeAiScan(scanId: string, organizationId: string, actorId?: string) {
+  const db = getDatabase();
+  const scan = await db.aiScan.findFirst({
+    where: { id: scanId, merchant: { organizationId } },
+    select: { id: true, merchantId: true, status: true, resumeCheckpoint: true, resumeCount: true },
+  });
+  if (!scan) throw new HttpError(404, "AI scan not found");
+  if (scan.status !== "AI_SCAN_INCOMPLETE") throw new HttpError(409, "Only an incomplete AI scan can be resumed");
+  if (!hasAiScanResumeCheckpoint(scan.resumeCheckpoint)) throw new HttpError(409, "This scan has no retained checkpoint and cannot be resumed in place");
+
+  const claimed = await db.aiScan.updateMany({
+    where: { id: scanId, status: "AI_SCAN_INCOMPLETE" },
+    data: { status: "QUEUED", failureCode: null, error: null, completedAt: null, resumeAfter: null, resumeCount: 0 },
+  });
+  if (claimed.count !== 1) throw new HttpError(409, "This scan is already being resumed");
+
+  try {
+    await enqueueAiScan(scanId, { resumeCount: 0, jobKey: `manual-${randomUUID()}` });
+  } catch (error) {
+    await db.aiScan.updateMany({
+      where: { id: scanId, status: "QUEUED" },
+      data: { status: "AI_SCAN_INCOMPLETE", failureCode: "AI_SCAN_INCOMPLETE", error: "Manual resume could not be queued; the retained checkpoint was not discarded", completedAt: new Date(), resumeCount: scan.resumeCount },
+    });
+    throw new HttpError(503, error instanceof Error ? `Manual resume could not be queued: ${error.message}` : "Manual resume could not be queued");
+  }
+
+  await db.merchant.update({ where: { id: scan.merchantId }, data: { status: "SCANNING" } });
+  await db.auditLog.create({
+    data: {
+      organizationId,
+      merchantId: scan.merchantId,
+      aiScanId: scanId,
+      actorId,
+      action: "ai_scanner.manual_resume",
+      targetType: "AiScan",
+      targetId: scanId,
+      metadata: { previousResumeCount: scan.resumeCount, checkpointRetained: true },
+    },
+  });
+  return { id: scanId, status: "QUEUED" as const, resumeCount: 0, resumeAfter: null };
 }
 
 export const aiScanDetailInclude = {

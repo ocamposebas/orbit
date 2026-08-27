@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, Check, Download, ExternalLink, Eye, LoaderCircle, ScanLine } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, Download, ExternalLink, Eye, LoaderCircle, Play, ScanLine } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { sentinelFetch } from "./client";
 
@@ -9,24 +9,39 @@ type Usage = { totalTokens?: number; approximateCostUsd?: number };
 type Coverage = { urlsDiscovered?: string[]; pagesOpened?: string[]; pagesVisuallyReviewed?: string[]; visualRegionsInspected?: number; imagesInspected?: number; categoriesInspected?: string[]; productsDiscovered?: number; productsVerified?: number; documentsInspected?: string[]; checkoutStatesInspected?: string[]; totalLunaToolCalls?: number; auditRuntimeMs?: number; tokenUsage?: Usage };
 type Finding = { id: string; title: string; severity: string; confidence: number; theme: string; affectedUrl: string; affectedProduct?: string; affectedCategory?: string; verifiedSku?: string; explanation: string; remediation: string };
 type ToolEvent = { id: string; name: string; status: string; evidenceCount: number; durationMs?: number; error?: string; startedAt: string };
-type Scan = { id: string; merchantId: string; status: string; model: string; score?: number; summary?: string; observations?: Array<{ text: string; evidenceIds: string[] }>; coverage?: Coverage; usage?: Usage; limitations?: string[]; error?: string; createdAt: string; completedAt?: string; merchant: { businessName: string }; site: { normalizedUrl: string; hostname: string }; findings: Finding[]; products: Array<{ id: string; name: string; sku?: string; price?: string; currency?: string; canonicalUrl: string; verified: boolean }>; toolEvents: ToolEvent[] };
+type Scan = { id: string; merchantId: string; status: string; model: string; resumeAvailable?: boolean; score?: number; summary?: string; observations?: Array<{ text: string; evidenceIds: string[] }>; coverage?: Coverage; usage?: Usage; limitations?: string[]; error?: string; createdAt: string; completedAt?: string; merchant: { businessName: string }; site: { normalizedUrl: string; hostname: string }; findings: Finding[]; products: Array<{ id: string; name: string; sku?: string; price?: string; currency?: string; canonicalUrl: string; verified: boolean }>; toolEvents: ToolEvent[] };
 const terminal = new Set(["COMPLETED", "AI_SCAN_FAILED", "AI_SCAN_INCOMPLETE", "CANCELLED"]);
 
 export function LiveScan({ scanId }: { scanId: string }) {
   const [scan, setScan] = useState<Scan>();
   const [error, setError] = useState("");
+  const [resuming, setResuming] = useState(false);
+  const [pollGeneration, setPollGeneration] = useState(0);
   const load = useCallback(async () => {
     try { const data = await sentinelFetch<{ scan: Scan }>(`/api/ai-scanner/scans/${scanId}`); setScan(data.scan); setError(""); return data.scan; }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load AI scan"); }
   }, [scanId]);
-  useEffect(() => { let active = true; let timer: ReturnType<typeof setTimeout>; const poll = async () => { const current = await load(); if (active && current && !terminal.has(current.status)) timer = setTimeout(poll, 1_500); }; void poll(); return () => { active = false; clearTimeout(timer); }; }, [load]);
+  useEffect(() => { let active = true; let timer: ReturnType<typeof setTimeout>; const poll = async () => { const current = await load(); if (active && current && !terminal.has(current.status)) timer = setTimeout(poll, 1_500); }; void poll(); return () => { active = false; clearTimeout(timer); }; }, [load, pollGeneration]);
+  const resume = async () => {
+    setResuming(true);
+    try {
+      await sentinelFetch(`/api/ai-scanner/scans/${scanId}/resume`, { method: "POST" });
+      setScan((current) => current ? { ...current, status: "QUEUED", resumeAvailable: false, error: undefined, completedAt: undefined } : current);
+      setError("");
+      setPollGeneration((value) => value + 1);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to resume AI scan");
+    } finally {
+      setResuming(false);
+    }
+  };
   if (!scan && !error) return <div className="grid min-h-[calc(100dvh-56px)] place-items-center"><LoaderCircle className="size-5 animate-spin text-[#8588ef]" /></div>;
   if (!scan) return <div className="p-8 text-xs text-[#d68b8b]">{error}</div>;
   const coverage = scan.coverage ?? {};
   const running = !terminal.has(scan.status);
   return <div className="mx-auto max-w-[1280px] px-4 py-7 sm:px-7 lg:px-10 lg:py-10">
     <Link href={`/sentinel/merchant/${scan.merchantId}`} className="inline-flex items-center gap-1.5 text-[10px] text-[#6b6f77] hover:text-[#b8bab5]"><ArrowLeft className="size-3" />Merchant</Link>
-    <header className="mt-5 flex flex-col gap-4 border-b border-white/[.07] pb-6 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-[9px] font-semibold uppercase tracking-[.16em] text-[#8588ef]">ORBIT AI Scanner v1</p><h1 className="mt-2 text-2xl font-medium tracking-[-.04em]">{scan.merchant.businessName}</h1><a href={scan.site.normalizedUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-[10px] text-[#747881]">{scan.site.hostname}<ExternalLink className="size-2.5" /></a></div><div className="flex items-center gap-3"><span className="inline-flex items-center gap-2 text-[10px] text-[#858991]">{running ? <LoaderCircle className="size-3.5 animate-spin text-[#8588ef]" /> : scan.status === "COMPLETED" ? <Check className="size-3.5 text-[#70c79e]" /> : <AlertTriangle className="size-3.5 text-[#d88989]" />}{scan.status.replaceAll("_", " ")}</span>{scan.completedAt && <a href={`/api/ai-scanner/scans/${scan.id}/report`} className="inline-flex h-9 items-center gap-2 rounded-md border border-white/[.1] px-3 text-[10px]"><Download className="size-3" />PDF report</a>}</div></header>
+    <header className="mt-5 flex flex-col gap-4 border-b border-white/[.07] pb-6 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-[9px] font-semibold uppercase tracking-[.16em] text-[#8588ef]">ORBIT AI Scanner v1</p><h1 className="mt-2 text-2xl font-medium tracking-[-.04em]">{scan.merchant.businessName}</h1><a href={scan.site.normalizedUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-[10px] text-[#747881]">{scan.site.hostname}<ExternalLink className="size-2.5" /></a></div><div className="flex items-center gap-3"><span className="inline-flex items-center gap-2 text-[10px] text-[#858991]">{running ? <LoaderCircle className="size-3.5 animate-spin text-[#8588ef]" /> : scan.status === "COMPLETED" ? <Check className="size-3.5 text-[#70c79e]" /> : <AlertTriangle className="size-3.5 text-[#d88989]" />}{scan.status.replaceAll("_", " ")}</span>{scan.resumeAvailable && <button type="button" onClick={() => void resume()} disabled={resuming} className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8588ef] px-3 text-[10px] font-medium text-white disabled:opacity-60">{resuming ? <LoaderCircle className="size-3 animate-spin" /> : <Play className="size-3" />}Resume scan</button>}{scan.completedAt && <a href={`/api/ai-scanner/scans/${scan.id}/report`} className="inline-flex h-9 items-center gap-2 rounded-md border border-white/[.1] px-3 text-[10px]"><Download className="size-3" />PDF report</a>}</div></header>
     {scan.error && <div className="mt-5 border border-[#d77979]/20 bg-[#d77979]/5 p-4 text-xs text-[#d99494]">{scan.error}</div>}
     <section className="mt-6 border border-white/[.075] bg-[#0c0e12] p-5"><div className="flex items-center justify-between"><div><p className="text-[9px] uppercase tracking-[.14em] text-[#666b74]">Luna audit session</p><p className="mt-1 text-xs text-[#c9cbc6]">{running ? "Luna is choosing the next read-only investigation step." : scan.summary ?? "The audit ended without a complete summary."}</p></div><span className="font-mono text-[9px] text-[#666b74]">{scan.model}</span></div><div className="mt-5 grid grid-cols-2 gap-px bg-white/[.06] sm:grid-cols-4 lg:grid-cols-6">{[
       ["Pages opened", coverage.pagesOpened?.length ?? 0], ["Visual pages", coverage.pagesVisuallyReviewed?.length ?? 0], ["Visual regions", coverage.visualRegionsInspected ?? 0], ["Images", coverage.imagesInspected ?? 0], ["Categories", coverage.categoriesInspected?.length ?? 0], ["Products verified", coverage.productsVerified ?? 0], ["Documents", coverage.documentsInspected?.length ?? 0], ["Checkout states", coverage.checkoutStatesInspected?.length ?? 0], ["Luna tools", coverage.totalLunaToolCalls ?? 0], ["Runtime", formatMs(coverage.auditRuntimeMs ?? 0)], ["Tokens", coverage.tokenUsage?.totalTokens ?? 0], ["Approx. cost", `$${Number(coverage.tokenUsage?.approximateCostUsd ?? 0).toFixed(4)}`],
