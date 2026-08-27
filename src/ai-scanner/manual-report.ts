@@ -104,6 +104,7 @@ export async function extractOrbitReportMetrics(bytes: Uint8Array) {
   GlobalWorkerOptions.workerSrc = pathToFileURL(join(process.cwd(), "node_modules", "pdfjs-dist", "legacy", "build", "pdf.worker.mjs")).href;
   const document = await getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, isEvalSupported: false }).promise;
   const lines: string[] = [];
+  const tokens: string[] = [];
   try {
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
@@ -112,6 +113,8 @@ export async function extractOrbitReportMetrics(bytes: Uint8Array) {
       for (const item of content.items) {
         if (!("str" in item)) continue;
         const textItem = item as TextItem;
+        const token = textItem.str.trim();
+        if (token) tokens.push(token);
         const y = Math.round(textItem.transform[5]);
         const row = grouped.get(y) ?? [];
         row.push({ x: textItem.transform[4], text: textItem.str });
@@ -119,7 +122,11 @@ export async function extractOrbitReportMetrics(bytes: Uint8Array) {
       }
       for (const [, row] of [...grouped].sort(([a], [b]) => b - a)) lines.push(row.sort((a, b) => a.x - b.x).map((item) => item.text).join(" ").trim());
     }
-    return parseOrbitReportMetrics(lines.join("\n"), document.numPages);
+    // Chromium PDFs commonly place several card labels on one visual row and
+    // their values on another. Preserve pdf.js content-stream order first so a
+    // label remains adjacent to its own value; retain reconstructed visual rows
+    // as a secondary representation for prose and inline label/value layouts.
+    return parseOrbitReportMetrics(`${tokens.join("\n")}\n${lines.join("\n")}`, document.numPages);
   } finally {
     // pdf.js may reject destroy() with AbortException after its text streams
     // have already completed. Cleanup must never replace a successful parse or
