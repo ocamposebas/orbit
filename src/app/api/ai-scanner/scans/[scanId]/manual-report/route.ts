@@ -9,6 +9,7 @@ import { evidenceStorage } from "@/sentinel/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ scanId: string }> }) {
   try {

@@ -101,6 +101,9 @@ export async function extractOrbitReportMetrics(bytes: Uint8Array) {
     }
     return parseOrbitReportMetrics(lines.join("\n"), document.numPages);
   } finally {
-    await document.destroy();
+    // pdf.js may reject destroy() with AbortException after its text streams
+    // have already completed. Cleanup must never replace a successful parse or
+    // the actionable HttpError raised for an unrecognized report.
+    await document.destroy().catch(() => undefined);
   }
 }
