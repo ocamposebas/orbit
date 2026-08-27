@@ -15,7 +15,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!scan) throw new HttpError(404, "AI scan not found");
     const { resumeCheckpoint, importedReportStorageKey, ...publicScan } = scan;
     void importedReportStorageKey;
+    const importedReportActive = Boolean(scan.importedReportUploadedAt);
     const pausedForManualResume = scan.status === "AI_SCAN_INCOMPLETE" || (scan.status === "QUEUED" && scan.resumeCount > 0);
-    return NextResponse.json({ scan: { ...publicScan, resumeAvailable: pausedForManualResume && hasAiScanResumeCheckpoint(resumeCheckpoint) } });
+    return NextResponse.json({ scan: {
+      ...publicScan,
+      ...(importedReportActive ? {
+        status: "COMPLETED",
+        model: "Imported ORBIT report",
+        summary: "ORBIT report imported successfully.",
+        error: null,
+        failureCode: null,
+        findings: [],
+        products: [],
+        toolEvents: [],
+        observations: [],
+        limitations: [],
+      } : {}),
+      resumeAvailable: !importedReportActive && pausedForManualResume && hasAiScanResumeCheckpoint(resumeCheckpoint),
+    } });
   } catch (error) { return apiError(error); }
 }

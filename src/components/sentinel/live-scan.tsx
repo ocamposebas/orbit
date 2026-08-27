@@ -20,6 +20,7 @@ export function LiveScan({ scanId }: { scanId: string }) {
   const [resuming, setResuming] = useState(false);
   const [pollGeneration, setPollGeneration] = useState(0);
   const [uploadingReport, setUploadingReport] = useState(false);
+  const [notice, setNotice] = useState("");
   const load = useCallback(async () => {
     try { const data = await sentinelFetch<{ scan: Scan }>(`/api/ai-scanner/scans/${scanId}`); setScan(data.scan); setError(""); return data.scan; }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load AI scan"); }
@@ -41,11 +42,14 @@ export function LiveScan({ scanId }: { scanId: string }) {
   const uploadManualReport = async (file?: File) => {
     if (!file) return;
     setUploadingReport(true);
+    setNotice("");
     try {
       const body = new FormData();
       body.set("report", file);
       await sentinelFetch(`/api/ai-scanner/scans/${scanId}/manual-report`, { method: "POST", body });
       await load();
+      setError("");
+      setNotice("Success — the uploaded report is now the active assessment.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to import the PDF report");
     } finally {
@@ -55,8 +59,13 @@ export function LiveScan({ scanId }: { scanId: string }) {
   if (!scan && !error) return <div className="grid min-h-[calc(100dvh-56px)] place-items-center"><LoaderCircle className="size-5 animate-spin text-[#8588ef]" /></div>;
   if (!scan) return <div className="p-8 text-xs text-[#d68b8b]">{error}</div>;
   const importedMetrics = scan.importedReportMetrics ?? {};
-  const coverage = scan.coverage ?? {};
   const importedCoverage = importedMetrics.coverage ?? {};
+  const hasImportedReport = Boolean(scan.importedReportUploadedAt);
+  const retainedCoverage = scan.coverage ?? {};
+  const countList = (count?: number) => Array.from({ length: count ?? 0 }, () => "imported");
+  const coverage: Coverage = hasImportedReport ? {
+    urlsDiscovered: countList(importedCoverage.urlsDiscovered), pagesOpened: countList(importedCoverage.pagesOpened), pagesVisuallyReviewed: countList(importedCoverage.pagesVisuallyReviewed), visualRegionsInspected: importedCoverage.visualRegionsInspected, imagesInspected: importedCoverage.imagesInspected, categoriesInspected: countList(importedCoverage.categoriesInspected), productsDiscovered: importedCoverage.productsDiscovered, productsVerified: importedCoverage.productsVerified, documentsInspected: countList(importedCoverage.documentsInspected), checkoutStatesInspected: countList(importedCoverage.checkoutStatesInspected), totalLunaToolCalls: importedCoverage.totalLunaToolCalls,
+  } : retainedCoverage;
   const displayedScore = importedMetrics.healthScore ?? scan.score;
   const running = !terminal.has(scan.status);
   return <div className="mx-auto max-w-[1280px] px-4 py-7 sm:px-7 lg:px-10 lg:py-10">
@@ -64,6 +73,7 @@ export function LiveScan({ scanId }: { scanId: string }) {
     <header className="mt-5 flex flex-col gap-4 border-b border-white/[.07] pb-6 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-[9px] font-semibold uppercase tracking-[.16em] text-[#8588ef]">ORBIT AI Scanner v1</p><h1 className="mt-2 text-2xl font-medium tracking-[-.04em]">{scan.merchant.businessName}</h1><a href={scan.site.normalizedUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-[10px] text-[#747881]">{scan.site.hostname}<ExternalLink className="size-2.5" /></a></div><div className="flex flex-wrap items-center gap-3"><span className="inline-flex items-center gap-2 text-[10px] text-[#858991]">{running ? <LoaderCircle className="size-3.5 animate-spin text-[#8588ef]" /> : scan.status === "COMPLETED" ? <Check className="size-3.5 text-[#70c79e]" /> : <AlertTriangle className="size-3.5 text-[#d88989]" />}{scan.status.replaceAll("_", " ")}</span>{scan.resumeAvailable && <button type="button" onClick={() => void resume()} disabled={resuming} className="inline-flex h-9 items-center gap-2 rounded-md bg-[#8588ef] px-3 text-[10px] font-medium text-white disabled:opacity-60">{resuming ? <LoaderCircle className="size-3 animate-spin" /> : <Play className="size-3" />}Resume scan</button>}<label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-white/[.1] px-3 text-[10px]"><input type="file" accept="application/pdf,.pdf" className="sr-only" disabled={uploadingReport} onChange={(event) => { void uploadManualReport(event.target.files?.[0]); event.currentTarget.value = ""; }} />{uploadingReport ? <LoaderCircle className="size-3 animate-spin" /> : <UploadCloud className="size-3" />}{scan.importedReportUploadedAt ? "Replace report" : "Upload report"}</label>{scan.importedReportUploadedAt && <a href={`/api/ai-scanner/scans/${scan.id}/manual-report`} className="inline-flex h-9 items-center gap-2 rounded-md border border-[#70c79e]/25 px-3 text-[10px] text-[#8bd5ae]"><Download className="size-3" />Imported report</a>}{scan.completedAt && <a href={`/api/ai-scanner/scans/${scan.id}/report`} className="inline-flex h-9 items-center gap-2 rounded-md border border-white/[.1] px-3 text-[10px]"><Download className="size-3" />Generated report</a>}</div></header>
     {error && <div className="mt-5 border border-[#d77979]/20 bg-[#d77979]/5 p-4 text-xs text-[#d99494]">{error}</div>}
     {scan.error && <div className="mt-5 border border-[#d77979]/20 bg-[#d77979]/5 p-4 text-xs text-[#d99494]">{scan.error}</div>}
+    {notice && <div className="mt-5 border border-[#70c79e]/25 bg-[#70c79e]/[.07] p-4 text-xs text-[#9bd7b8]">{notice}</div>}
     <section className="mt-6 border border-white/[.075] bg-[#0c0e12] p-5"><div className="flex items-center justify-between"><div><p className="text-[9px] uppercase tracking-[.14em] text-[#666b74]">Luna audit session</p><p className="mt-1 text-xs text-[#c9cbc6]">{running ? "Luna is choosing the next read-only investigation step." : scan.summary ?? "The audit ended without a complete summary."}</p>{scan.importedReportUploadedAt && <p className="mt-2 text-[9px] text-[#8bd5ae]">Imported report metrics active · {scan.importedReportOriginalName} · {importedMetrics.pageCount ?? 0} pages</p>}</div><span className="font-mono text-[9px] text-[#666b74]">{scan.model}</span></div><div className="mt-5 grid grid-cols-2 gap-px bg-white/[.06] sm:grid-cols-4 lg:grid-cols-6">{[
       ["Pages opened", coverage.pagesOpened?.length ?? 0], ["Visual pages", coverage.pagesVisuallyReviewed?.length ?? 0], ["Visual regions", coverage.visualRegionsInspected ?? 0], ["Images", coverage.imagesInspected ?? 0], ["Categories", coverage.categoriesInspected?.length ?? 0], ["Products verified", coverage.productsVerified ?? 0], ["Documents", coverage.documentsInspected?.length ?? 0], ["Checkout states", coverage.checkoutStatesInspected?.length ?? 0], ["Luna tools", coverage.totalLunaToolCalls ?? 0], ["Runtime", formatMs(coverage.auditRuntimeMs ?? 0)], ["Tokens", coverage.tokenUsage?.totalTokens ?? 0], ["Approx. cost", `$${Number(coverage.tokenUsage?.approximateCostUsd ?? 0).toFixed(4)}`],
     ].map(([label, value]) => <div key={label} className="bg-[#0c0e12] p-4"><p className="text-[9px] text-[#5f646c]">{label}</p><p className="mt-2 font-mono text-sm text-[#d2d4cf]">{value}</p></div>)}</div>{scan.importedReportUploadedAt && <div className="mt-4"><p className="mb-2 text-[9px] font-semibold uppercase tracking-[.12em] text-[#70c79e]">Imported report snapshot · {importedMetrics.pageCount ?? "Unknown"} pages</p><div className="grid grid-cols-3 gap-px bg-[#70c79e]/15 sm:grid-cols-6">{[["Report score", importedMetrics.healthScore ?? "Not present"], ["URLs discovered", importedCoverage.urlsDiscovered ?? "Not present"], ["Pages opened", importedCoverage.pagesOpened ?? "Not present"], ["Visual pages", importedCoverage.pagesVisuallyReviewed ?? "Not present"], ["Visual regions", importedCoverage.visualRegionsInspected ?? "Not present"], ["Images", importedCoverage.imagesInspected ?? "Not present"], ["Categories", importedCoverage.categoriesInspected ?? "Not present"], ["Products discovered", importedCoverage.productsDiscovered ?? "Not present"], ["Products verified", importedCoverage.productsVerified ?? "Not present"], ["Documents", importedCoverage.documentsInspected ?? "Not present"], ["Checkout states", importedCoverage.checkoutStatesInspected ?? "Not present"], ["Luna tools", importedCoverage.totalLunaToolCalls ?? "Not present"], ["Critical", importedMetrics.severity?.critical ?? 0], ["High", importedMetrics.severity?.high ?? 0], ["Medium", importedMetrics.severity?.medium ?? 0], ["Low", importedMetrics.severity?.low ?? 0]].map(([label, value]) => <div key={label} className="bg-[#0c0e12] p-3"><p className="text-[8px] uppercase tracking-[.08em] text-[#5f776b]">{label}</p><p className="mt-1 font-mono text-sm text-[#9bd7b8]">{value}</p></div>)}</div></div>}<p className="mt-4 text-[9px] leading-4 text-[#555a62]">Luna activity above belongs only to the retained browser session. The imported snapshot is reported separately and never replaces or claims new browser activity.</p></section>
