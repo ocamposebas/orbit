@@ -29,6 +29,14 @@ export function aiScannerQueue() {
   return globalQueue.orbitAiScannerQueue;
 }
 
-export async function enqueueAiScan(scanId: string) {
-  await aiScannerQueue().add("ai-audit", { scanId, version: AI_SCANNER_VERSION }, { jobId: `ai-scan-${scanId}` });
+export async function enqueueAiScan(scanId: string, options: { delayMs?: number; resumeCount?: number } = {}) {
+  const resumeCount = options.resumeCount ?? 0;
+  await aiScannerQueue().add(
+    "ai-audit",
+    { scanId, version: AI_SCANNER_VERSION, resumeCount },
+    {
+      jobId: resumeCount > 0 ? `ai-scan-${scanId}-resume-${resumeCount}` : `ai-scan-${scanId}`,
+      ...(options.delayMs && options.delayMs > 0 ? { delay: options.delayMs } : {}),
+    },
+  );
 }

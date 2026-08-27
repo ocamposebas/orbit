@@ -68,6 +68,7 @@ Open `http://localhost:3000/sentinel`. The seeded workspace uses an intentionall
 | `AI_SCANNER_OPENAI_RETRY_BASE_MS` | Initial exponential-backoff delay when `Retry-After` is absent |
 | `AI_SCANNER_OPENAI_RETRY_MAX_MS` | Maximum fallback backoff delay before jitter |
 | `AI_SCANNER_OPENAI_RETRY_TOTAL_MS` | Maximum cumulative temporary rate-limit cooldown for one Luna request |
+| `AI_SCANNER_OPENAI_MAX_RESUMES` | Maximum persisted cooldown/resume cycles for the same scan after per-request retries are exhausted |
 | `AI_SCANNER_MAX_RUNTIME_MS` | Global audit runtime budget |
 | `AI_SCANNER_MAX_TOOL_CALLS` | Global Luna browser/tool budget |
 | `AI_SCANNER_MAX_TOKENS` | Global cumulative token budget |
@@ -79,6 +80,8 @@ Open `http://localhost:3000/sentinel`. The seeded workspace uses an intentionall
 | `AI_SCANNER_MAX_EVIDENCE_BYTES` | Maximum retained API/PDF/image payload |
 | `AI_SCANNER_INPUT_COST_PER_MILLION` | Configurable approximate input-token rate |
 | `AI_SCANNER_OUTPUT_COST_PER_MILLION` | Configurable approximate output-token rate |
+
+Temporary OpenAI TPM/RPM throttling honors `retry-after` or the corresponding `x-ratelimit-reset-*` header. If the per-request retry cap is still exhausted, the same scan is checkpointed and delayed in the queue; Luna conversation state, browser storage/current page, coverage, usage, completed tool calls, and retained evidence are restored on continuation.
 | `AI_SCANNER_BROWSER_HEADLESS` | Playwright headless mode |
 | `SCREENSHOT_STORAGE` | Evidence storage root |
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LunaAuditIncompleteError, LunaQuotaError, LunaRateLimitError, LunaUnavailableError, parseRetryAfterMs, runLunaAudit, type LunaToolRuntime } from "@/ai-scanner/luna/agent";
+import { LunaAuditIncompleteError, LunaQuotaError, LunaRateLimitError, LunaUnavailableError, parseRateLimitResetMs, parseRetryAfterMs, runLunaAudit, type LunaResumeCheckpoint, type LunaToolRuntime } from "@/ai-scanner/luna/agent";
 import type { AuditCoverage, AuditUsage, ToolExecutionResult } from "@/ai-scanner/types";
 
 function modelResponse(body: unknown) { return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }); }
@@ -270,8 +270,115 @@ describe("Luna-first audit loop", () => {
     });
 
     expect(result.result.summary).toContain("Recovered");
-    expect(waits).toEqual([1_125, 2_250]);
+    expect(waits).toEqual([5_625, 11_250]);
     expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses OpenAI token-reset headers as the cooldown when Retry-After is absent", async () => {
+    const waits: number[] = [];
+    const responses = [
+      rateLimitResponse(
+        { error: { code: "rate_limit_exceeded", type: "rate_limit_error", message: "Token rate limit reached for TPM." } },
+        { "x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "1m30s" },
+      ),
+      modelResponse({ status: "completed", output_text: JSON.stringify({ summary: "Recovered after the server token reset.", observations: [], findings: [], limitations: [] }) }),
+    ];
+    const request = vi.fn(async () => responses.shift()!);
+
+    const result = await runLunaAudit({
+      scanId: "scan-reset-header",
+      merchantId: "merchant-1",
+      merchantName: "Merchant",
+      merchantUrl: "https://merchant.example/",
+      tools: new FakeTools({ maximumRuntimeMs: 300_000, maximumToolCalls: 20, maximumTokens: 100_000, maximumCostUsd: 10 }),
+      request: request as typeof fetch,
+      sleep: async (milliseconds) => { waits.push(milliseconds); },
+      random: () => 0,
+    });
+
+    expect(result.result.summary).toContain("server token reset");
+    expect(waits).toEqual([90_000]);
+  });
+
+  it("does not shorten a Retry-After value that exceeds the fallback backoff cap", async () => {
+    const waits: number[] = [];
+    const responses = [
+      rateLimitResponse(
+        { error: { code: "rate_limit_exceeded", type: "rate_limit_error", message: "Token rate limit reached for TPM." } },
+        { "retry-after": "180", "x-ratelimit-remaining-tokens": "0" },
+      ),
+      modelResponse({ status: "completed", output_text: JSON.stringify({ summary: "Recovered after the full Retry-After cooldown.", observations: [], findings: [], limitations: [] }) }),
+    ];
+    const result = await runLunaAudit({
+      scanId: "scan-long-retry-after",
+      merchantId: "merchant-1",
+      merchantName: "Merchant",
+      merchantUrl: "https://merchant.example/",
+      tools: new FakeTools({ maximumRuntimeMs: 300_000, maximumToolCalls: 20, maximumTokens: 100_000, maximumCostUsd: 10 }),
+      request: vi.fn(async () => responses.shift()!) as typeof fetch,
+      sleep: async (milliseconds) => { waits.push(milliseconds); },
+      random: () => 0,
+    });
+
+    expect(result.result.summary).toContain("full Retry-After");
+    expect(waits).toEqual([180_000]);
+  });
+
+  it("resumes a retained Luna conversation after the per-request TPM retry cap", async () => {
+    const tools = new FakeTools({ maximumRuntimeMs: 600_000, maximumToolCalls: 20, maximumTokens: 100_000, maximumCostUsd: 10 });
+    let checkpoint: LunaResumeCheckpoint | null = null;
+    const firstResponses = [
+      modelResponse({ status: "completed", output: [{ type: "function_call", call_id: "call-1", name: "open_url", arguments: JSON.stringify({ url: "https://merchant.example/" }) }] }),
+      ...Array.from({ length: 6 }, () => rateLimitResponse(
+        { error: { code: "rate_limit_exceeded", type: "rate_limit_error", message: "Token rate limit reached for TPM." } },
+        { "retry-after": "0", "x-ratelimit-remaining-tokens": "0" },
+      )),
+    ];
+    const firstRequest = vi.fn(async () => firstResponses.shift()!);
+
+    const paused = await runLunaAudit({
+      scanId: "scan-checkpoint-resume",
+      merchantId: "merchant-1",
+      merchantName: "Merchant",
+      merchantUrl: "https://merchant.example/",
+      tools,
+      request: firstRequest as typeof fetch,
+      sleep: async () => undefined,
+      random: () => 0,
+      onCheckpoint: async (value) => { checkpoint = value; },
+    }).catch((error: unknown) => error);
+
+    expect(paused).toBeInstanceOf(LunaRateLimitError);
+    expect(checkpoint).not.toBeNull();
+    expect(JSON.stringify(checkpoint)).toContain("evidence-1");
+    expect(JSON.stringify(checkpoint)).toContain("orbit-evidence://evidence-1");
+
+    const resumedBodies: string[] = [];
+    const resumedResponses = [
+      modelResponse({ status: "completed", output: [{ type: "function_call", call_id: "call-2", name: "inspect_navigation", arguments: "{}" }] }),
+      modelResponse({ status: "completed", output: [{ type: "function_call", call_id: "call-3", name: "inspect_product", arguments: JSON.stringify({ url: "https://merchant.example/products/a" }) }] }),
+      modelResponse({ status: "completed", output_text: JSON.stringify({ summary: "Resumed without restarting completed browser work.", observations: [{ text: "Retained evidence remained in context.", evidenceIds: ["evidence-1"] }], findings: [], limitations: [] }) }),
+    ];
+    const resumedRequest = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      resumedBodies.push(String(init?.body));
+      return resumedResponses.shift()!;
+    });
+    const resumed = await runLunaAudit({
+      scanId: "scan-checkpoint-resume",
+      merchantId: "merchant-1",
+      merchantName: "Merchant",
+      merchantUrl: "https://merchant.example/",
+      tools,
+      request: resumedRequest as typeof fetch,
+      sleep: async () => undefined,
+      random: () => 0,
+      resumeCheckpoint: checkpoint,
+    });
+
+    expect(resumed.result.summary).toContain("without restarting");
+    expect(tools.executedCalls()).toEqual(["open_url", "inspect_navigation", "inspect_product"]);
+    expect(resumedBodies[0]).toContain("data:image/jpeg;base64,AA==");
+    expect(resumedBodies[0]).toContain("evidence-1");
   });
 
   it("caps temporary rate-limit retries per Luna request and leaves the scan incomplete, not unavailable", async () => {
@@ -307,5 +414,12 @@ describe("Luna-first audit loop", () => {
     expect(parseRetryAfterMs("1.5", 0)).toBe(1_500);
     expect(parseRetryAfterMs("Thu, 01 Jan 1970 00:00:03 GMT", 1_000)).toBe(2_000);
     expect(parseRetryAfterMs("not-a-delay", 0)).toBeNull();
+  });
+
+  it("parses OpenAI reset duration headers", () => {
+    expect(parseRateLimitResetMs("1m30s")).toBe(90_000);
+    expect(parseRateLimitResetMs("250ms")).toBe(250);
+    expect(parseRateLimitResetMs("2.5")).toBe(2_500);
+    expect(parseRateLimitResetMs("later")).toBeNull();
   });
 });

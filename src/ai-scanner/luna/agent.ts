@@ -11,7 +11,7 @@ type ResponseItem = {
   call_id?: string;
   name?: string;
   arguments?: string;
-  content?: Array<{ type?: string; text?: string }>;
+  content?: Array<{ type?: string; text?: string; [key: string]: unknown }>;
   [key: string]: unknown;
 };
 
@@ -40,7 +40,12 @@ export class LunaAuditIncompleteError extends Error {
 }
 
 export class LunaRateLimitError extends LunaAuditIncompleteError {
-  constructor(message: string, readonly kind: Exclude<OpenAiLimitKind, "QUOTA_OR_BILLING">, readonly retries: number) {
+  constructor(
+    message: string,
+    readonly kind: Exclude<OpenAiLimitKind, "QUOTA_OR_BILLING">,
+    readonly retries: number,
+    readonly resumeAfterMs: number,
+  ) {
     super(message);
     this.name = "LunaRateLimitError";
   }
@@ -61,6 +66,20 @@ export interface LunaToolRuntime {
   execute(callId: string, name: string, args: unknown): Promise<ToolExecutionResult>;
   imageInputs(evidenceIds: string[]): Promise<Array<{ evidenceId: string; mimeType: string; dataUrl: string }>>;
 }
+
+export type LunaResumeCheckpoint = {
+  version: 1;
+  conversation: Array<Record<string, unknown>>;
+  usage: AuditUsage;
+  lastInputTokens: number;
+  firstTurn: boolean;
+  forceFinalization: string | null;
+  finalizationNoticeAdded: boolean;
+  finalizationAttempts: number;
+  investigationRecoveryPrompts: number;
+  forceOpenRecovery: boolean;
+  compactionCount: number;
+};
 
 const systemPrompt = `You are GPT-5.6 Luna, ORBIT AI Scanner v1's primary website investigator and semantic reviewer.
 
@@ -135,17 +154,47 @@ export function parseRetryAfterMs(value: string | null, now = Date.now()) {
   return Number.isFinite(date) ? Math.max(0, date - now) : null;
 }
 
+export function parseRateLimitResetMs(value: string | null) {
+  if (!value?.trim()) return null;
+  const normalized = value.trim().toLowerCase();
+  const seconds = Number(normalized);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+
+  const pattern = /(\d+(?:\.\d+)?)(ms|s|m|h)/g;
+  let totalMs = 0;
+  let consumed = "";
+  for (const match of normalized.matchAll(pattern)) {
+    const amount = Number(match[1]);
+    const multiplier = match[2] === "ms" ? 1 : match[2] === "s" ? 1_000 : match[2] === "m" ? 60_000 : 3_600_000;
+    totalMs += amount * multiplier;
+    consumed += match[0];
+  }
+  return consumed === normalized.replace(/\s+/g, "") && Number.isFinite(totalMs) ? Math.ceil(totalMs) : null;
+}
+
+function resetAfterMs(headers: Headers, kind: Exclude<OpenAiLimitKind, "QUOTA_OR_BILLING">) {
+  const names = kind === "TOKENS_PER_MINUTE"
+    ? ["x-ratelimit-reset-project-tokens", "x-ratelimit-reset-tokens"]
+    : kind === "REQUESTS_PER_MINUTE"
+      ? ["x-ratelimit-reset-requests"]
+      : ["x-ratelimit-reset-project-tokens", "x-ratelimit-reset-tokens", "x-ratelimit-reset-requests"];
+  const parsed = names.map((name) => parseRateLimitResetMs(headers.get(name))).filter((value): value is number => value !== null);
+  return parsed.length ? Math.max(...parsed) : null;
+}
+
 function retryWaitMs(input: {
   retryNumber: number;
   retryAfter: string | null;
+  resetAfterMs: number | null;
   baseMs: number;
   maximumMs: number;
   random: () => number;
 }) {
   const retryAfterMs = parseRetryAfterMs(input.retryAfter);
-  const base = retryAfterMs ?? Math.min(input.maximumMs, input.baseMs * (2 ** Math.max(0, input.retryNumber - 1)));
-  const jitterWindow = retryAfterMs === null
-    ? Math.min(1_000, Math.max(1, Math.round(base * 0.25)))
+  const serverCooldownMs = retryAfterMs ?? input.resetAfterMs;
+  const base = serverCooldownMs ?? Math.min(input.maximumMs, input.baseMs * (2 ** Math.max(0, input.retryNumber - 1)));
+  const jitterWindow = serverCooldownMs === null
+    ? Math.min(5_000, Math.max(1, Math.round(base * 0.25)))
     : Math.min(1_000, Math.max(100, Math.round(base * 0.05)));
   return Math.ceil(base + Math.max(0, Math.min(1, input.random())) * jitterWindow);
 }
@@ -198,21 +247,31 @@ async function requestResponse(body: Record<string, unknown>, options: {
         logger.error({ scanId: options.scanId, rateLimitKind: classification.kind, errorCode: classification.code, requestId }, "OpenAI quota or billing limit requires operator action");
         throw new LunaQuotaError(`OpenAI quota or billing access is unavailable${classification.code ? ` (${classification.code})` : ""}`, classification.code);
       }
+      const serverResetMs = resetAfterMs(response.headers, classification.kind);
       if (rateLimitRetries >= env.AI_SCANNER_OPENAI_MAX_RETRIES) {
-        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} remained active after ${rateLimitRetries} retries`, classification.kind, rateLimitRetries);
+        const resumeAfterMs = Math.max(5_000, retryWaitMs({
+          retryNumber: rateLimitRetries + 1,
+          retryAfter: response.headers.get("retry-after"),
+          resetAfterMs: serverResetMs,
+          baseMs: env.AI_SCANNER_OPENAI_RETRY_BASE_MS,
+          maximumMs: env.AI_SCANNER_OPENAI_RETRY_MAX_MS,
+          random,
+        }));
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} remained active after ${rateLimitRetries} retries; the same scan is paused for automatic continuation`, classification.kind, rateLimitRetries, resumeAfterMs);
       }
 
       const retryNumber = rateLimitRetries + 1;
       const waitMs = retryWaitMs({
         retryNumber,
         retryAfter: response.headers.get("retry-after"),
+        resetAfterMs: serverResetMs,
         baseMs: env.AI_SCANNER_OPENAI_RETRY_BASE_MS,
         maximumMs: env.AI_SCANNER_OPENAI_RETRY_MAX_MS,
         random,
       });
       const withinRetryBudget = rateLimitWaitMs + waitMs <= env.AI_SCANNER_OPENAI_RETRY_TOTAL_MS;
       if (!withinRetryBudget || (options.canWait && !options.canWait(waitMs))) {
-        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exceeded the remaining retry or audit budget`, classification.kind, rateLimitRetries);
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exceeded the current execution window; the same scan is paused for automatic continuation`, classification.kind, rateLimitRetries, waitMs);
       }
 
       rateLimitRetries = retryNumber;
@@ -223,12 +282,14 @@ async function requestResponse(body: Record<string, unknown>, options: {
         waitMs,
         rateLimitKind: classification.kind,
         retryAfterPresent: response.headers.has("retry-after"),
+        resetHeaderPresent: serverResetMs !== null,
+        serverResetMs,
         requestId,
       }, "OpenAI temporary rate limit; retrying the same Luna request after cooldown");
       await sleep(waitMs);
       rateLimitWaitMs += waitMs;
       if (options.canWait && !options.canWait(0)) {
-        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exhausted the remaining audit budget`, classification.kind, rateLimitRetries);
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exhausted the current execution window; the same scan is paused for automatic continuation`, classification.kind, rateLimitRetries, Math.max(5_000, serverResetMs ?? env.AI_SCANNER_OPENAI_RETRY_BASE_MS));
       }
       continue;
     }
@@ -242,6 +303,51 @@ async function requestResponse(body: Record<string, unknown>, options: {
   }
 }
 
+const checkpointEvidencePrefix = "orbit-evidence://";
+
+export function serializeLunaCheckpointConversation(conversation: Array<Record<string, unknown>>) {
+  const serialized = structuredClone(conversation);
+  for (const item of serialized) {
+    if (!Array.isArray(item.content)) continue;
+    let evidenceId: string | null = null;
+    for (const content of item.content as Array<Record<string, unknown>>) {
+      if (content.type === "input_text" && typeof content.text === "string") {
+        evidenceId = /visual evidence ID ([A-Za-z0-9_-]+)/.exec(content.text)?.[1] ?? evidenceId;
+      }
+      if (content.type === "input_image" && typeof content.image_url === "string" && content.image_url.startsWith("data:") && evidenceId) {
+        content.image_url = `${checkpointEvidencePrefix}${evidenceId}`;
+      }
+    }
+  }
+  return serialized;
+}
+
+async function hydrateLunaCheckpointConversation(checkpoint: LunaResumeCheckpoint, tools: LunaToolRuntime) {
+  const conversation = structuredClone(checkpoint.conversation);
+  const evidenceIds = new Set<string>();
+  for (const item of conversation) {
+    if (!Array.isArray(item.content)) continue;
+    for (const content of item.content as Array<Record<string, unknown>>) {
+      if (content.type === "input_image" && typeof content.image_url === "string" && content.image_url.startsWith(checkpointEvidencePrefix)) {
+        evidenceIds.add(content.image_url.slice(checkpointEvidencePrefix.length));
+      }
+    }
+  }
+  const images = new Map((await tools.imageInputs([...evidenceIds])).map((image) => [image.evidenceId, image.dataUrl]));
+  for (const item of conversation) {
+    if (!Array.isArray(item.content)) continue;
+    item.content = (item.content as Array<Record<string, unknown>>).map((content) => {
+      if (content.type !== "input_image" || typeof content.image_url !== "string" || !content.image_url.startsWith(checkpointEvidencePrefix)) return content;
+      const evidenceId = content.image_url.slice(checkpointEvidencePrefix.length);
+      const dataUrl = images.get(evidenceId);
+      return dataUrl
+        ? { ...content, image_url: dataUrl }
+        : { type: "input_text", text: `Retained visual evidence ID ${evidenceId} remains stored, but its pixels could not be reloaded into this continuation turn.` };
+    });
+  }
+  return conversation;
+}
+
 export async function runLunaAudit(input: {
   scanId: string;
   merchantId: string;
@@ -251,14 +357,20 @@ export async function runLunaAudit(input: {
   request?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
   random?: () => number;
+  resumeCheckpoint?: LunaResumeCheckpoint | null;
+  onCheckpoint?: (checkpoint: LunaResumeCheckpoint) => Promise<void>;
 }): Promise<{ result: LunaAuditResult; usage: AuditUsage }> {
   const env = getServerEnv();
-  const usage: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
-  let lastInputTokens = 0;
-  const conversation: Array<Record<string, unknown>> = [{
-    role: "user",
-    content: [{ type: "input_text", text: JSON.stringify({ merchant: { name: input.merchantName, url: input.merchantUrl }, instruction: "Open the merchant URL, inspect its rendered pixels, then choose and perform the investigation needed for an evidence-backed audit." }) }],
-  }];
+  const resume = input.resumeCheckpoint?.version === 1 ? input.resumeCheckpoint : null;
+  const usage: AuditUsage = resume ? { ...resume.usage } : { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
+  let lastInputTokens = resume?.lastInputTokens ?? 0;
+  const conversation: Array<Record<string, unknown>> = resume
+    ? await hydrateLunaCheckpointConversation(resume, input.tools)
+    : [{
+      role: "user",
+      content: [{ type: "input_text", text: JSON.stringify({ merchant: { name: input.merchantName, url: input.merchantUrl }, instruction: "Open the merchant URL, inspect its rendered pixels, then choose and perform the investigation needed for an evidence-backed audit." }) }],
+    }];
+  input.tools.setUsage(usage);
   const updateUsage = (response: ModelResponse) => {
     lastInputTokens = response.usage?.input_tokens ?? lastInputTokens;
     usage.responseCalls++;
@@ -291,14 +403,27 @@ export async function runLunaAudit(input: {
     return null;
   };
 
-  logger.info({ scanId: input.scanId, model: env.AI_SCANNER_MODEL, budget: input.tools.budget }, "Luna audit started");
-  let firstTurn = true;
-  let forceFinalization: string | null = null;
-  let finalizationNoticeAdded = false;
-  let finalizationAttempts = 0;
-  let investigationRecoveryPrompts = 0;
-  let forceOpenRecovery = false;
-  let compactionCount = 0;
+  logger.info({ scanId: input.scanId, model: env.AI_SCANNER_MODEL, budget: input.tools.budget, resumed: Boolean(resume) }, resume ? "Luna audit resumed from retained checkpoint" : "Luna audit started");
+  let firstTurn = resume?.firstTurn ?? true;
+  let forceFinalization: string | null = resume?.forceFinalization ?? null;
+  let finalizationNoticeAdded = resume?.finalizationNoticeAdded ?? false;
+  let finalizationAttempts = resume?.finalizationAttempts ?? 0;
+  let investigationRecoveryPrompts = resume?.investigationRecoveryPrompts ?? 0;
+  let forceOpenRecovery = resume?.forceOpenRecovery ?? false;
+  let compactionCount = resume?.compactionCount ?? 0;
+  const persistCheckpoint = async () => input.onCheckpoint?.({
+    version: 1,
+    conversation: serializeLunaCheckpointConversation(conversation),
+    usage: { ...usage },
+    lastInputTokens,
+    firstTurn,
+    forceFinalization,
+    finalizationNoticeAdded,
+    finalizationAttempts,
+    investigationRecoveryPrompts,
+    forceOpenRecovery,
+    compactionCount,
+  });
   while (true) {
     const pressure = firstTurn ? null : forceFinalization ?? finalizationPressure();
     const finalizing = pressure !== null;
@@ -315,6 +440,7 @@ export async function runLunaAudit(input: {
       logger.info({ scanId: input.scanId, reason: pressure, counters: input.tools.coverage(), usage }, "Luna audit entering reserved finalization phase");
     }
     if (finalizing) finalizationAttempts++;
+    await persistCheckpoint();
     const response = await requestResponse({
       model: env.AI_SCANNER_MODEL,
       store: false,

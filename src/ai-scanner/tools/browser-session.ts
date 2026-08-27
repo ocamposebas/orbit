@@ -49,6 +49,16 @@ type CoverageState = {
 };
 
 type ImageInput = { evidenceId: string; mimeType: string; dataUrl: string };
+type BrowserStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
+
+export type LunaBrowserResumeCheckpoint = {
+  version: 1;
+  storageState: BrowserStorageState;
+  currentUrl: string | null;
+  validPublicHosts: string[];
+  canonicalHostAliases: Array<[string, string]>;
+  productsDiscoveredUrls: string[];
+};
 
 const EMPTY_USAGE: AuditUsage = { responseCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, approximateCostUsd: 0 };
 const textLimit = (value: string, maximum = 50_000) => value.length > maximum ? `${value.slice(0, maximum)}…[truncated]` : value;
@@ -108,6 +118,8 @@ export class LunaBrowserTools {
   private context?: BrowserContext;
   private page?: Page;
   private readonly startedAt = Date.now();
+  private readonly runtimeOffsetMs: number;
+  private productsDiscoveredBaseline = 0;
   private readonly validPublicHosts = new Set<string>();
   private readonly canonicalHostAliases = new Map<string, string>();
   private usage: AuditUsage = { ...EMPTY_USAGE };
@@ -123,8 +135,15 @@ export class LunaBrowserTools {
     readonly scanId: string,
     private readonly allowedHosts: Set<string>,
     readonly budget: AuditBudget,
+    resumeCoverage?: AuditCoverage | null,
+    private readonly resumeCheckpoint?: LunaBrowserResumeCheckpoint | null,
   ) {
     for (const host of [...allowedHosts]) this.allowFirstPartyHost(host);
+    this.runtimeOffsetMs = resumeCoverage?.auditRuntimeMs ?? 0;
+    if (resumeCoverage) this.restoreCoverage(resumeCoverage);
+    for (const host of resumeCheckpoint?.validPublicHosts ?? []) this.validPublicHosts.add(host.toLowerCase());
+    for (const [alias, canonical] of resumeCheckpoint?.canonicalHostAliases ?? []) this.canonicalHostAliases.set(alias.toLowerCase(), canonical.toLowerCase());
+    for (const url of resumeCheckpoint?.productsDiscoveredUrls ?? []) this.coverageState.productsDiscovered.add(url);
   }
 
   async start() {
@@ -138,6 +157,7 @@ export class LunaBrowserTools {
       locale: "en-US",
       acceptDownloads: false,
       serviceWorkers: "block",
+      ...(this.resumeCheckpoint?.storageState ? { storageState: this.resumeCheckpoint.storageState } : {}),
     });
     await this.context.route("**/*", async (route) => {
       const request = route.request();
@@ -158,6 +178,14 @@ export class LunaBrowserTools {
     this.page = await this.context.newPage();
     this.page.setDefaultNavigationTimeout(30_000);
     this.page.setDefaultTimeout(15_000);
+    if (this.resumeCheckpoint?.currentUrl && this.resumeCheckpoint.currentUrl !== "about:blank") {
+      try {
+        const resumeUrl = normalizePublicUrl(this.resumeCheckpoint.currentUrl);
+        if (this.validPublicHosts.has(resumeUrl.hostname.toLowerCase())) await this.page.goto(resumeUrl.toString(), { waitUntil: "commit" });
+      } catch (error) {
+        logger.warn({ scanId: this.scanId, error: serializeErrorForLog(error) }, "Could not restore the last browser page; retained Luna checkpoint remains available");
+      }
+    }
   }
 
   async close() {
@@ -166,6 +194,17 @@ export class LunaBrowserTools {
   }
 
   setUsage(usage: AuditUsage) { this.usage = { ...usage }; }
+
+  async checkpoint(): Promise<LunaBrowserResumeCheckpoint> {
+    return {
+      version: 1,
+      storageState: this.context ? await this.context.storageState() : { cookies: [], origins: [] },
+      currentUrl: this.page?.url() ?? null,
+      validPublicHosts: [...this.validPublicHosts],
+      canonicalHostAliases: [...this.canonicalHostAliases],
+      productsDiscoveredUrls: [...this.coverageState.productsDiscovered],
+    };
+  }
 
   coverage(): AuditCoverage {
     const normalizedPagesOpened = [...new Set([...this.coverageState.pagesOpened].map((url) => this.inventoryUrl(url) ?? url))];
@@ -181,7 +220,7 @@ export class LunaBrowserTools {
       visualRegionsInspected: this.coverageState.visualRegionsInspected,
       imagesInspected: this.coverageState.imagesInspected,
       categoriesInspected: [...this.coverageState.categoriesInspected],
-      productsDiscovered: this.coverageState.productsDiscovered.size,
+      productsDiscovered: Math.max(this.productsDiscoveredBaseline, this.coverageState.productsDiscovered.size),
       productsVerified: this.coverageState.productsVerified,
       productPagesWithImagesInspected: [...this.coverageState.productPagesWithImagesInspected],
       documentsInspected: [...this.coverageState.documentsInspected],
@@ -191,9 +230,31 @@ export class LunaBrowserTools {
       checkoutStatesInspected: [...this.coverageState.checkoutStatesInspected],
       checkoutFormsInspected: this.coverageState.checkoutFormsInspected,
       totalLunaToolCalls: this.coverageState.totalLunaToolCalls,
-      auditRuntimeMs: Date.now() - this.startedAt,
+      auditRuntimeMs: this.runtimeOffsetMs + Date.now() - this.startedAt,
       tokenUsage: { ...this.usage },
     };
+  }
+
+  private restoreCoverage(coverage: AuditCoverage) {
+    coverage.urlsDiscovered.forEach((url) => this.coverageState.urlsDiscovered.add(url));
+    coverage.firstPartyUrlsDiscovered.forEach((url) => this.coverageState.firstPartyUrlsDiscovered.add(url));
+    this.coverageState.siteInventoryInspected = coverage.siteInventoryInspected;
+    coverage.pagesOpened.forEach((url) => this.coverageState.pagesOpened.add(url));
+    coverage.pagesVisuallyReviewed.forEach((url) => this.coverageState.pagesVisuallyReviewed.add(url));
+    this.coverageState.visualRegionsInspected = coverage.visualRegionsInspected;
+    this.coverageState.imagesInspected = coverage.imagesInspected;
+    coverage.categoriesInspected.forEach((category) => this.coverageState.categoriesInspected.add(category));
+    this.productsDiscoveredBaseline = coverage.productsDiscovered;
+    this.coverageState.productsVerified = coverage.productsVerified;
+    coverage.productPagesWithImagesInspected.forEach((url) => this.coverageState.productPagesWithImagesInspected.add(url));
+    coverage.documentsInspected.forEach((url) => this.coverageState.documentsInspected.add(url));
+    coverage.policyPagesInspected.forEach((policy) => this.coverageState.policyPagesInspected.set(policy.type, policy.url));
+    coverage.publicAccessGatesDismissed.forEach((url) => this.coverageState.publicAccessGatesDismissed.add(url));
+    this.coverageState.commerceSignalsObserved = coverage.commerceSignalsObserved;
+    coverage.checkoutStatesInspected.forEach((url) => this.coverageState.checkoutStatesInspected.add(url));
+    this.coverageState.checkoutFormsInspected = coverage.checkoutFormsInspected;
+    this.coverageState.totalLunaToolCalls = coverage.totalLunaToolCalls;
+    this.usage = { ...coverage.tokenUsage };
   }
 
   budgetExceeded() {
