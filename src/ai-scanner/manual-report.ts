@@ -98,7 +98,7 @@ export function parseOrbitReportMetrics(text: string, pageCount: number): Import
   return { source: "ORBIT_REPORT_PDF", pageCount, ...(healthScore === undefined ? {} : { healthScore }), coverage, severity };
 }
 
-export async function extractOrbitReportMetrics(bytes: Uint8Array) {
+export async function extractOrbitReport(bytes: Uint8Array) {
   const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   // Next bundles the pdf.js API into .next but does not automatically emit its
   // fake-worker module. Point pdf.js at the installed server-side worker rather
@@ -107,32 +107,39 @@ export async function extractOrbitReportMetrics(bytes: Uint8Array) {
   const document = await getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, isEvalSupported: false }).promise;
   const lines: string[] = [];
   const tokens: string[] = [];
+  const pages: Array<{ pageNumber: number; text: string }> = [];
   try {
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
       const grouped = new Map<number, Array<{ x: number; text: string }>>();
+      const pageTokens: string[] = [];
       for (const item of content.items) {
         if (!("str" in item)) continue;
         const textItem = item as TextItem;
         const token = textItem.str.trim();
-        if (token) tokens.push(token);
+        if (token) { tokens.push(token); pageTokens.push(token); }
         const y = Math.round(textItem.transform[5]);
         const row = grouped.get(y) ?? [];
         row.push({ x: textItem.transform[4], text: textItem.str });
         grouped.set(y, row);
       }
       for (const [, row] of [...grouped].sort(([a], [b]) => b - a)) lines.push(row.sort((a, b) => a.x - b.x).map((item) => item.text).join(" ").trim());
+      pages.push({ pageNumber, text: pageTokens.join("\n") });
     }
     // Chromium PDFs commonly place several card labels on one visual row and
     // their values on another. Preserve pdf.js content-stream order first so a
     // label remains adjacent to its own value; retain reconstructed visual rows
     // as a secondary representation for prose and inline label/value layouts.
-    return parseOrbitReportMetrics(`${tokens.join("\n")}\n${lines.join("\n")}`, document.numPages);
+    return { metrics: parseOrbitReportMetrics(`${tokens.join("\n")}\n${lines.join("\n")}`, document.numPages), pages };
   } finally {
     // pdf.js may reject destroy() with AbortException after its text streams
     // have already completed. Cleanup must never replace a successful parse or
     // the actionable HttpError raised for an unrecognized report.
     await document.destroy().catch(() => undefined);
   }
+}
+
+export async function extractOrbitReportMetrics(bytes: Uint8Array) {
+  return (await extractOrbitReport(bytes)).metrics;
 }

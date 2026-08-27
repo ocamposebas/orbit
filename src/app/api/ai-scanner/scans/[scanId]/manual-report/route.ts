@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { extractOrbitReportMetrics, validateAiScanManualReport } from "@/ai-scanner/manual-report";
+import { createHash } from "node:crypto";
+import { extractOrbitReport, validateAiScanManualReport } from "@/ai-scanner/manual-report";
 import type { Prisma } from "@/generated/prisma/client";
 import { requestSession } from "@/sentinel/auth/session";
 import { getDatabase } from "@/sentinel/db";
@@ -20,17 +21,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     validateMutationOrigin(request);
     const { scanId } = await params;
     const db = getDatabase();
-    const scan = await db.aiScan.findFirst({ where: { id: scanId, merchant: merchantScope(session) }, select: { id: true, merchantId: true, importedReportSha256: true } });
+    const scan = await db.aiScan.findFirst({ where: { id: scanId, merchant: merchantScope(session) }, select: { id: true, merchantId: true, importedReportSha256: true, site: { select: { normalizedUrl: true } } } });
     if (!scan) throw new HttpError(404, "AI scan not found");
     const upload = await validateAiScanManualReport((await request.formData()).get("report"));
-    const metrics = await extractOrbitReportMetrics(upload.bytes);
+    const { metrics, pages } = await extractOrbitReport(upload.bytes);
     const storageKey = `ai-scanner/${scanId}/imported-reports/${upload.sha256}.pdf`;
     await evidenceStorage().put(storageKey, upload.bytes);
     const uploadedAt = new Date();
-    await db.$transaction([
-      db.aiScan.update({ where: { id: scanId }, data: { status: "COMPLETED", failureCode: null, error: null, resumeAfter: null, completedAt: uploadedAt, summary: "ORBIT report imported successfully.", score: metrics.healthScore ?? null, importedReportStorageKey: storageKey, importedReportOriginalName: upload.originalName, importedReportMimeType: "application/pdf", importedReportSizeBytes: upload.bytes.byteLength, importedReportSha256: upload.sha256, importedReportUploadedAt: uploadedAt, importedReportUploadedById: session.user.id, importedReportMetrics: metrics as unknown as Prisma.InputJsonValue } }),
-      db.auditLog.create({ data: { organizationId: session.organization.id, merchantId: scan.merchantId, aiScanId: scanId, actorId: session.user.id, action: "ai_scanner.report_imported", targetType: "AiScan", targetId: scanId, metadata: { originalName: upload.originalName, sizeBytes: upload.bytes.byteLength, sha256: upload.sha256, replacedSha256: scan.importedReportSha256, metrics } } }),
-    ]);
+    await db.$transaction(async (tx) => {
+      await tx.aiEvidence.deleteMany({ where: { scanId, toolName: "import_manual_report" } });
+      await tx.aiEvidence.create({ data: { scanId, toolName: "import_manual_report", kind: "PDF", sourceUrl: scan.site.normalizedUrl, firstParty: true, exactText: pages.map((page) => `PAGE ${page.pageNumber}\n${page.text}`).join("\n\n"), storageKey, mimeType: "application/pdf", sha256: upload.sha256, metadata: { imported: true, originalName: upload.originalName, pageCount: pages.length, metrics }, validated: true } });
+      if (pages.length) await tx.aiEvidence.createMany({ data: pages.map((page) => ({ scanId, toolName: "import_manual_report", kind: "VISIBLE_TEXT" as const, sourceUrl: scan.site.normalizedUrl, firstParty: true, exactText: page.text, mimeType: "text/plain", sha256: createHash("sha256").update(`${upload.sha256}:page:${page.pageNumber}:${page.text}`).digest("hex"), metadata: { imported: true, originalName: upload.originalName, pageNumber: page.pageNumber, pageCount: pages.length }, validated: true })) });
+      await tx.aiScan.update({ where: { id: scanId }, data: { status: "COMPLETED", failureCode: null, error: null, resumeAfter: null, completedAt: uploadedAt, summary: "ORBIT report imported successfully with full-page evidence.", score: metrics.healthScore ?? null, importedReportStorageKey: storageKey, importedReportOriginalName: upload.originalName, importedReportMimeType: "application/pdf", importedReportSizeBytes: upload.bytes.byteLength, importedReportSha256: upload.sha256, importedReportUploadedAt: uploadedAt, importedReportUploadedById: session.user.id, importedReportMetrics: metrics as unknown as Prisma.InputJsonValue } });
+      const removedScans = await tx.aiScan.deleteMany({ where: { merchantId: scan.merchantId, id: { not: scanId } } });
+      await tx.auditLog.create({ data: { organizationId: session.organization.id, merchantId: scan.merchantId, aiScanId: scanId, actorId: session.user.id, action: "ai_scanner.report_imported", targetType: "AiScan", targetId: scanId, metadata: { originalName: upload.originalName, sizeBytes: upload.bytes.byteLength, sha256: upload.sha256, replacedSha256: scan.importedReportSha256, evidencePages: pages.length, removedSiblingScans: removedScans.count, metrics } } });
+    });
     return NextResponse.json({ importedReport: { originalName: upload.originalName, sizeBytes: upload.bytes.byteLength, sha256: upload.sha256, uploadedAt, metrics } }, { status: 201 });
   } catch (error) { return apiError(error); }
 }
