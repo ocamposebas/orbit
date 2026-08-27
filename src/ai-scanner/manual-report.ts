@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { HttpError } from "@/sentinel/http";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 
@@ -81,7 +83,11 @@ export function parseOrbitReportMetrics(text: string, pageCount: number): Import
 }
 
 export async function extractOrbitReportMetrics(bytes: Uint8Array) {
-  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // Next bundles the pdf.js API into .next but does not automatically emit its
+  // fake-worker module. Point pdf.js at the installed server-side worker rather
+  // than allowing it to resolve a nonexistent .next/server/chunks copy.
+  GlobalWorkerOptions.workerSrc = pathToFileURL(join(process.cwd(), "node_modules", "pdfjs-dist", "legacy", "build", "pdf.worker.mjs")).href;
   const document = await getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, isEvalSupported: false }).promise;
   const lines: string[] = [];
   try {
