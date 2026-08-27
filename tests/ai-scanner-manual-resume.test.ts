@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { database, enqueueAiScan } = vi.hoisted(() => ({
+const { database, enqueueAiScan, removeAutomaticResumeJobs } = vi.hoisted(() => ({
   database: {
     aiScan: {
       findFirst: vi.fn(),
@@ -10,10 +10,11 @@ const { database, enqueueAiScan } = vi.hoisted(() => ({
     auditLog: { create: vi.fn(async () => undefined) },
   },
   enqueueAiScan: vi.fn(async () => undefined),
+  removeAutomaticResumeJobs: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/sentinel/db", () => ({ getDatabase: () => database }));
-vi.mock("@/ai-scanner/queue", () => ({ enqueueAiScan }));
+vi.mock("@/ai-scanner/queue", () => ({ enqueueAiScan, removeAutomaticResumeJobs }));
 
 import { resumeAiScan } from "@/ai-scanner/service";
 
@@ -42,7 +43,7 @@ describe("AI Scanner manual resume", () => {
     });
     expect(enqueueAiScan).toHaveBeenCalledWith("scan-1", expect.objectContaining({ resumeCount: 0, jobKey: expect.stringMatching(/^manual-/) }));
     expect(database.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ actorId: "user-1", action: "ai_scanner.manual_resume", metadata: { previousResumeCount: 12, checkpointRetained: true } }),
+      data: expect.objectContaining({ actorId: "user-1", action: "ai_scanner.manual_resume", metadata: { previousStatus: "AI_SCAN_INCOMPLETE", previousResumeCount: 12, checkpointRetained: true } }),
     }));
   });
 
@@ -62,5 +63,25 @@ describe("AI Scanner manual resume", () => {
       where: { id: "scan-1", status: "QUEUED" },
       data: expect.objectContaining({ status: "AI_SCAN_INCOMPLETE", resumeCount: 12 }),
     }));
+  });
+
+  it("rescues a legacy queued cooldown and resumes it with one click", async () => {
+    database.aiScan.findFirst.mockResolvedValue({
+      id: "scan-1",
+      merchantId: "merchant-1",
+      status: "QUEUED",
+      resumeCheckpoint: retainedCheckpoint,
+      resumeCount: 12,
+    });
+
+    const result = await resumeAiScan("scan-1", "org-1", "user-1");
+
+    expect(result.status).toBe("QUEUED");
+    expect(database.aiScan.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: { id: "scan-1", status: "QUEUED", resumeCount: 12 },
+      data: expect.objectContaining({ status: "AI_SCAN_INCOMPLETE", resumeAfter: null }),
+    }));
+    expect(removeAutomaticResumeJobs).toHaveBeenCalledWith("scan-1", 12);
+    expect(enqueueAiScan).toHaveBeenCalledWith("scan-1", expect.objectContaining({ resumeCount: 0, jobKey: expect.stringMatching(/^manual-/) }));
   });
 });

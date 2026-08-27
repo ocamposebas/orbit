@@ -41,3 +41,17 @@ export async function enqueueAiScan(scanId: string, options: { delayMs?: number;
     },
   );
 }
+
+export async function removeAutomaticResumeJobs(scanId: string, resumeCount: number) {
+  const queue = aiScannerQueue();
+  for (let count = 1; count <= resumeCount; count += 1) {
+    const job = await queue.getJob(`ai-scan-${scanId}-resume-${count}`);
+    if (!job) continue;
+    try {
+      await job.remove();
+    } catch {
+      // An active legacy job is harmless: runAiScan converts it to a manual pause
+      // before opening the browser or issuing another OpenAI request.
+    }
+  }
+}

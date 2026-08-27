@@ -3,7 +3,7 @@ import { getDatabase } from "@/sentinel/db";
 import { getServerEnv } from "@/sentinel/config";
 import { HttpError } from "@/sentinel/http";
 import { createAiScanSchema } from "./schemas";
-import { enqueueAiScan } from "./queue";
+import { enqueueAiScan, removeAutomaticResumeJobs } from "./queue";
 import type { AuditBudget } from "./types";
 import { randomUUID } from "node:crypto";
 
@@ -78,8 +78,24 @@ export async function resumeAiScan(scanId: string, organizationId: string, actor
     select: { id: true, merchantId: true, status: true, resumeCheckpoint: true, resumeCount: true },
   });
   if (!scan) throw new HttpError(404, "AI scan not found");
-  if (scan.status !== "AI_SCAN_INCOMPLETE") throw new HttpError(409, "Only an incomplete AI scan can be resumed");
+  const legacyAutomaticPause = scan.status === "QUEUED" && scan.resumeCount > 0;
+  if (scan.status !== "AI_SCAN_INCOMPLETE" && !legacyAutomaticPause) throw new HttpError(409, "Only a paused AI scan can be resumed");
   if (!hasAiScanResumeCheckpoint(scan.resumeCheckpoint)) throw new HttpError(409, "This scan has no retained checkpoint and cannot be resumed in place");
+
+  if (legacyAutomaticPause) {
+    const paused = await db.aiScan.updateMany({
+      where: { id: scanId, status: "QUEUED", resumeCount: scan.resumeCount },
+      data: {
+        status: "AI_SCAN_INCOMPLETE",
+        failureCode: "AI_SCAN_INCOMPLETE",
+        error: "Legacy automatic cooldown converted to manual continuation; the retained checkpoint was not discarded",
+        resumeAfter: null,
+        completedAt: new Date(),
+      },
+    });
+    if (paused.count !== 1) throw new HttpError(409, "This scan changed state while manual continuation was requested");
+    await removeAutomaticResumeJobs(scanId, scan.resumeCount);
+  }
 
   const claimed = await db.aiScan.updateMany({
     where: { id: scanId, status: "AI_SCAN_INCOMPLETE" },
@@ -107,7 +123,7 @@ export async function resumeAiScan(scanId: string, organizationId: string, actor
       action: "ai_scanner.manual_resume",
       targetType: "AiScan",
       targetId: scanId,
-      metadata: { previousResumeCount: scan.resumeCount, checkpointRetained: true },
+      metadata: { previousStatus: scan.status, previousResumeCount: scan.resumeCount, checkpointRetained: true },
     },
   });
   return { id: scanId, status: "QUEUED" as const, resumeCount: 0, resumeAfter: null };
