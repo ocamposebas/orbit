@@ -51,6 +51,13 @@ export class LunaRateLimitError extends LunaAuditIncompleteError {
   }
 }
 
+export class LunaTransportInterruptedError extends LunaAuditIncompleteError {
+  constructor(message: string, readonly retries: number, readonly timedOut: boolean) {
+    super(message);
+    this.name = "LunaTransportInterruptedError";
+  }
+}
+
 export class LunaQuotaError extends LunaUnavailableError {
   constructor(message: string, readonly code: string | null) {
     super(message);
@@ -232,7 +239,10 @@ async function requestResponse(body: Record<string, unknown>, options: {
     } catch (error) {
       transientRetries++;
       if (transientRetries >= 3) {
-        throw new LunaUnavailableError(error instanceof Error ? sanitizeLogText(error.message) : "Luna Responses API request failed");
+        const timedOut = controller.signal.aborted
+          || (error instanceof Error && (error.name === "AbortError" || /\babort(?:ed)?\b|\btimeout\b/i.test(error.message)));
+        const detail = timedOut ? "timed out or was aborted" : "was interrupted by a transport failure";
+        throw new LunaTransportInterruptedError(`OpenAI request ${detail} after ${transientRetries} attempts; manual continuation is required from the retained checkpoint`, transientRetries, timedOut);
       }
       logger.warn({ scanId: options.scanId, retryCount: transientRetries, maxRetries: 2, error: serializeErrorForLog(error) }, "Luna request transport failed; retrying the same request");
       continue;
@@ -257,7 +267,7 @@ async function requestResponse(body: Record<string, unknown>, options: {
           maximumMs: env.AI_SCANNER_OPENAI_RETRY_MAX_MS,
           random,
         }));
-        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} remained active after ${rateLimitRetries} retries; the same scan is paused for automatic continuation`, classification.kind, rateLimitRetries, resumeAfterMs);
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} remained active after ${rateLimitRetries} retries; the same scan is paused for manual continuation`, classification.kind, rateLimitRetries, resumeAfterMs);
       }
 
       const retryNumber = rateLimitRetries + 1;
@@ -271,7 +281,7 @@ async function requestResponse(body: Record<string, unknown>, options: {
       });
       const withinRetryBudget = rateLimitWaitMs + waitMs <= env.AI_SCANNER_OPENAI_RETRY_TOTAL_MS;
       if (!withinRetryBudget || (options.canWait && !options.canWait(waitMs))) {
-        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exceeded the current execution window; the same scan is paused for automatic continuation`, classification.kind, rateLimitRetries, waitMs);
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exceeded the current execution window; the same scan is paused for manual continuation`, classification.kind, rateLimitRetries, waitMs);
       }
 
       rateLimitRetries = retryNumber;
@@ -289,7 +299,7 @@ async function requestResponse(body: Record<string, unknown>, options: {
       await sleep(waitMs);
       rateLimitWaitMs += waitMs;
       if (options.canWait && !options.canWait(0)) {
-        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exhausted the current execution window; the same scan is paused for automatic continuation`, classification.kind, rateLimitRetries, Math.max(5_000, serverResetMs ?? env.AI_SCANNER_OPENAI_RETRY_BASE_MS));
+        throw new LunaRateLimitError(`OpenAI ${classification.kind.toLowerCase().replaceAll("_", " ")} cooldown exhausted the current execution window; the same scan is paused for manual continuation`, classification.kind, rateLimitRetries, Math.max(5_000, serverResetMs ?? env.AI_SCANNER_OPENAI_RETRY_BASE_MS));
       }
       continue;
     }

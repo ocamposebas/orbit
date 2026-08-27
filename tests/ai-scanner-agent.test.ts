@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LunaAuditIncompleteError, LunaQuotaError, LunaRateLimitError, LunaUnavailableError, parseRateLimitResetMs, parseRetryAfterMs, runLunaAudit, type LunaResumeCheckpoint, type LunaToolRuntime } from "@/ai-scanner/luna/agent";
+import { LunaAuditIncompleteError, LunaQuotaError, LunaRateLimitError, LunaTransportInterruptedError, LunaUnavailableError, parseRateLimitResetMs, parseRetryAfterMs, runLunaAudit, type LunaResumeCheckpoint, type LunaToolRuntime } from "@/ai-scanner/luna/agent";
 import type { AuditCoverage, AuditUsage, ToolExecutionResult } from "@/ai-scanner/types";
 
 function modelResponse(body: unknown) { return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }); }
@@ -408,6 +408,29 @@ describe("Luna-first audit loop", () => {
     expect(error).toBeInstanceOf(LunaAuditIncompleteError);
     expect(error).not.toBeInstanceOf(LunaUnavailableError);
     expect(request).toHaveBeenCalledTimes(6);
+  });
+
+  it("turns repeated request aborts into a checkpoint-backed manual continuation", async () => {
+    let checkpoint: LunaResumeCheckpoint | null = null;
+    const abort = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+    const request = vi.fn(async () => { throw abort; });
+
+    const error = await runLunaAudit({
+      scanId: "scan-aborted",
+      merchantId: "merchant-1",
+      merchantName: "Merchant",
+      merchantUrl: "https://merchant.example/",
+      tools: new FakeTools(),
+      request: request as typeof fetch,
+      onCheckpoint: async (value) => { checkpoint = value; },
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(LunaTransportInterruptedError);
+    expect(error).toBeInstanceOf(LunaAuditIncompleteError);
+    expect(error).not.toBeInstanceOf(LunaUnavailableError);
+    expect(error).toMatchObject({ retries: 3, timedOut: true });
+    expect(checkpoint).not.toBeNull();
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it("parses Retry-After seconds and HTTP dates as minimum cooldowns", () => {
