@@ -56,7 +56,9 @@ function nearbyIntegerForLabels(lines: string[], labels: string[], preferAfter =
 
 export function parseOrbitReportMetrics(text: string, pageCount: number): ImportedReportMetrics {
   const normalized = text.replace(/\s+/g, " ");
-  if (!/\bORBIT\b/i.test(normalized) || !/(AI SCANNER|ESC[AÁ]NER DE IA|SENTINEL)/i.test(normalized)) {
+  const orbitScannerReport = /\bORBIT\b/i.test(normalized) && /(AI SCANNER|ESC[AÁ]NER DE IA|SENTINEL)/i.test(normalized);
+  const postRemediationAudit = /\bWEB AUDIT\b/i.test(normalized) && /(POST[- ]REMEDIATION|VALIDATION)/i.test(normalized);
+  if (!orbitScannerReport && !postRemediationAudit) {
     throw new HttpError(422, "The PDF is readable but is not a recognized ORBIT report");
   }
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -65,8 +67,8 @@ export function parseOrbitReportMetrics(text: string, pageCount: number): Import
   const valuesFollowLabels = firstMetricLabel >= 0
     && integerLine(lines[firstMetricLabel + 1])
     && !integerLine(lines[firstMetricLabel - 1]);
-  const scoreMatch = normalized.match(/(?:Health\s+Score|Puntuaci[oó]n(?:\s+del)?(?:\s+esc[aá]ner(?:\s+de\s+IA)?|\s+de\s+salud)?)\D{0,40}(\d{1,3})\s*\/\s*100/i);
-  const healthScore = scoreMatch ? Number(scoreMatch[1]) : nearbyIntegerForLabels(lines, ["Health Score", "Puntuación de salud", "Puntuación del escáner de IA transparente"]);
+  const scoreMatch = normalized.match(/(?:Health\s+Score|Posture\s+Score|Final\s+Assessment|Puntuaci[oó]n(?:\s+del)?(?:\s+esc[aá]ner(?:\s+de\s+IA)?|\s+de\s+salud)?)\D{0,40}(\d{1,3})\s*\/\s*100/i);
+  const healthScore = scoreMatch ? Number(scoreMatch[1]) : nearbyIntegerForLabels(lines, ["Health Score", "Posture Score", "Puntuación de salud", "Puntuación del escáner de IA transparente"]);
   const labels = {
     urlsDiscovered: ["URLs discovered", "URLs descubiertas"],
     pagesOpened: ["Pages opened", "Páginas abiertas"],

@@ -44,4 +44,9 @@ describe("AI Scanner manual PDF report", () => {
     expect(metrics.healthScore).toBe(87);
     expect(metrics.coverage).toMatchObject({ pagesOpened: 6, pagesVisuallyReviewed: 6, visualRegionsInspected: 8, imagesInspected: 2, categoriesInspected: 1, productsVerified: 0, documentsInspected: 0, checkoutStatesInspected: 1, totalLunaToolCalls: 12 });
   });
+
+  it("accepts a post-remediation web audit with a posture score", () => {
+    const metrics = parseOrbitReportMetrics(`CORE AMINOS\nWEB AUDIT\nVALIDATION 04 - POST-REMEDIATION REVIEW\nPOSTURE SCORE\n95 / 100\nMATERIAL ISSUES\n0 OPEN\n0 Critical - 0 High\nFINAL ASSESSMENT\n95 / 100 - Strong Compliance Posture`, 8);
+    expect(metrics).toMatchObject({ source: "ORBIT_REPORT_PDF", pageCount: 8, healthScore: 95, severity: { critical: 0, high: 0 } });
+  });
 });
