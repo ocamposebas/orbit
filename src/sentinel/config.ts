@@ -41,6 +41,7 @@ const serverEnvSchema = z.object({
   SEED_ADMIN_PASSWORD: z.string().min(12).optional(),
   STRIPE_SECRET_KEY: optionalNonEmpty,
   STRIPE_PUBLISHABLE_KEY: optionalNonEmpty,
+  STRIPE_PAYMENT_METHOD_CONFIGURATION_ID: optionalNonEmpty,
   STRIPE_MODE: z.enum(["test", "live"]).default("test"),
   STRIPE_CONNECT_ACCOUNT_API: z.enum(["v1", "v2"]).default("v2"),
   STRIPE_CONNECT_WEBHOOK_SECRET: optionalNonEmpty,

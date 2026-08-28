@@ -11,7 +11,7 @@ export default async function Page() {
       take: 2,
       select: { merchantId: true },
     });
-    if (grants.length === 1) redirect(`/sentinel/merchant/${grants[0].merchantId}`);
+    if (grants.length === 1) redirect(`/sentinel/merchant/${grants[0].merchantId}?integration=stripe#stripe-connect`);
   }
   return <Watchtower />;
 }

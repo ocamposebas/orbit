@@ -57,7 +57,11 @@ describe("customer payment checkout route", () => {
       error: "Stripe rejected the PaymentIntent parameters",
       code: "parameter_unknown",
       message: "This parameter is not supported for the connected account. (parameter: automatic_payment_methods.enabled)",
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
     expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("x-orbit-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(mocks.rateLimit).toHaveBeenNthCalledWith(1, expect.any(Request), "customer-payment-checkout-ip", 300);
+    expect(mocks.rateLimit).toHaveBeenNthCalledWith(2, expect.any(Request), "customer-payment-checkout-order", 20, "invalid:invalid");
   });
 });

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { getCustomerCheckoutConfiguration } from "@/payments/service";
+import { configTokenRateLimitSubject } from "@/payments/rate-limit-subject";
 import { apiError } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 
@@ -13,8 +14,9 @@ const requestSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    await enforceRateLimit(request, "customer-payment-config", 60);
     const { configToken } = requestSchema.parse(await request.json());
+    await enforceRateLimit(request, "customer-payment-config-ip", 600);
+    await enforceRateLimit(request, "customer-payment-config-merchant", 60, configTokenRateLimitSubject(configToken));
     const configuration = await getCustomerCheckoutConfiguration(configToken);
     return NextResponse.json(configuration, {
       headers: { "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer" },

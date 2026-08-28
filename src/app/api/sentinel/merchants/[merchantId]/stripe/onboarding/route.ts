@@ -9,7 +9,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   let context: { merchantId: string; actorId: string } | undefined;
   try {
     const { merchantId } = await params;
-    const { session } = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN"], mutation: true });
+    const { session } = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"], mutation: true });
     context = { merchantId, actorId: session.user.id };
     await enforceRateLimit(request, `stripe-onboarding:${merchantId}:${session.user.id}`, 10);
     const link = await createStripeOnboardingLink(merchantId, session.user.id);

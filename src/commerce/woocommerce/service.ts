@@ -230,9 +230,10 @@ export async function verifyWooCommerceOrder(merchantId: string, orderId: number
   }
 }
 
-export async function completeWooCommerceOrderPayment(merchantId: string, orderId: number, transactionId: string) {
+export async function completeWooCommerceOrderPayment(merchantId: string, orderId: number, transactionId: string, stripePaymentIntentId: string) {
   if (!Number.isSafeInteger(orderId) || orderId <= 0) throw new RelayError(400, "ORDER_NOT_FOUND", "Invalid WooCommerce order ID");
   if (!/^orb_tx_[A-Za-z0-9_-]{16,128}$/.test(transactionId)) throw new RelayError(400, "INVALID_RELAY_RESPONSE", "Invalid ORBIT transaction ID");
+  if (!/^pi_[A-Za-z0-9_]+$/.test(stripePaymentIntentId)) throw new RelayError(400, "INVALID_RELAY_RESPONSE", "Invalid Stripe PaymentIntent ID");
 
   const db = getDatabase();
   const integration = await db.wooCommerceRelayIntegration.findUnique({ where: { merchantId } });
@@ -240,7 +241,7 @@ export async function completeWooCommerceOrderPayment(merchantId: string, orderI
   if (!integration.connectionEnabled) throw new RelayError(409, "RELAY_DISABLED", "Enable ORBIT Relay before completing an order");
 
   const path = `/wp-json/orbit/v1/orders/${orderId}/payment`;
-  const rawBody = JSON.stringify({ status: "succeeded", transaction_id: transactionId });
+  const rawBody = JSON.stringify({ status: "succeeded", transaction_id: transactionId, stripe_payment_intent_id: stripePaymentIntentId });
   const secret = decryptRelaySecret(integration.encryptedSigningSecret, merchantId);
   const headers = createOrbitRelayAuthHeaders({ merchantId, method: "POST", path, rawBody, secret });
 

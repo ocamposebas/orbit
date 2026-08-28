@@ -63,6 +63,15 @@ export async function preparePaymentTransaction(merchantId: string, wooOrderId: 
   };
 
   let transaction = await db.paymentTransaction.findUnique({ where: { merchantId_wooOrderId: { merchantId, wooOrderId: wooOrderKey } } });
+  if (transaction?.stripePaymentIntentId && (
+    transaction.stripeAccountId !== values.stripeAccountId ||
+    transaction.amountMinor !== values.amountMinor ||
+    transaction.currency !== values.currency ||
+    transaction.platformFeeBps !== values.platformFeeBps ||
+    transaction.platformFeeMinor !== values.platformFeeMinor
+  )) {
+    throw new HttpError(409, "The WooCommerce order changed after its payment was prepared. Start a fresh checkout session.");
+  }
   if (transaction && !transaction.stripePaymentIntentId && mutablePreparationStatuses.has(transaction.status)) {
     transaction = await db.paymentTransaction.update({ where: { id: transaction.id }, data: values });
   } else if (!transaction) {
@@ -90,8 +99,16 @@ export async function preparePaymentTransaction(merchantId: string, wooOrderId: 
   };
 }
 
-export function stripePaymentIntentIdempotencyKey(orbitTransactionId: string) {
-  return `orbit-payment-intent-${orbitTransactionId}`;
+function paymentMethodConfigurationId() {
+  const value = getServerEnv().STRIPE_PAYMENT_METHOD_CONFIGURATION_ID;
+  if (!value || !/^pmc_[A-Za-z0-9]+$/.test(value)) {
+    throw new HttpError(503, "Stripe payment method configuration is not configured");
+  }
+  return value;
+}
+
+export function stripePaymentIntentIdempotencyKey(orbitTransactionId: string, configurationId = "default") {
+  return `orbit-payment-intent-${orbitTransactionId}-${configurationId}`;
 }
 
 function mapPaymentIntentFailure(error: unknown): never {
@@ -144,26 +161,39 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
   const stripe = getStripeClient();
   try {
     const requestOptions = { stripeContext: transaction.stripeAccountId };
-    const paymentIntent = transaction.stripePaymentIntentId
-      ? await stripe.paymentIntents.retrieve(transaction.stripePaymentIntentId, {}, requestOptions)
-      : await stripe.paymentIntents.create({
+    const configurationId = paymentMethodConfigurationId();
+    const createIntent = () => stripe.paymentIntents.create({
           amount: transaction.amountMinor,
           currency: transaction.currency.toLowerCase(),
           application_fee_amount: transaction.platformFeeMinor,
           automatic_payment_methods: { enabled: true },
+          payment_method_configuration: configurationId,
           metadata: {
             orbitTransactionId: transaction.id,
             wooOrderId: transaction.wooOrderId,
             merchantId: transaction.merchantId,
           },
-        }, { ...requestOptions, idempotencyKey: stripePaymentIntentIdempotencyKey(transaction.id) });
+        }, { ...requestOptions, idempotencyKey: stripePaymentIntentIdempotencyKey(transaction.id, configurationId) });
+
+    let paymentIntent = transaction.stripePaymentIntentId
+      ? await stripe.paymentIntents.retrieve(transaction.stripePaymentIntentId, {}, requestOptions)
+      : await createIntent();
+
+    if (transaction.stripePaymentIntentId && paymentIntent.payment_method_configuration_details?.id !== configurationId) {
+      if (!["requires_payment_method", "requires_confirmation"].includes(paymentIntent.status)) {
+        throw new HttpError(409, "The existing Stripe payment uses an outdated configuration and can no longer be replaced safely");
+      }
+      await stripe.paymentIntents.cancel(paymentIntent.id, {}, requestOptions);
+      paymentIntent = await createIntent();
+      paymentLog.warn({ orbitTransactionId: transaction.id }, "Replaced a legacy PaymentIntent that used an outdated payment method configuration");
+    }
 
     if (!paymentIntent.id.startsWith("pi_")) throw new HttpError(502, "Stripe returned an invalid PaymentIntent");
     if (paymentIntent.amount !== transaction.amountMinor || paymentIntent.currency.toUpperCase() !== transaction.currency || paymentIntent.application_fee_amount !== transaction.platformFeeMinor) {
       throw new HttpError(409, "The Stripe PaymentIntent does not match the stored ORBIT transaction");
     }
 
-    if (!transaction.stripePaymentIntentId) {
+    if (transaction.stripePaymentIntentId !== paymentIntent.id) {
       await db.paymentTransaction.update({ where: { id: transaction.id }, data: { stripePaymentIntentId: paymentIntent.id } });
     }
 
@@ -211,14 +241,19 @@ function customerPublishableKey() {
   return key;
 }
 
-export async function createCustomerCheckout(checkoutToken: string, _confirmationTokenId?: string) {
-  void _confirmationTokenId;
+export async function createCustomerCheckout(checkoutToken: string) {
   const authorizedOrder = await verifyCheckoutToken(checkoutToken);
   const transaction = await preparePaymentTransaction(authorizedOrder.merchantId, authorizedOrder.wooOrderId);
+  if (transaction.amountMinor !== authorizedOrder.amountMinor || transaction.currency !== authorizedOrder.currency) {
+    throw new HttpError(409, "The signed checkout quote no longer matches the WooCommerce order. Refresh checkout and try again.");
+  }
   if (transaction.status !== "REQUIRES_PAYMENT" && !transaction.stripePaymentIntentId) {
     throw new HttpError(409, "WooCommerce reports that this order does not require payment");
   }
   if (transaction.stripeReadiness !== "READY") throw new HttpError(409, "STRIPE_NOT_READY");
+  if (!getServerEnv().STRIPE_PAYMENTS_WEBHOOK_SECRET) {
+    throw new HttpError(503, "Stripe payment completion webhook is not configured");
+  }
 
   const paymentIntent = await ensureStripePaymentIntent(authorizedOrder.merchantId, transaction.id);
   if (!paymentIntent.clientSecret) throw new HttpError(502, "Stripe did not return a client secret");
@@ -228,6 +263,7 @@ export async function createCustomerCheckout(checkoutToken: string, _confirmatio
     clientSecret: paymentIntent.clientSecret,
     connectedAccountId: paymentIntent.connectedAccount,
     publishableKey: customerPublishableKey(),
+    paymentMethodConfigurationId: paymentMethodConfigurationId(),
     stripeStatus: paymentIntent.stripeStatus,
   };
 }
@@ -247,5 +283,6 @@ export async function getCustomerCheckoutConfiguration(configToken: string) {
   return {
     connectedAccountId: stripeConnect.stripeAccountId,
     publishableKey: customerPublishableKey(),
+    paymentMethodConfigurationId: paymentMethodConfigurationId(),
   };
 }

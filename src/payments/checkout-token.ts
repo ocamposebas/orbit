@@ -8,6 +8,9 @@ const checkoutTokenPayloadSchema = z.object({
   v: z.literal(1),
   merchantId: z.string().trim().min(1).max(128),
   wooOrderId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  quoteId: z.string().regex(/^orb_quote_[a-f0-9]{32}$/),
+  amountMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  currency: z.string().regex(/^[A-Z]{3}$/),
   exp: z.number().int().positive(),
   nonce: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/),
 }).strict();

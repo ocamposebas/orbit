@@ -56,16 +56,20 @@ function prismaErrorCode(error: unknown) {
   return String(error.code);
 }
 
-export function apiError(error: unknown) {
-  if (error instanceof HttpError) return NextResponse.json({ error: error.message }, { status: error.status });
-  if (error instanceof ZodError) return NextResponse.json({ error: "Invalid request", fields: error.flatten().fieldErrors }, { status: 400 });
+export function apiError(error: unknown, requestId?: string) {
+  const headers = {
+    "Cache-Control": "no-store, private",
+    ...(requestId ? { "X-ORBIT-Request-ID": requestId } : {}),
+  };
+  if (error instanceof HttpError) return NextResponse.json({ error: error.message, requestId }, { status: error.status, headers });
+  if (error instanceof ZodError) return NextResponse.json({ error: "Invalid request", fields: error.flatten().fieldErrors, requestId }, { status: 400, headers });
   console.error(error);
   const databaseCode = prismaErrorCode(error);
   if (databaseCode && ["P2021", "P2022"].includes(databaseCode)) {
-    return NextResponse.json({ error: "A database update is still being applied. Please retry shortly." }, { status: 503 });
+    return NextResponse.json({ error: "A database update is still being applied. Please retry shortly.", requestId }, { status: 503, headers });
   }
   if (databaseCode && ["P1001", "P1002", "P1017"].includes(databaseCode)) {
-    return NextResponse.json({ error: "The database is temporarily unavailable. Please retry shortly." }, { status: 503 });
+    return NextResponse.json({ error: "The database is temporarily unavailable. Please retry shortly.", requestId }, { status: 503, headers });
   }
-  return NextResponse.json({ error: "Unexpected server error" }, { status: 500 });
+  return NextResponse.json({ error: "Unexpected server error", requestId }, { status: 500, headers });
 }

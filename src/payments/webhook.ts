@@ -143,7 +143,7 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
       if (!transaction.wooCompletedAt) {
         const wooOrderId = Number(transaction.wooOrderId);
         if (!Number.isSafeInteger(wooOrderId) || wooOrderId <= 0) throw new Error("invalid_woo_order_id");
-        await completeWooCommerceOrderPayment(transaction.merchantId, wooOrderId, transaction.id);
+        await completeWooCommerceOrderPayment(transaction.merchantId, wooOrderId, transaction.id, intent.id);
         await db.paymentTransaction.updateMany({
           where: { id: transaction.id, wooCompletedAt: null },
           data: { wooCompletedAt: new Date() },

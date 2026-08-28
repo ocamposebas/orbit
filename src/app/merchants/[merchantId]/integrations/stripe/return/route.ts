@@ -27,7 +27,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     let actorId: string | undefined;
     try {
-      const access = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN"] });
+      const access = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"] });
       actorId = access.session.user.id;
       await enforceRateLimit(request, `stripe-return:${merchantId}:${actorId}`, 10);
       const integration = await syncStripeConnectAccount(merchantId, { actorId, auditAction: "STRIPE_STATUS_SYNCED" });

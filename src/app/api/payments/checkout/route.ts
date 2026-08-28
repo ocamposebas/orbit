@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createCustomerCheckout, StripePaymentIntentParameterError } from "@/payments/service";
+import { checkoutTokenRateLimitSubject } from "@/payments/rate-limit-subject";
 import { apiError } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 
@@ -9,16 +11,17 @@ export const dynamic = "force-dynamic";
 
 const requestSchema = z.object({
   checkoutToken: z.string().trim().min(80).max(2_048),
-  confirmationTokenId: z.string().regex(/^ctoken_[A-Za-z0-9_]{8,200}$/).optional(),
 }).strict();
 
 export async function POST(request: NextRequest) {
+  const requestId = randomUUID();
   try {
-    await enforceRateLimit(request, "customer-payment-checkout", 20);
-    const { checkoutToken, confirmationTokenId } = requestSchema.parse(await request.json());
-    const checkout = await createCustomerCheckout(checkoutToken, confirmationTokenId);
+    const { checkoutToken } = requestSchema.parse(await request.json());
+    await enforceRateLimit(request, "customer-payment-checkout-ip", 300);
+    await enforceRateLimit(request, "customer-payment-checkout-order", 20, checkoutTokenRateLimitSubject(checkoutToken));
+    const checkout = await createCustomerCheckout(checkoutToken);
     return NextResponse.json(checkout, {
-      headers: { "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer" },
+      headers: { "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer", "X-ORBIT-Request-ID": requestId },
     });
   } catch (error) {
     if (error instanceof StripePaymentIntentParameterError) {
@@ -27,11 +30,12 @@ export async function POST(request: NextRequest) {
         error: error.message,
         code: error.stripeCode,
         message: `${error.stripeMessage}${parameter}`,
+        requestId,
       }, {
         status: error.status,
-        headers: { "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer" },
+        headers: { "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer", "X-ORBIT-Request-ID": requestId },
       });
     }
-    return apiError(error);
+    return apiError(error, requestId);
   }
 }
