@@ -1,29 +1,21 @@
-"use client";
-
-import { motion } from "framer-motion";
 import { ButtonLink } from "@/components/ui/button-link";
-import { HeroDashboard } from "@/components/dashboard-demo/hero-dashboard";
-import { OrbitalBackdrop } from "@/components/ui/orbital-backdrop";
 
 export function Hero() {
   return (
-    <section className="relative isolate overflow-hidden pb-24 pt-32 sm:pb-32 sm:pt-40">
-      <OrbitalBackdrop />
+    <section className="border-b border-white/[.07] bg-[#090a0c] pb-20 pt-36 sm:pb-28 sm:pt-44">
       <div className="container-shell">
-        <div className="mx-auto max-w-5xl text-center">
-          <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .55 }} className="eyebrow justify-center">Merchant intelligence &amp; compliance infrastructure</motion.p>
-          <h1 className="mt-7 text-balance text-[clamp(3.45rem,9vw,8rem)] font-medium leading-[.84] tracking-[-.075em]">
-            <span className="block overflow-hidden pb-2"><motion.span initial={{ y: "105%" }} animate={{ y: 0 }} transition={{ duration: .8, delay: .08, ease: [0.16, 1, 0.3, 1] }} className="block">Merchant trust,</motion.span></span>
-            <span className="block overflow-hidden pb-3"><motion.span initial={{ y: "105%" }} animate={{ y: 0 }} transition={{ duration: .8, delay: .16, ease: [0.16, 1, 0.3, 1] }} className="block text-[#9699a6]">continuously verified.</motion.span></span>
-          </h1>
-          <motion.p initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .65, delay: .28 }} className="mx-auto mt-7 max-w-3xl text-balance text-base leading-7 text-[#9b9ea6] sm:text-lg sm:leading-8">ORBIT brings continuous website investigation, evidence-backed compliance review, operational monitoring, and custom compliant storefront design into one disciplined merchant-risk platform.</motion.p>
-          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .65, delay: .36 }} className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
+        <div className="max-w-4xl">
+          <p className="eyebrow">Merchant compliance intelligence</p>
+          <h1 className="mt-7 max-w-4xl text-balance text-[clamp(3rem,7vw,6.5rem)] font-medium leading-[.92] tracking-[-.065em]">Know exactly where merchant risk lives.</h1>
+          <p className="mt-7 max-w-2xl text-balance text-base leading-8 text-[#92959d] sm:text-lg">ORBIT investigates merchant websites, preserves evidence, identifies compliance gaps, and produces a clear operating record for risk teams.</p>
+          <div className="mt-9 flex flex-col gap-3 sm:flex-row">
             <ButtonLink href="/request-access">Request access</ButtonLink>
-            <ButtonLink href="/product" variant="secondary">Explore the platform</ButtonLink>
-          </motion.div>
-          <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .6, delay: .55 }} className="mt-6 text-xs text-[#656871]">For merchants, payment operations, compliance teams, and risk leaders.</motion.p>
+            <ButtonLink href="/product" variant="secondary">View the platform</ButtonLink>
+          </div>
         </div>
-        <HeroDashboard />
+        <div className="mt-20 grid border-y border-white/[.08] sm:grid-cols-3">
+          {[['01','Website investigation'],['02','Evidence-backed findings'],['03','Continuous monitoring']].map(([number,label]) => <div key={number} className="flex items-center gap-4 border-b border-white/[.08] py-5 last:border-b-0 sm:border-b-0 sm:border-r sm:px-6 sm:first:pl-0 sm:last:border-r-0"><span className="font-mono text-[9px] text-[#6f72dd]">{number}</span><span className="text-xs text-[#a7aab1]">{label}</span></div>)}
+        </div>
       </div>
     </section>
   );
