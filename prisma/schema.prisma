@@ -113,14 +113,14 @@ model Merchant {
 }
 
 model MerchantAgreement {
-  id                       String          @id @default(cuid())
-  merchantId               String          @unique
-  status                   AgreementStatus @default(INVITED)
-  invitationTokenHash      String          @unique
+  id                       String                    @id @default(cuid())
+  merchantId               String                    @unique
+  status                   AgreementStatus           @default(INVITED)
+  invitationTokenHash      String                    @unique
   invitationExpiresAt      DateTime
   invitationIssuedAt       DateTime?
-  termsVersion             String          @default("orbit-msa-en-1.3")
-  selfServe                Boolean         @default(false)
+  termsVersion             String                    @default("orbit-msa-en-1.3")
+  selfServe                Boolean                   @default(false)
   legalName                String?
   tradeName                String?
   entityType               String?
@@ -152,12 +152,31 @@ model MerchantAgreement {
   signedSha256             String?
   signedUploadedAt         DateTime?
   lockedAt                 DateTime?
-  createdAt                DateTime        @default(now())
-  updatedAt                DateTime        @updatedAt
-  merchant                 Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  merchant                 Merchant                  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  signedRevisions          SignedAgreementRevision[]
 
   @@index([status, updatedAt])
   @@index([invitationExpiresAt])
+}
+
+model SignedAgreementRevision {
+  id           String            @id @default(cuid())
+  agreementId  String
+  revision     Int
+  originalName String
+  mimeType     String            @default("application/pdf")
+  sizeBytes    Int
+  contract     Bytes
+  sha256       String
+  source       String
+  uploadedById String?
+  uploadedAt   DateTime          @default(now())
+  agreement    MerchantAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+
+  @@unique([agreementId, revision])
+  @@index([agreementId, uploadedAt])
 }
 
 model StripeConnectIntegration {
@@ -719,47 +738,47 @@ model WorkerHeartbeat {
 /// ORBIT AI Scanner v1 audit job. Legacy scanner tables above remain mapped only
 /// so existing data can be recovered without a destructive migration.
 model AiScan {
-  id               String           @id @default(cuid())
-  merchantId       String
-  siteId           String
-  status           AiScanStatus     @default(QUEUED)
-  model            String           @default("gpt-5.6-luna")
-  criticModel      String?
-  budget           Json
-  coverage         Json             @default("{}")
-  usage            Json             @default("{}")
-  observations     Json             @default("[]")
-  summary          String?
-  limitations      Json             @default("[]")
-  score            Int?
-  scoreBreakdown   Json             @default("{}")
-  resumeCheckpoint Json             @default("{}")
-  resumeAfter      DateTime?
-  resumeCount      Int              @default(0)
-  importedReportStorageKey String?
+  id                         String           @id @default(cuid())
+  merchantId                 String
+  siteId                     String
+  status                     AiScanStatus     @default(QUEUED)
+  model                      String           @default("gpt-5.6-luna")
+  criticModel                String?
+  budget                     Json
+  coverage                   Json             @default("{}")
+  usage                      Json             @default("{}")
+  observations               Json             @default("[]")
+  summary                    String?
+  limitations                Json             @default("[]")
+  score                      Int?
+  scoreBreakdown             Json             @default("{}")
+  resumeCheckpoint           Json             @default("{}")
+  resumeAfter                DateTime?
+  resumeCount                Int              @default(0)
+  importedReportStorageKey   String?
   importedReportOriginalName String?
-  importedReportMimeType String?
-  importedReportSizeBytes Int?
-  importedReportSha256 String?
-  importedReportUploadedAt DateTime?
+  importedReportMimeType     String?
+  importedReportSizeBytes    Int?
+  importedReportSha256       String?
+  importedReportUploadedAt   DateTime?
   importedReportUploadedById String?
-  importedReportMetrics Json @default("{}")
-  runtimeMs        Int              @default(0)
-  toolCalls        Int              @default(0)
-  failureCode      AiFailureCode?
-  error            String?
-  startedAt        DateTime?
-  completedAt      DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-  merchant         Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  site             MerchantSite     @relation(fields: [siteId], references: [id], onDelete: Cascade)
-  evidence         AiEvidence[]
-  findings         AiFinding[]
-  products         AiProduct[]
-  toolEvents       AiToolEvent[]
-  criticReviews    AiCriticReview[]
-  auditLogs        AuditLog[]
+  importedReportMetrics      Json             @default("{}")
+  runtimeMs                  Int              @default(0)
+  toolCalls                  Int              @default(0)
+  failureCode                AiFailureCode?
+  error                      String?
+  startedAt                  DateTime?
+  completedAt                DateTime?
+  createdAt                  DateTime         @default(now())
+  updatedAt                  DateTime         @updatedAt
+  merchant                   Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  site                       MerchantSite     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  evidence                   AiEvidence[]
+  findings                   AiFinding[]
+  products                   AiProduct[]
+  toolEvents                 AiToolEvent[]
+  criticReviews              AiCriticReview[]
+  auditLogs                  AuditLog[]
 
   @@index([merchantId, createdAt])
   @@index([siteId, status, createdAt])

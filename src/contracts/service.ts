@@ -95,6 +95,7 @@ export function agreementAdminState(agreement: {
   signedSizeBytes: number | null;
   lockedAt: Date | null;
   termsVersion: string;
+  signedRevisions?: Array<{ id: string; revision: number; originalName: string; sizeBytes: number; sha256: string; source: string; uploadedAt: Date }>;
 } | null) {
   if (!agreement) return null;
   const workflow = agreement.status === "SIGNED_LOCKED" ? "SIGNED" : agreement.status === "CONTRACT_ISSUED" ? "AWAITING_SIGNATURE" : agreement.status === "DATA_COMPLETED" ? "READY_TO_ISSUE" : agreement.invitationIssuedAt ? "AWAITING_CUSTOMER" : "OPTIONAL";
@@ -110,6 +111,7 @@ export function agreementAdminState(agreement: {
     signedSizeBytes: agreement.signedSizeBytes,
     lockedAt: agreement.lockedAt,
     termsVersion: agreement.termsVersion,
+    signedRevisions: agreement.signedRevisions ?? [],
   };
 }
 

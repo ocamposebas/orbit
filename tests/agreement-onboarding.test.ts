@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { agreementDocumentHtml, FIRST_MONTH_ACTIVATION_FEE_USD, MONTHLY_SERVICE_FEE_USD, PLATFORM_SERVICE_FEE_PERCENT, safeContractFilename, sha256, STANDARD_STRIPE_PROCESSING_FEE_PERCENT, TOTAL_TRANSFER_FEE_PERCENT } from "@/contracts/document";
 import { AGREEMENT_TERMS_VERSION, agreementAdminState, createInvitationCredentials, hashInvitationToken, publicAgreementState } from "@/contracts/service";
 import { merchantAgreementIntakeSchema, SIGNED_CONTRACT_MAX_BYTES } from "@/contracts/schema";
+import { readSignedPdf } from "@/contracts/signed-file";
 
 const intake = {
   businessName: "Northstar Research",
@@ -143,5 +144,15 @@ describe("contractual onboarding", () => {
     expect(sha256(new TextEncoder().encode("contract"))).toHaveLength(64);
     expect(safeContractFilename("Compañía / Uno S.A.S.")).toBe("compania-uno-s-a-s");
     expect(SIGNED_CONTRACT_MAX_BYTES).toBe(15 * 1024 * 1024);
+  });
+
+  it("accepts only bounded PDF custody uploads and sanitizes their names", async () => {
+    const content = new Uint8Array(120);
+    content.set(new TextEncoder().encode("%PDF-1.7"));
+    const parsed = await readSignedPdf(new File([content], 'signed/contract\n"final".pdf', { type: "application/pdf" }));
+    expect(parsed.originalName).toBe("signed_contract__final_.pdf");
+    expect(parsed.sizeBytes).toBe(120);
+    expect(parsed.digest).toHaveLength(64);
+    await expect(readSignedPdf(new File([content], "signed.pdf", { type: "text/plain" }))).rejects.toMatchObject({ status: 415 });
   });
 });
