@@ -8,6 +8,7 @@ export async function reconcileSucceededWooPayments(limit = 50) {
   const db = getDatabase();
   const transactions = await db.paymentTransaction.findMany({
     where: {
+      source: "WOOCOMMERCE",
       status: "SUCCEEDED",
       wooCompletedAt: null,
       stripePaymentIntentId: { not: null },

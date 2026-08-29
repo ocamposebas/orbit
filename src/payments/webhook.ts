@@ -1,5 +1,7 @@
 import type Stripe from "stripe";
 import { completeWooCommerceOrderPayment } from "@/commerce/woocommerce/service";
+import { syncEcwidForTransaction } from "@/integrations/ecwid/service";
+import { verifyEcwidCheckoutPaymentIntent } from "@/integrations/ecwid/stripe-checkout";
 import { getDatabase } from "@/sentinel/db";
 import { childLogger } from "@/sentinel/logger";
 import { expectedLivemode, getStripeConfiguration } from "@/stripe/client";
@@ -123,9 +125,20 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
 
     const intent = event.data.object as Stripe.PaymentIntent;
     const db = getDatabase();
-    const transaction = await db.paymentTransaction.findUnique({
+    let transaction = await db.paymentTransaction.findUnique({
       where: { stripePaymentIntentId: intent.id },
     });
+    if (!transaction && intent.metadata.paymentSource === "ECWID" && /^orb_tx_[A-Za-z0-9_-]{16,128}$/.test(intent.metadata.orbitTransactionId ?? "")) {
+      const candidate = await db.paymentTransaction.findUnique({ where: { id: intent.metadata.orbitTransactionId } });
+      if (candidate?.source === "ECWID" && candidate.stripePaymentIntentId === null) {
+        await verifyEcwidCheckoutPaymentIntent(candidate.id, intent.id, accountId);
+        await db.paymentTransaction.updateMany({
+          where: { id: candidate.id, source: "ECWID", stripePaymentIntentId: null },
+          data: { stripePaymentIntentId: intent.id },
+        });
+        transaction = await db.paymentTransaction.findUnique({ where: { id: candidate.id } });
+      }
+    }
     if (!transaction) {
       await finishEvent(eventRecord.id, "IGNORED", "unknown_payment_intent");
       return { ignored: true };
@@ -140,7 +153,9 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
     if (event.type === "payment_intent.succeeded") {
       if (intent.status !== "succeeded") throw new Error("unexpected_payment_intent_status");
       await db.paymentTransaction.update({ where: { id: transaction.id }, data: { status: "SUCCEEDED" } });
-      if (!transaction.wooCompletedAt) {
+      if (transaction.source === "ECWID") {
+        await syncEcwidForTransaction(transaction.id, "SUCCEEDED");
+      } else if (!transaction.wooCompletedAt) {
         const wooOrderId = Number(transaction.wooOrderId);
         if (!Number.isSafeInteger(wooOrderId) || wooOrderId <= 0) throw new Error("invalid_woo_order_id");
         await completeWooCommerceOrderPayment(transaction.merchantId, wooOrderId, transaction.id, intent.id);
@@ -151,6 +166,9 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
       }
     } else {
       await updateNonSucceededStatus(transaction.id, event.type);
+      if (transaction.source === "ECWID" && event.type === "payment_intent.canceled") {
+        await syncEcwidForTransaction(transaction.id, "CANCELED");
+      }
     }
 
     await finishEvent(eventRecord.id, "PROCESSED");

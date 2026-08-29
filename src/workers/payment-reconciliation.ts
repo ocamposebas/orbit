@@ -1,4 +1,5 @@
 import { reconcileSucceededWooPayments } from "@/payments/reconcile";
+import { reconcileExpiredEcwidStripeCheckouts, reconcilePendingEcwidPayments } from "@/integrations/ecwid/service";
 import { childLogger } from "@/sentinel/logger";
 
 const log = childLogger({ component: "payment-reconciliation-worker" });
@@ -8,8 +9,14 @@ async function run() {
   if (running) return;
   running = true;
   try {
-    const result = await reconcileSucceededWooPayments();
-    if (result.inspected > 0) log.info(result, "Reconciled successful Stripe payments with WooCommerce");
+    const [woo, ecwid, checkout] = await Promise.all([
+      reconcileSucceededWooPayments(),
+      reconcilePendingEcwidPayments(),
+      reconcileExpiredEcwidStripeCheckouts(),
+    ]);
+    if (woo.inspected > 0) log.info(woo, "Reconciled successful Stripe payments with WooCommerce");
+    if (ecwid.inspected > 0) log.info(ecwid, "Reconciled Ecwid payment status updates");
+    if (checkout.inspected > 0) log.info(checkout, "Reconciled expired or delayed Ecwid Stripe Checkout Sessions");
   } catch (error) {
     log.error({ error }, "Payment reconciliation cycle failed");
   } finally {

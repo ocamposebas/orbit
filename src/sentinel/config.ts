@@ -47,6 +47,12 @@ const serverEnvSchema = z.object({
   STRIPE_CONNECT_WEBHOOK_SECRET: optionalNonEmpty,
   STRIPE_PAYMENTS_WEBHOOK_SECRET: optionalNonEmpty,
   STRIPE_API_VERSION: optionalNonEmpty,
+  ECWID_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  ECWID_STORE_ID: optionalNonEmpty,
+  ECWID_CLIENT_ID: optionalNonEmpty,
+  ECWID_CLIENT_SECRET: optionalNonEmpty,
+  ECWID_SECRET_TOKEN: optionalNonEmpty,
+  ECWID_ORBIT_MERCHANT_ID: optionalNonEmpty,
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

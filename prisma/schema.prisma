@@ -103,6 +103,7 @@ model Merchant {
   sites                 MerchantSite[]
   policies              Policy[]
   paymentTransactions   PaymentTransaction[]
+  ecwidPaymentSessions  EcwidPaymentSession[]
   products              Product[]
   scans                 Scan[]
   stripeConnect         StripeConnectIntegration?
@@ -256,14 +257,49 @@ model PaymentTransaction {
   platformFeeMinor      Int
   stripePaymentIntentId String?                  @unique
   wooCompletedAt        DateTime?
+  source                PaymentSource            @default(WOOCOMMERCE)
+  externalReference     String?
   status                PaymentTransactionStatus @default(CREATED)
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
   merchant              Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   paymentEvents         StripePaymentEvent[]
+  ecwidSession          EcwidPaymentSession?
 
   @@unique([merchantId, wooOrderId])
   @@index([stripeAccountId, status])
+  @@index([source, status])
+}
+
+model EcwidPaymentSession {
+  id                      String                    @id
+  merchantId              String
+  paymentTransactionId    String                    @unique
+  storeId                 String
+  orderId                 String
+  referenceTransactionId  String
+  amountMinor             Int
+  currency                String
+  customerEmail           String?
+  encryptedReturnUrl      String
+  checkoutMode            EcwidCheckoutMode         @default(ORBIT_HOSTED)
+  stripeCheckoutSessionId String?                   @unique
+  stripeCheckoutExpiresAt DateTime?
+  status                  EcwidPaymentSessionStatus @default(PENDING)
+  ecwidPaymentStatus      String?
+  syncAttempts            Int                       @default(0)
+  nextSyncAt              DateTime?
+  lastSyncErrorCode       String?
+  syncedAt                DateTime?
+  expiresAt               DateTime
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  merchant                Merchant                  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  paymentTransaction      PaymentTransaction        @relation(fields: [paymentTransactionId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, referenceTransactionId])
+  @@index([status, nextSyncAt])
+  @@index([merchantId, createdAt])
 }
 
 model StripePaymentEvent {
@@ -1352,6 +1388,24 @@ enum PaymentTransactionStatus {
   SUCCEEDED
   FAILED
   CANCELED
+}
+
+enum PaymentSource {
+  WOOCOMMERCE
+  ECWID
+}
+
+enum EcwidPaymentSessionStatus {
+  PENDING
+  PAID_SYNC_PENDING
+  PAID_SYNCED
+  INCOMPLETE_SYNC_PENDING
+  INCOMPLETE_SYNCED
+}
+
+enum EcwidCheckoutMode {
+  STRIPE_CHECKOUT
+  ORBIT_HOSTED
 }
 
 enum StripePaymentEventStatus {

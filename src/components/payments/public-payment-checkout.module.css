@@ -1,0 +1,45 @@
+.shell { min-height: 100dvh; display: grid; place-items: center; padding: 38px 20px; background: #08090b; position: relative; overflow: hidden; }
+.backdrop { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 12% 12%, rgba(199,37,52,.22), transparent 34%), radial-gradient(circle at 88% 90%, rgba(128,15,28,.15), transparent 30%); }
+.checkout { position: relative; width: min(100%, 980px); min-height: 650px; display: grid; grid-template-columns: .9fr 1.1fr; overflow: hidden; border: 1px solid rgba(255,255,255,.1); border-radius: 24px; background: #101014; box-shadow: 0 38px 110px rgba(0,0,0,.56); }
+.summary { display: flex; flex-direction: column; padding: 48px; background: linear-gradient(145deg, #300b10, #18090d 58%, #10080a); border-right: 1px solid rgba(255,255,255,.09); }
+.brand { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.brandMark { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.18); border-radius: 11px; background: rgba(255,255,255,.08); color: #ff7a88; }
+.orderLabel { margin-top: 94px; color: #e86a76; font-size: 11px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+.summary h1 { margin: 12px 0 6px; font-size: clamp(42px, 6vw, 62px); letter-spacing: -.055em; font-weight: 640; }
+.orderReference { margin: 0; color: rgba(255,255,255,.58); font-size: 14px; line-height: 1.55; }
+.total { margin-top: 44px; padding: 20px 0; display: flex; justify-content: space-between; border-top: 1px solid rgba(255,255,255,.11); border-bottom: 1px solid rgba(255,255,255,.11); font-size: 14px; color: rgba(255,255,255,.7); }
+.total strong { color: #fff; }
+.trustList { margin-top: auto; display: grid; gap: 12px; color: rgba(255,255,255,.58); font-size: 12px; }
+.trustList span { display: flex; align-items: center; gap: 9px; }
+.trustList svg { color: #e85a69; }
+.payment { padding: 48px; background: #0d0e11; }
+.payment header { margin-bottom: 30px; }
+.secure { display: flex; align-items: center; gap: 7px; color: #e85a69; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.payment h2 { margin: 13px 0 7px; font-size: 28px; letter-spacing: -.035em; }
+.payment header p { margin: 0; color: #8d9098; font-size: 13px; }
+.express > span { display: block; margin-bottom: 12px; color: #c9c8cc; font-size: 12px; font-weight: 650; }
+.divider { display: flex; align-items: center; gap: 13px; margin: 24px 0; color: #73767d; font-size: 11px; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,.09); }
+.payButton { width: 100%; min-height: 54px; margin-top: 26px; border: 0; border-radius: 11px; background: linear-gradient(105deg, #ba2434, #ea4354); color: #fff; font-size: 14px; font-weight: 750; cursor: pointer; box-shadow: 0 12px 32px rgba(207,38,55,.24); transition: transform .15s, filter .15s; }
+.payButton:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
+.payButton:disabled { cursor: wait; opacity: .62; }
+.error { margin: 20px 0; padding: 14px 15px; border: 1px solid rgba(240,72,89,.34); border-radius: 10px; background: rgba(213,42,59,.1); color: #ff9aa4; font-size: 13px; line-height: 1.45; }
+.loading, .completion { min-height: 250px; display: flex; align-items: center; justify-content: center; gap: 12px; color: #a6a8af; font-size: 13px; }
+.completion { flex-direction: column; text-align: center; }
+.completion h2 { margin: 12px 0 0; }
+.completion p { margin: 0; color: #898c94; font-size: 13px; }
+.spinner { width: 19px; height: 19px; border: 2px solid rgba(255,255,255,.14); border-top-color: #e64556; border-radius: 50%; animation: spin .8s linear infinite; }
+.payment footer { margin-top: 30px; text-align: center; color: #666a72; font-size: 10px; letter-spacing: .025em; }
+.payment footer strong { color: #9b9ea5; letter-spacing: .08em; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 780px) {
+  .shell { display: block; padding: 0; }
+  .checkout { min-height: 100dvh; grid-template-columns: 1fr; border: 0; border-radius: 0; }
+  .summary { min-height: 300px; padding: 30px 24px; border: 0; border-bottom: 1px solid rgba(255,255,255,.09); }
+  .orderLabel { margin-top: 45px; }
+  .summary h1 { font-size: 43px; }
+  .total { margin-top: 28px; }
+  .trustList { margin-top: 25px; grid-template-columns: 1fr 1fr; }
+  .trustList span:last-child { display: none; }
+  .payment { padding: 34px 24px 42px; }
+}

@@ -99,7 +99,7 @@ export async function preparePaymentTransaction(merchantId: string, wooOrderId: 
   };
 }
 
-function paymentMethodConfigurationId() {
+export function paymentMethodConfigurationId() {
   const value = getServerEnv().STRIPE_PAYMENT_METHOD_CONFIGURATION_ID;
   if (!value || !/^pmc_[A-Za-z0-9]+$/.test(value)) {
     throw new HttpError(503, "Stripe payment method configuration is not configured");
@@ -137,7 +137,7 @@ function mapPaymentIntentFailure(error: unknown): never {
   throw new HttpError(502, "Stripe payment creation is temporarily unavailable");
 }
 
-async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId: string) {
+async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId: string, expectedSource?: "WOOCOMMERCE" | "ECWID") {
   if (!/^orb_tx_[A-Za-z0-9_-]{16,128}$/.test(orbitTransactionId)) throw new HttpError(400, "Enter a valid ORBIT transaction ID");
 
   const db = getDatabase();
@@ -146,6 +146,7 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
     include: { merchant: { select: { stripeConnect: { select: { stripeAccountId: true, stripeEnvironment: true, displayStatus: true, cardPaymentsStatus: true } } } } },
   });
   if (!transaction) throw new HttpError(404, "ORBIT transaction not found");
+  if (expectedSource && transaction.source !== expectedSource) throw new HttpError(404, "ORBIT transaction not found");
   const mayCreate = ["CREATED", "REQUIRES_PAYMENT"].includes(transaction.status);
   const mayRetrieve = Boolean(transaction.stripePaymentIntentId) && ["CREATED", "REQUIRES_PAYMENT", "PROCESSING", "FAILED"].includes(transaction.status);
   if (!mayCreate && !mayRetrieve) throw new HttpError(409, "This ORBIT transaction cannot create a PaymentIntent in its current status");
@@ -172,6 +173,7 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
             orbitTransactionId: transaction.id,
             wooOrderId: transaction.wooOrderId,
             merchantId: transaction.merchantId,
+            paymentSource: transaction.source,
           },
         }, { ...requestOptions, idempotencyKey: stripePaymentIntentIdempotencyKey(transaction.id, configurationId) });
 
@@ -231,6 +233,51 @@ export async function createStripePaymentIntent(merchantId: string, orbitTransac
   };
 }
 
+function paymentStatusFromStripe(status: string) {
+  if (status === "succeeded") return "SUCCEEDED" as const;
+  if (status === "processing") return "PROCESSING" as const;
+  if (status === "canceled") return "CANCELED" as const;
+  if (status === "requires_payment_method") return "REQUIRES_PAYMENT" as const;
+  if (["requires_confirmation", "requires_action", "requires_capture"].includes(status)) return "PROCESSING" as const;
+  return "FAILED" as const;
+}
+
+export async function refreshPaymentTransactionFromStripe(
+  merchantId: string,
+  orbitTransactionId: string,
+  expectedSource: "WOOCOMMERCE" | "ECWID",
+) {
+  const db = getDatabase();
+  const transaction = await db.paymentTransaction.findFirst({ where: { id: orbitTransactionId, merchantId, source: expectedSource } });
+  if (!transaction?.stripePaymentIntentId) throw new HttpError(409, "Payment processor transaction is unavailable");
+  const config = getStripeConfiguration();
+  if (!config.configured) throw new HttpError(503, "Stripe Connect is not configured");
+  let intent;
+  try {
+    intent = await getStripeClient().paymentIntents.retrieve(
+      transaction.stripePaymentIntentId,
+      {},
+      { stripeContext: transaction.stripeAccountId },
+    );
+  } catch (error) {
+    return mapPaymentIntentFailure(error);
+  }
+  if (
+    intent.id !== transaction.stripePaymentIntentId || intent.amount !== transaction.amountMinor ||
+    intent.currency.toUpperCase() !== transaction.currency || intent.application_fee_amount !== transaction.platformFeeMinor ||
+    intent.metadata.orbitTransactionId !== transaction.id || intent.metadata.merchantId !== transaction.merchantId
+  ) throw new HttpError(409, "The Stripe payment does not match the stored ORBIT transaction");
+  const observedStatus = paymentStatusFromStripe(intent.status);
+  const status = transaction.status === "SUCCEEDED" ? "SUCCEEDED" as const : observedStatus;
+  if (transaction.status !== status) {
+    await db.paymentTransaction.updateMany({
+      where: { id: transaction.id, ...(status === "SUCCEEDED" ? {} : { status: { not: "SUCCEEDED" } }) },
+      data: { status },
+    });
+  }
+  return { status, stripeStatus: intent.status, stripePaymentIntentId: intent.id };
+}
+
 function customerPublishableKey() {
   const env = getServerEnv();
   if (env.STRIPE_MODE === "live") canonicalOrbitOrigin(env.APP_URL);
@@ -260,6 +307,24 @@ export async function createCustomerCheckout(checkoutToken: string) {
 
   return {
     orbitTransactionId: transaction.id,
+    clientSecret: paymentIntent.clientSecret,
+    connectedAccountId: paymentIntent.connectedAccount,
+    publishableKey: customerPublishableKey(),
+    paymentMethodConfigurationId: paymentMethodConfigurationId(),
+    stripeStatus: paymentIntent.stripeStatus,
+  };
+}
+
+export async function createPaymentCheckoutForTransaction(
+  merchantId: string,
+  orbitTransactionId: string,
+  expectedSource: "WOOCOMMERCE" | "ECWID",
+) {
+  if (!getServerEnv().STRIPE_PAYMENTS_WEBHOOK_SECRET) throw new HttpError(503, "Stripe payment completion webhook is not configured");
+  const paymentIntent = await ensureStripePaymentIntent(merchantId, orbitTransactionId, expectedSource);
+  if (!paymentIntent.clientSecret) throw new HttpError(502, "Stripe did not return a client secret");
+  return {
+    orbitTransactionId: paymentIntent.orbitTransactionId,
     clientSecret: paymentIntent.clientSecret,
     connectedAccountId: paymentIntent.connectedAccount,
     publishableKey: customerPublishableKey(),
