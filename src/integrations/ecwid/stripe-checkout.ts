@@ -25,6 +25,10 @@ export function stripeCheckoutSessionIdempotencyKey(ecwidSessionId: string) {
   return `orbit-ecwid-checkout-${ecwidSessionId}`;
 }
 
+function stripeCheckoutReplacementIdempotencyKey(ecwidSessionId: string, expiredCheckoutId: string) {
+  return `orbit-ecwid-checkout-${ecwidSessionId}-after-${expiredCheckoutId}`;
+}
+
 function ecwidPaymentMethodConfigurationId() {
   const value = getServerEnv().ECWID_STRIPE_PAYMENT_METHOD_CONFIGURATION_ID;
   if (!value) return paymentMethodConfigurationId();
@@ -119,6 +123,47 @@ async function loadStripeCheckoutRecord(sessionId: string) {
   return { session, stripeConnect };
 }
 
+async function resetExpiredCheckoutTransaction(
+  session: Awaited<ReturnType<typeof loadStripeCheckoutRecord>>["session"],
+  checkout: Stripe.Checkout.Session,
+  requestOptions: { stripeContext: string },
+) {
+  if (checkout.status !== "expired" || checkout.payment_status !== "unpaid") return false;
+  if (["SUCCEEDED", "PROCESSING"].includes(session.paymentTransaction.status)) return false;
+  const intentId = paymentIntentId(checkout.payment_intent);
+  const storedIntentId = session.paymentTransaction.stripePaymentIntentId;
+  if (storedIntentId && storedIntentId !== intentId) return false;
+  if (intentId) {
+    let intent: Stripe.PaymentIntent;
+    try {
+      intent = await getStripeClient().paymentIntents.retrieve(intentId, {}, requestOptions);
+    } catch (error) {
+      return mapStripeCheckoutError(error);
+    }
+    if (!["canceled", "requires_payment_method"].includes(intent.status)) return false;
+  }
+  const reset = await getDatabase().paymentTransaction.updateMany({
+    where: {
+      id: session.paymentTransaction.id,
+      source: "ECWID",
+      status: { in: ["CREATED", "REQUIRES_PAYMENT", "FAILED", "CANCELED"] },
+      stripePaymentIntentId: storedIntentId,
+    },
+    data: { stripePaymentIntentId: null, status: "REQUIRES_PAYMENT" },
+  });
+  return reset.count === 1;
+}
+
+function publicCheckoutResult(checkout: Stripe.Checkout.Session, sessionId: string) {
+  return {
+    id: checkout.id,
+    url: checkout.url,
+    status: checkout.status,
+    paymentStatus: checkout.payment_status,
+    callbackUrl: callbackUrl(getEcwidPublicCheckoutOrigin(), `/api/integrations/ecwid/return/${encodeURIComponent(sessionId)}`),
+  };
+}
+
 export async function createOrReuseEcwidStripeCheckout(sessionId: string) {
   if (!getServerEnv().STRIPE_PAYMENTS_WEBHOOK_SECRET) throw new HttpError(503, "Stripe payment completion webhook is not configured");
   const { session, stripeConnect } = await loadStripeCheckoutRecord(sessionId);
@@ -126,13 +171,22 @@ export async function createOrReuseEcwidStripeCheckout(sessionId: string) {
   const requestOptions = { stripeContext: stripeConnect.stripeAccountId };
 
   let checkout: Stripe.Checkout.Session;
+  let replacedCheckoutId: string | null = null;
   if (session.stripeCheckoutSessionId) {
     try {
       checkout = await stripe.checkout.sessions.retrieve(session.stripeCheckoutSessionId, {}, requestOptions);
     } catch (error) {
       return mapStripeCheckoutError(error);
     }
-  } else {
+    assertCheckoutMatchesSession(checkout, session);
+    if (checkout.status !== "expired" || !await resetExpiredCheckoutTransaction(session, checkout, requestOptions)) {
+      await attachCheckoutPaymentIntent(session.paymentTransactionId, checkout);
+      return publicCheckoutResult(checkout, session.id);
+    }
+    replacedCheckoutId = checkout.id;
+  }
+
+  {
     const publicCheckoutOrigin = getEcwidPublicCheckoutOrigin();
     const metadata = checkoutMetadata(session);
     try {
@@ -156,14 +210,29 @@ export async function createOrReuseEcwidStripeCheckout(sessionId: string) {
       metadata,
       success_url: callbackUrl(publicCheckoutOrigin, `/api/integrations/ecwid/return/${encodeURIComponent(session.id)}`),
       cancel_url: callbackUrl(publicCheckoutOrigin, `/api/integrations/ecwid/cancel/${encodeURIComponent(session.id)}`),
-      }, { ...requestOptions, idempotencyKey: stripeCheckoutSessionIdempotencyKey(session.id) });
+      }, {
+        ...requestOptions,
+        idempotencyKey: replacedCheckoutId
+          ? stripeCheckoutReplacementIdempotencyKey(session.id, replacedCheckoutId)
+          : stripeCheckoutSessionIdempotencyKey(session.id),
+      });
     } catch (error) {
       return mapStripeCheckoutError(error);
     }
 
     await getDatabase().ecwidPaymentSession.updateMany({
-      where: { id: session.id, stripeCheckoutSessionId: null },
-      data: { stripeCheckoutSessionId: checkout.id, stripeCheckoutExpiresAt: new Date(checkout.expires_at * 1_000) },
+      where: { id: session.id, stripeCheckoutSessionId: replacedCheckoutId },
+      data: {
+        stripeCheckoutSessionId: checkout.id,
+        stripeCheckoutExpiresAt: new Date(checkout.expires_at * 1_000),
+        ...(replacedCheckoutId ? {
+          status: "PENDING" as const,
+          ecwidPaymentStatus: null,
+          nextSyncAt: null,
+          lastSyncErrorCode: null,
+          syncedAt: null,
+        } : {}),
+      },
     });
     const stored = await getDatabase().ecwidPaymentSession.findUnique({ where: { id: session.id }, select: { stripeCheckoutSessionId: true } });
     if (stored?.stripeCheckoutSessionId !== checkout.id) throw new HttpError(409, "A different Stripe Checkout Session is already attached to this payment");
@@ -171,13 +240,7 @@ export async function createOrReuseEcwidStripeCheckout(sessionId: string) {
 
   assertCheckoutMatchesSession(checkout, session);
   await attachCheckoutPaymentIntent(session.paymentTransactionId, checkout);
-  return {
-    id: checkout.id,
-    url: checkout.url,
-    status: checkout.status,
-    paymentStatus: checkout.payment_status,
-    callbackUrl: callbackUrl(getEcwidPublicCheckoutOrigin(), `/api/integrations/ecwid/return/${encodeURIComponent(session.id)}`),
-  };
+  return publicCheckoutResult(checkout, session.id);
 }
 
 export async function retrieveEcwidStripeCheckout(sessionId: string) {

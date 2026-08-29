@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   checkoutCreate: vi.fn(),
   checkoutRetrieve: vi.fn(),
+  intentRetrieve: vi.fn(),
   sessionFind: vi.fn(),
   sessionUpdateMany: vi.fn(),
   transactionFind: vi.fn(),
@@ -17,7 +18,10 @@ vi.mock("@/sentinel/config", () => ({ getServerEnv: () => mocks.serverEnv }));
 vi.mock("@/integrations/ecwid/config", () => ({ getEcwidPublicCheckoutOrigin: () => "https://pay.coreaminosresearch.com" }));
 vi.mock("@/payments/service", () => ({ paymentMethodConfigurationId: () => "pmc_configured" }));
 vi.mock("@/stripe/client", () => ({
-  getStripeClient: () => ({ checkout: { sessions: { create: mocks.checkoutCreate, retrieve: mocks.checkoutRetrieve } } }),
+  getStripeClient: () => ({
+    checkout: { sessions: { create: mocks.checkoutCreate, retrieve: mocks.checkoutRetrieve } },
+    paymentIntents: { retrieve: mocks.intentRetrieve },
+  }),
   getStripeConfiguration: () => ({ configured: true, mode: "test" }),
   stripeEnvironment: () => "TEST",
 }));
@@ -47,6 +51,8 @@ const record = {
     wooOrderId: "ecwid:10101010:hash",
     stripeAccountId: "acct_core",
     platformFeeMinor: 684,
+    stripePaymentIntentId: null,
+    status: "REQUIRES_PAYMENT",
   },
 };
 
@@ -84,6 +90,7 @@ describe("Ecwid Stripe-hosted Checkout", () => {
       return null;
     });
     mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.transactionUpdateMany.mockResolvedValue({ count: 1 });
     mocks.checkoutCreate.mockResolvedValue(checkoutSession());
   });
 
@@ -123,4 +130,84 @@ describe("Ecwid Stripe-hosted Checkout", () => {
       payment_method_configuration: "pmc_ecwidparent",
     });
   });
+
+  it("reuses an existing open Checkout Session without creating a second one", async () => {
+    const existing = { ...record, stripeCheckoutSessionId: "cs_test_checkout9001" };
+    mocks.sessionFind.mockImplementation((args: { include?: unknown }) => args.include ? existing : null);
+    mocks.checkoutRetrieve.mockResolvedValue(checkoutSession());
+    const { createOrReuseEcwidStripeCheckout } = await import("@/integrations/ecwid/stripe-checkout");
+
+    const result = await createOrReuseEcwidStripeCheckout(record.id);
+
+    expect(result.id).toBe("cs_test_checkout9001");
+    expect(mocks.checkoutRetrieve).toHaveBeenCalledOnce();
+    expect(mocks.checkoutCreate).not.toHaveBeenCalled();
+  });
+
+  it("replaces an expired unpaid Checkout Session on the same ORBIT transaction", async () => {
+    const existing = {
+      ...record,
+      stripeCheckoutSessionId: "cs_test_expired9001",
+      paymentTransaction: { ...record.paymentTransaction, status: "CANCELED" },
+    };
+    mocks.sessionFind.mockImplementation((args: { include?: unknown; select?: { stripeCheckoutSessionId?: boolean } }) => {
+      if (args.include) return existing;
+      if (args.select?.stripeCheckoutSessionId) return { stripeCheckoutSessionId: "cs_test_checkout9001" };
+      return null;
+    });
+    mocks.checkoutRetrieve.mockResolvedValue({
+      ...checkoutSession(), id: "cs_test_expired9001", status: "expired", payment_status: "unpaid", url: null,
+    });
+    const { createOrReuseEcwidStripeCheckout } = await import("@/integrations/ecwid/stripe-checkout");
+
+    const result = await createOrReuseEcwidStripeCheckout(record.id);
+
+    expect(result.id).toBe("cs_test_checkout9001");
+    expect(mocks.checkoutCreate).toHaveBeenCalledOnce();
+    expect(mocks.checkoutCreate.mock.calls[0][1]).toEqual({
+      stripeContext: "acct_core",
+      idempotencyKey: `${stripeCheckoutSessionIdempotencyKeyForTest(record.id)}-after-cs_test_expired9001`,
+    });
+    expect(mocks.transactionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: record.paymentTransactionId, source: "ECWID" }),
+      data: { stripePaymentIntentId: null, status: "REQUIRES_PAYMENT" },
+    }));
+    expect(mocks.sessionUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: record.id, stripeCheckoutSessionId: "cs_test_expired9001" },
+      data: expect.objectContaining({ stripeCheckoutSessionId: "cs_test_checkout9001", status: "PENDING" }),
+    }));
+  });
+
+  it("does not replace an expired Checkout Session whose PaymentIntent is still processing", async () => {
+    const existing = {
+      ...record,
+      stripeCheckoutSessionId: "cs_test_expired9001",
+      paymentTransaction: { ...record.paymentTransaction, stripePaymentIntentId: "pi_processing9001" },
+    };
+    mocks.sessionFind.mockImplementation((args: { include?: unknown }) => args.include ? existing : null);
+    mocks.checkoutRetrieve.mockResolvedValue({
+      ...checkoutSession(),
+      id: "cs_test_expired9001",
+      status: "expired",
+      payment_status: "unpaid",
+      payment_intent: "pi_processing9001",
+      url: null,
+    });
+    mocks.intentRetrieve.mockResolvedValue({ id: "pi_processing9001", status: "processing" });
+    mocks.transactionFind.mockResolvedValue({ stripePaymentIntentId: "pi_processing9001" });
+    const { createOrReuseEcwidStripeCheckout } = await import("@/integrations/ecwid/stripe-checkout");
+
+    const result = await createOrReuseEcwidStripeCheckout(record.id);
+
+    expect(result.id).toBe("cs_test_expired9001");
+    expect(mocks.intentRetrieve).toHaveBeenCalledOnce();
+    expect(mocks.checkoutCreate).not.toHaveBeenCalled();
+    expect(mocks.transactionUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: { stripePaymentIntentId: null, status: "REQUIRES_PAYMENT" },
+    }));
+  });
 });
+
+function stripeCheckoutSessionIdempotencyKeyForTest(sessionId: string) {
+  return `orbit-ecwid-checkout-${sessionId}`;
+}

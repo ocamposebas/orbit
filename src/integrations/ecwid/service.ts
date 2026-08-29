@@ -63,14 +63,25 @@ function retryAt(attempt: number) {
 }
 
 function assertSessionMatchesRequest(
-  session: { id: string; merchantId: string; orderId: string; amountMinor: number; currency: string; encryptedReturnUrl: string },
-  expected: { merchantId: string; orderId: string; amountMinor: number; currency: string; returnUrl: string },
+  session: { merchantId: string; storeId: string; orderId: string; amountMinor: number; currency: string },
+  expected: { merchantId: string; storeId: string; orderId: string; amountMinor: number; currency: string },
 ) {
-  const storedReturnUrl = decryptEcwidReturnUrl(session.encryptedReturnUrl, session.id);
   if (
-    session.merchantId !== expected.merchantId || session.orderId !== expected.orderId ||
-    session.amountMinor !== expected.amountMinor || session.currency !== expected.currency || storedReturnUrl !== expected.returnUrl
+    session.merchantId !== expected.merchantId || session.storeId !== expected.storeId ||
+    session.orderId !== expected.orderId || session.amountMinor !== expected.amountMinor || session.currency !== expected.currency
   ) throw new HttpError(409, "This Ecwid payment request conflicts with an existing session");
+}
+
+async function reuseEcwidPaymentSession(
+  session: { id: string; merchantId: string; storeId: string; orderId: string; amountMinor: number; currency: string },
+  expected: { merchantId: string; storeId: string; orderId: string; amountMinor: number; currency: string; returnUrl: string },
+) {
+  assertSessionMatchesRequest(session, expected);
+  return getDatabase().ecwidPaymentSession.update({
+    where: { id: session.id },
+    data: { encryptedReturnUrl: encryptEcwidReturnUrl(expected.returnUrl, session.id) },
+    include: { paymentTransaction: true },
+  });
 }
 
 export function isEcwidSessionId(value: string) {
@@ -89,8 +100,9 @@ export async function createOrReuseEcwidPaymentSession(payload: EcwidPaymentPayl
     include: { paymentTransaction: true },
   });
   if (existing) {
-    assertSessionMatchesRequest(existing, { merchantId: config.merchantId, orderId: payload.cart.order.id, amountMinor, currency, returnUrl });
-    return existing;
+    return reuseEcwidPaymentSession(existing, {
+      merchantId: config.merchantId, storeId: config.storeId, orderId: payload.cart.order.id, amountMinor, currency, returnUrl,
+    });
   }
 
   const merchant = await db.merchant.findUnique({
@@ -153,8 +165,9 @@ export async function createOrReuseEcwidPaymentSession(payload: EcwidPaymentPayl
       include: { paymentTransaction: true },
     });
     if (!concurrent) throw error;
-    assertSessionMatchesRequest(concurrent, { merchantId: config.merchantId, orderId: payload.cart.order.id, amountMinor, currency, returnUrl });
-    return concurrent;
+    return reuseEcwidPaymentSession(concurrent, {
+      merchantId: config.merchantId, storeId: config.storeId, orderId: payload.cart.order.id, amountMinor, currency, returnUrl,
+    });
   }
 }
 
@@ -327,6 +340,9 @@ export async function ecwidPaymentRedirect(sessionId: string) {
   if (!session) throw new HttpError(404, "Payment session not found");
   if (session.checkoutMode === "ORBIT_HOSTED") return `/pay/${sessionId}`;
   const checkout = await createOrReuseEcwidStripeCheckout(sessionId);
+  if (checkout.status !== "open" || checkout.paymentStatus === "paid" || checkout.paymentStatus === "no_payment_required") {
+    return checkout.callbackUrl;
+  }
   return checkout.url ?? checkout.callbackUrl;
 }
 
