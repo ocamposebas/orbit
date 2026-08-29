@@ -53,6 +53,7 @@ const serverEnvSchema = z.object({
   ECWID_CLIENT_SECRET: optionalNonEmpty,
   ECWID_SECRET_TOKEN: optionalNonEmpty,
   ECWID_ORBIT_MERCHANT_ID: optionalNonEmpty,
+  ECWID_STRIPE_PAYMENT_METHOD_CONFIGURATION_ID: optionalNonEmpty,
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

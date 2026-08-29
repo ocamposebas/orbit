@@ -7,9 +7,13 @@ const mocks = vi.hoisted(() => ({
   sessionUpdateMany: vi.fn(),
   transactionFind: vi.fn(),
   transactionUpdateMany: vi.fn(),
+  serverEnv: {
+    STRIPE_PAYMENTS_WEBHOOK_SECRET: "whsec_test",
+    ECWID_STRIPE_PAYMENT_METHOD_CONFIGURATION_ID: undefined as string | undefined,
+  },
 }));
 
-vi.mock("@/sentinel/config", () => ({ getServerEnv: () => ({ STRIPE_PAYMENTS_WEBHOOK_SECRET: "whsec_test" }) }));
+vi.mock("@/sentinel/config", () => ({ getServerEnv: () => mocks.serverEnv }));
 vi.mock("@/integrations/ecwid/config", () => ({ getEcwidPublicCheckoutOrigin: () => "https://pay.coreaminosresearch.com" }));
 vi.mock("@/payments/service", () => ({ paymentMethodConfigurationId: () => "pmc_configured" }));
 vi.mock("@/stripe/client", () => ({
@@ -73,6 +77,7 @@ function checkoutSession() {
 describe("Ecwid Stripe-hosted Checkout", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.serverEnv.ECWID_STRIPE_PAYMENT_METHOD_CONFIGURATION_ID = undefined;
     mocks.sessionFind.mockImplementation((args: { include?: unknown; select?: { stripeCheckoutSessionId?: boolean } }) => {
       if (args.include) return record;
       if (args.select?.stripeCheckoutSessionId) return { stripeCheckoutSessionId: "cs_test_checkout9001" };
@@ -105,5 +110,17 @@ describe("Ecwid Stripe-hosted Checkout", () => {
       where: { id: record.id, stripeCheckoutSessionId: null },
       data: expect.objectContaining({ stripeCheckoutSessionId: "cs_test_checkout9001" }),
     }));
+  });
+
+  it("uses the Ecwid-specific payment method configuration without changing the global fallback", async () => {
+    mocks.serverEnv.ECWID_STRIPE_PAYMENT_METHOD_CONFIGURATION_ID = "pmc_ecwidparent";
+    const { createOrReuseEcwidStripeCheckout } = await import("@/integrations/ecwid/stripe-checkout");
+
+    await createOrReuseEcwidStripeCheckout(record.id);
+
+    expect(mocks.checkoutCreate).toHaveBeenCalledOnce();
+    expect(mocks.checkoutCreate.mock.calls[0][0]).toMatchObject({
+      payment_method_configuration: "pmc_ecwidparent",
+    });
   });
 });

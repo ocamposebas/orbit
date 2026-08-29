@@ -25,6 +25,15 @@ export function stripeCheckoutSessionIdempotencyKey(ecwidSessionId: string) {
   return `orbit-ecwid-checkout-${ecwidSessionId}`;
 }
 
+function ecwidPaymentMethodConfigurationId() {
+  const value = getServerEnv().ECWID_STRIPE_PAYMENT_METHOD_CONFIGURATION_ID;
+  if (!value) return paymentMethodConfigurationId();
+  if (!/^pmc_[A-Za-z0-9]+$/.test(value)) {
+    throw new HttpError(503, "Ecwid Stripe payment method configuration is invalid");
+  }
+  return value;
+}
+
 function paymentIntentId(value: Stripe.Checkout.Session["payment_intent"]) {
   return typeof value === "string" ? value : value?.id ?? null;
 }
@@ -139,7 +148,7 @@ export async function createOrReuseEcwidStripeCheckout(sessionId: string) {
           product_data: { name: `Order from ${session.merchant.businessName}`.slice(0, 120), description: `Order ${session.orderId}` },
         },
       }],
-      payment_method_configuration: paymentMethodConfigurationId(),
+      payment_method_configuration: ecwidPaymentMethodConfigurationId(),
       payment_intent_data: {
         application_fee_amount: session.paymentTransaction.platformFeeMinor,
         metadata: { ...metadata, wooOrderId: session.paymentTransaction.wooOrderId },
