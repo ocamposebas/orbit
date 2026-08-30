@@ -23,16 +23,16 @@ export function ContactForm() {
   }
 
   return (
-    <form onSubmit={submit} className="panel min-w-0 max-w-full rounded-2xl p-5 sm:p-8">
+    <form onSubmit={submit} className="panel min-w-0 max-w-full rounded-[6px] p-5 sm:p-8">
       <div className="grid gap-5 sm:grid-cols-2">
         {fields.map((field) => <label key={field.name} className="block"><span className="mb-2 block text-xs text-[#a6a8af]">{field.label}</span><input className="form-field" required name={field.name} type={field.type} placeholder={field.placeholder} autoComplete={field.name === "email" ? "email" : field.name === "name" ? "name" : field.name === "company" ? "organization" : field.name === "website" ? "url" : "organization-title"}/></label>)}
         <label className="block sm:col-span-2"><span className="mb-2 block text-xs text-[#a6a8af]">Message</span><textarea className="form-field min-h-32 resize-y" required name="message" placeholder="Tell us what you are looking to monitor."/></label>
       </div>
       <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <button disabled={state === "sending"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[9px] bg-[#f2f0eb] px-5 text-sm font-medium text-[#090a0c] transition hover:bg-white disabled:cursor-wait disabled:opacity-60" type="submit">{state === "sending" ? "Submitting…" : "Talk to ORBIT"}<ArrowUpRight className="size-3.5"/></button>
-        <p aria-live="polite" className={`text-xs ${state === "error" ? "text-[#eca0a0]" : "text-[#78d6ad]"}`}>{state === "success" && <span className="inline-flex items-center gap-2"><CheckCircle2 className="size-3.5"/>Request captured by the local ORBIT endpoint.</span>}{state === "error" && "The local endpoint could not accept the request. Please try again."}</p>
+        <button disabled={state === "sending"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[6px] bg-[#ff6547] px-5 text-sm font-medium text-[#140806] transition hover:bg-[#ff8068] disabled:cursor-wait disabled:opacity-60" type="submit">{state === "sending" ? "Submitting…" : "Talk to ORBIT"}<ArrowUpRight className="size-3.5"/></button>
+        <p aria-live="polite" className={`text-xs ${state === "error" ? "text-[#eca0a0]" : "text-[#9ee6b3]"}`}>{state === "success" && <span className="inline-flex items-center gap-2"><CheckCircle2 className="size-3.5"/>Your message has been received.</span>}{state === "error" && "We could not accept the message. Please try again."}</p>
       </div>
-      <p className="mt-5 text-[10px] leading-5 text-[#5e6169]">This form currently uses an internal API endpoint. External CRM and email delivery are not connected yet.</p>
+      <p className="mt-5 text-[10px] leading-5 text-[#5e6169]">Your details are used only to review your message and respond.</p>
     </form>
   );
 }

@@ -9,19 +9,19 @@ const groups = [
 
 export function Footer() {
   return (
-    <footer className="border-t border-white/[.08] bg-[#08090b]">
+    <footer className="border-t border-white/[.09] bg-[#060606]">
       <div className="container-shell py-14 sm:py-20">
         <div className="grid gap-12 md:grid-cols-[1.35fr_2fr]">
           <div>
             <Logo />
-            <p className="mt-5 max-w-xs text-sm leading-6 text-[#858891]">Merchant Compliance &amp; Risk Intelligence for modern commerce.</p>
+            <p className="mt-5 max-w-xs text-sm leading-6 text-[#89857f]">Continuous merchant compliance and risk intelligence for modern commerce.</p>
           </div>
           <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
             {groups.map((group) => (
               <div key={group.title}>
-                <p className="text-xs font-semibold uppercase tracking-[.14em] text-[#666a73]">{group.title}</p>
+                <p className="text-xs font-semibold uppercase text-[#66635d]">{group.title}</p>
                 <ul className="mt-5 space-y-3">
-                  {group.links.map(([label, href]) => <li key={href}><Link className="text-sm text-[#a7a9b0] transition-colors hover:text-white" href={href}>{label}</Link></li>)}
+                  {group.links.map(([label, href]) => <li key={href}><Link className="text-sm text-[#aaa69f] transition-colors hover:text-white" href={href}>{label}</Link></li>)}
                 </ul>
               </div>
             ))}

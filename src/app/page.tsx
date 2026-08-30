@@ -1,19 +1,27 @@
 import { Hero } from "@/components/marketing/hero";
-import { AuditSection, BuiltForSection, ChangesSection, CustomComplianceSection, FinalCta, FindingsSection, MerchantHealthSection, MonitoringSection, ProblemSection, RulesetsSection, SecuritySection } from "@/components/marketing/home-sections";
+import {
+  BuiltForSection,
+  CustomComplianceSection,
+  EvidenceSection,
+  FinalCta,
+  FindingsSection,
+  MerchantHealthSection,
+  MonitoringSection,
+  SecuritySection,
+  SystemSection,
+} from "@/components/marketing/home-sections";
 
 export default function Home() {
   return (
     <>
       <Hero />
-      <ProblemSection />
+      <SystemSection />
       <MonitoringSection />
       <FindingsSection />
+      <EvidenceSection />
       <MerchantHealthSection />
-      <CustomComplianceSection />
-      <ChangesSection />
-      <AuditSection />
-      <RulesetsSection />
       <BuiltForSection />
+      <CustomComplianceSection />
       <SecuritySection />
       <FinalCta />
     </>

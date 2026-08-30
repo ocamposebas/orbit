@@ -16,17 +16,17 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteConfig.url),
-  title: { default: "ORBIT — Merchant Compliance & Risk Intelligence", template: "%s — ORBIT" },
+  title: { default: "ORBIT - Continuous Merchant Risk Intelligence", template: "%s - ORBIT" },
   description: siteConfig.description,
   applicationName: "ORBIT",
   keywords: ["merchant compliance", "risk intelligence", "website monitoring", "change detection", "audit trail", "merchant risk"],
   authors: [{ name: "ORBIT" }],
-  openGraph: { type: "website", locale: "en_US", url: siteConfig.url, siteName: "ORBIT", title: "ORBIT — Merchant Compliance & Risk Intelligence", description: siteConfig.description },
-  twitter: { card: "summary_large_image", title: "ORBIT — Merchant Compliance & Risk Intelligence", description: siteConfig.description },
+  openGraph: { type: "website", locale: "en_US", url: siteConfig.url, siteName: "ORBIT", title: "ORBIT - Continuous Merchant Risk Intelligence", description: siteConfig.description },
+  twitter: { card: "summary_large_image", title: "ORBIT - Continuous Merchant Risk Intelligence", description: siteConfig.description },
   icons: { icon: "/icon.svg" },
 };
 
-export const viewport: Viewport = { themeColor: "#08090b", colorScheme: "dark", width: "device-width", initialScale: 1 };
+export const viewport: Viewport = { themeColor: "#060606", colorScheme: "dark", width: "device-width", initialScale: 1 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

@@ -5,7 +5,7 @@ const tones = {
   warning: "border-[#e7bd72]/20 bg-[#e7bd72]/[.08] text-[#e7c98d]",
   danger: "border-[#e68181]/20 bg-[#e68181]/[.08] text-[#eca0a0]",
   neutral: "border-white/10 bg-white/[.04] text-[#aeb1b8]",
-  accent: "border-[#8b8cff]/25 bg-[#8b8cff]/10 text-[#b4b5ff]",
+  accent: "border-[#ff6547]/25 bg-[#ff6547]/10 text-[#ff9a85]",
 };
 
 export function StatusPill({ children, tone = "neutral" }: { children: React.ReactNode; tone?: keyof typeof tones }) {

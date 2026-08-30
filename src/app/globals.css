@@ -1,20 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  --background: #08090b;
-  --surface: #0d0f12;
-  --surface-raised: #12151a;
+  --background: #060606;
+  --surface: #0a0b0c;
+  --surface-raised: #111214;
   --line: rgba(255, 255, 255, 0.09);
   --line-strong: rgba(255, 255, 255, 0.15);
-  --text: #f2f0eb;
-  --muted: #989ba3;
-  --muted-strong: #b9bbc1;
-  --accent: #8b8cff;
-  --accent-bright: #a9aaff;
-  --cyan: #68d4dc;
-  --success: #78d6ad;
-  --warning: #e7bd72;
-  --danger: #e68181;
+  --text: #f3f0e9;
+  --muted: #99958e;
+  --muted-strong: #bcb8b0;
+  --accent: #ff6547;
+  --accent-bright: #ff8068;
+  --cyan: #9bbfd0;
+  --success: #9ee6b3;
+  --warning: #f0c36b;
+  --danger: #ff8068;
 }
 
 @theme inline {
@@ -24,7 +24,7 @@
   --font-mono: var(--font-geist-mono);
 }
 
-* { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: border-box; letter-spacing: 0 !important; }
 html { scroll-behavior: smooth; background: var(--background); }
 body {
   margin: 0;
@@ -34,7 +34,7 @@ body {
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
 }
-::selection { background: rgba(139, 140, 255, 0.28); color: #fff; }
+::selection { background: rgba(255, 101, 71, 0.3); color: #fff; }
 a, button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 button, a { outline-offset: 4px; }
 :focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 3px; }
@@ -46,18 +46,63 @@ button, a { outline-offset: 4px; }
   background-size: 48px 48px;
   mask-image: linear-gradient(to bottom, transparent, black 18%, black 78%, transparent);
 }
+.orbit-hero {
+  background:
+    linear-gradient(90deg, rgba(6,6,6,.98) 0%, rgba(6,6,6,.9) 39%, rgba(6,6,6,.26) 70%, rgba(6,6,6,.7) 100%),
+    url('/orbit-eclipse.png') center right / cover no-repeat,
+    #060606;
+}
+.orbit-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(to bottom, transparent 72%, #060606 100%);
+  pointer-events: none;
+}
+.page-orbit-hero {
+  background:
+    linear-gradient(90deg, rgba(6,6,6,.98) 0%, rgba(6,6,6,.86) 50%, rgba(6,6,6,.35) 82%, rgba(6,6,6,.6) 100%),
+    linear-gradient(to top, #060606 0%, transparent 58%),
+    url('/orbit-eclipse.png') 72% center / cover no-repeat,
+    #060606;
+}
 .eyebrow {
-  display: inline-flex; align-items: center; gap: .55rem; color: #b9bbc1;
-  font-size: .72rem; font-weight: 600; letter-spacing: .16em; text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: .55rem; color: #aaa69f;
+  font-size: .72rem; font-weight: 600; letter-spacing: 0; text-transform: uppercase;
 }
 .eyebrow::before {
   content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
-  box-shadow: 0 0 14px rgba(139, 140, 255, .65);
+  box-shadow: 0 0 14px rgba(255, 101, 71, .5);
 }
 .text-balance { text-wrap: balance; }
 .panel {
-  background: linear-gradient(180deg, rgba(18, 21, 26, .98), rgba(12, 14, 17, .98));
+  background: linear-gradient(180deg, rgba(17, 18, 20, .98), rgba(9, 10, 11, .98));
   border: 1px solid var(--line); box-shadow: 0 30px 90px rgba(0, 0, 0, .38);
+}
+.final-orbit::before {
+  content: "";
+  position: absolute;
+  right: -12%;
+  top: 50%;
+  width: min(72vw, 980px);
+  aspect-ratio: 1;
+  translate: 0 -50%;
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: 50%;
+  box-shadow: -3px 0 rgba(255,101,71,.48), -18px 0 44px rgba(255,101,71,.1);
+}
+.final-orbit::after {
+  content: "";
+  position: absolute;
+  right: -18%;
+  top: 50%;
+  width: min(84vw, 1150px);
+  aspect-ratio: 1.8;
+  translate: 0 -50%;
+  rotate: -14deg;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 50%;
 }
 .number-tabular { font-variant-numeric: tabular-nums; }
 .form-field {
@@ -68,7 +113,7 @@ button, a { outline-offset: 4px; }
 .form-field::placeholder { color: #666a73; }
 .form-field:hover { border-color: rgba(255,255,255,.22); }
 .form-field:focus {
-  outline: none; border-color: rgba(139,140,255,.75); box-shadow: 0 0 0 3px rgba(139,140,255,.1);
+  outline: none; border-color: rgba(255,101,71,.75); box-shadow: 0 0 0 3px rgba(255,101,71,.1);
   background: rgba(255,255,255,.04);
 }
 select.form-field { color-scheme: dark; }
@@ -81,7 +126,21 @@ form, fieldset, label { min-width: 0; }
 .prose-legal p { margin-block: .8rem; }
 .prose-legal ul { padding-left: 1.2rem; list-style: disc; }
 
-@media (max-width: 640px) { .container-shell { width: min(100% - 28px, 1180px); } }
+@media (max-width: 640px) {
+  .container-shell { width: min(100% - 28px, 1180px); }
+  .orbit-hero {
+    background:
+      linear-gradient(to bottom, rgba(6,6,6,.72) 0%, rgba(6,6,6,.94) 50%, #060606 100%),
+      url('/orbit-eclipse.png') 63% top / auto 58% no-repeat,
+      #060606;
+  }
+  .page-orbit-hero {
+    background:
+      linear-gradient(to bottom, rgba(6,6,6,.45), #060606 72%),
+      url('/orbit-eclipse.png') 62% top / auto 65% no-repeat,
+      #060606;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

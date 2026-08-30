@@ -8,9 +8,9 @@ const metrics = [["Pages analyzed", "147"], ["Products detected", "83"], ["Polic
 
 export function MonitoringScanner() {
   return (
-    <div className="panel overflow-hidden rounded-2xl">
+    <div className="panel overflow-hidden rounded-[6px]">
       <div className="flex items-center justify-between border-b border-white/[.08] px-4 py-3 sm:px-5">
-        <div className="flex items-center gap-2"><ScanSearch className="size-4 text-[#a9aaff]"/><span className="text-xs font-medium">Website scanner</span></div>
+        <div className="flex items-center gap-2"><ScanSearch className="size-4 text-[#ff7458]"/><span className="text-xs font-medium">Website scanner</span></div>
         <StatusPill tone="success"><motion.span animate={{ opacity: [.3, 1, .3] }} transition={{ duration: 2.2, repeat: Infinity }} className="size-1.5 rounded-full bg-[#78d6ad]"/> Live</StatusPill>
       </div>
       <div className="grid lg:grid-cols-[1.35fr_.85fr]">
@@ -22,9 +22,9 @@ export function MonitoringScanner() {
               <div className="space-y-2"><div className="h-2 w-14 rounded bg-white/[.07]"/><div className="h-2 w-20 rounded bg-white/[.04]"/><div className="h-2 w-16 rounded bg-white/[.04]"/></div>
               <div><div className="h-3 w-2/5 rounded bg-white/[.09]"/><div className="mt-3 h-2 w-full rounded bg-white/[.045]"/><div className="mt-2 h-2 w-4/5 rounded bg-white/[.045]"/><div className="mt-6 grid grid-cols-3 gap-2">{[1,2,3].map((n) => <div key={n} className="aspect-[1.2] rounded border border-white/[.06] bg-white/[.025]"/>)}</div><div className="mt-5 h-2 w-3/4 rounded bg-white/[.04]"/></div>
             </div>
-            <motion.div animate={{ top: ["12%", "90%", "12%"] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }} className="absolute inset-x-0 top-0 h-px bg-[#8b8cff] shadow-[0_0_16px_2px_rgba(139,140,255,.65)]" />
+            <motion.div animate={{ top: ["12%", "90%", "12%"] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }} className="absolute inset-x-0 top-0 h-px bg-[#ff6547] shadow-[0_0_16px_2px_rgba(255,101,71,.55)]" />
           </div>
-          <div className="mt-4 flex items-center gap-2 text-[10px] text-[#80838c]"><motion.span animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: "linear" }} className="block size-3 rounded-full border border-[#8b8cff]/30 border-t-[#a9aaff]"/>Scanning merchant website...</div>
+          <div className="mt-4 flex items-center gap-2 text-[10px] text-[#80838c]"><motion.span animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: "linear" }} className="block size-3 rounded-full border border-[#ff6547]/30 border-t-[#ff8068]"/>Scanning merchant website...</div>
         </div>
         <div className="p-4 sm:p-6">
           <p className="text-[10px] font-semibold uppercase tracking-[.14em] text-[#646771]">Current scan</p>
