@@ -18,7 +18,7 @@ export function HealthDashboard() {
           <p className="mt-4 text-[10px] leading-5 text-[#696c75]">Internal ORBIT indicator based on monitored website, policy, and review signals.</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
-          {stats.map(({label,value,note,icon:Icon}) => <div key={label} className="rounded-[5px] border border-white/[.08] p-4"><Icon className="size-4 text-[#ff7458]"/><p className="mt-7 text-[10px] text-[#757881]">{label}</p><p className="mt-1 text-lg font-medium">{value}</p><p className="mt-1 text-[9px] text-[#60636b]">{note}</p></div>)}
+          {stats.map(({label,value,note,icon:Icon}) => <div key={label} className="rounded-[5px] border border-white/[.08] p-4"><Icon className="size-4 text-[#a78bfa]"/><p className="mt-7 text-[10px] text-[#757881]">{label}</p><p className="mt-1 text-lg font-medium">{value}</p><p className="mt-1 text-[9px] text-[#60636b]">{note}</p></div>)}
         </div>
       </div>
       <div className="grid gap-px overflow-hidden rounded-xl border border-white/[.08] bg-white/[.07] sm:grid-cols-3">

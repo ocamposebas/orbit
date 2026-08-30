@@ -6,7 +6,7 @@ export function ButtonLink({ href, children, variant = "primary", className }: {
   return (
     <Link href={href} className={cn(
       "group inline-flex min-h-11 items-center justify-center gap-2 rounded-[6px] px-4 text-sm font-medium transition-all duration-200",
-      variant === "primary" && "border border-[#ff6547]/55 bg-[#ff6547] text-[#140806] shadow-[0_10px_36px_rgba(255,101,71,.12)] hover:bg-[#ff8068] hover:shadow-[0_12px_44px_rgba(255,101,71,.18)]",
+      variant === "primary" && "border border-[#9b87ff]/55 bg-[#7c5cff] text-white shadow-[0_10px_36px_rgba(124,92,255,.16)] hover:bg-[#9278ff] hover:shadow-[0_12px_44px_rgba(124,92,255,.24)]",
       variant === "secondary" && "border border-white/14 bg-black/20 text-white backdrop-blur-sm hover:border-white/25 hover:bg-white/[.06]",
       variant === "ghost" && "text-[#b9bbc1] hover:text-white",
       className,

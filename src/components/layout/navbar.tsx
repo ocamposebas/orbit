@@ -27,7 +27,7 @@ export function Navbar() {
   return (
     <header className={cn(
       "fixed inset-x-0 top-0 z-50 border-b transition-[background-color,border-color] duration-300",
-      scrolled || open ? "border-white/[.09] bg-[#060606]/90 backdrop-blur-xl" : "border-transparent bg-transparent",
+      scrolled || open ? "border-white/[.09] bg-[#050611]/90 backdrop-blur-xl" : "border-transparent bg-transparent",
     )}>
       <div className="container-shell flex h-14 items-center justify-between">
         <Logo />
@@ -42,7 +42,7 @@ export function Navbar() {
 
         <div className="hidden items-center gap-5 md:flex">
           <Link href="/login" className="text-[12px] font-medium text-[#92959e] transition-colors hover:text-white">Sign in</Link>
-          <Link href="/request-access" className="group inline-flex h-9 items-center gap-2 border border-[#ff6547]/50 bg-[#ff6547] px-3.5 text-[12px] font-medium text-[#100705] transition-colors hover:bg-[#ff8068]">
+          <Link href="/request-access" className="group inline-flex h-9 items-center gap-2 border border-[#9b87ff]/55 bg-[#7c5cff] px-3.5 text-[12px] font-medium text-white transition-colors hover:bg-[#9278ff]">
             Request access
             <ArrowUpRight aria-hidden="true" className="size-3.5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
           </Link>
@@ -55,7 +55,7 @@ export function Navbar() {
 
       <AnimatePresence>
         {open && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "calc(100dvh - 56px)" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: .24, ease: [0.22, 1, 0.36, 1] }} className="overflow-hidden bg-[#060606] md:hidden">
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "calc(100dvh - 56px)" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: .24, ease: [0.22, 1, 0.36, 1] }} className="overflow-hidden bg-[#050611] md:hidden">
             <nav aria-label="Mobile navigation" className="container-shell flex h-full flex-col py-5">
               {primaryNav.map((item, index) => (
                 <motion.div key={item.href} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .035 }}>
@@ -66,7 +66,7 @@ export function Navbar() {
                 </motion.div>
               ))}
               <div className="mt-auto grid gap-2 pb-3">
-                <Link href="/request-access" onClick={() => setOpen(false)} className="flex h-11 items-center justify-center bg-[#ff6547] text-sm font-medium text-[#100705]">Request access</Link>
+                <Link href="/request-access" onClick={() => setOpen(false)} className="flex h-11 items-center justify-center bg-[#7c5cff] text-sm font-medium text-white">Request access</Link>
                 <Link href="/login" onClick={() => setOpen(false)} className="flex h-11 items-center justify-center rounded-lg border border-white/10 text-sm font-medium text-[#b3b5bc]">Sign in</Link>
               </div>
             </nav>
