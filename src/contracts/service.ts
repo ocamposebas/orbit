@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { parseAppUrlConfiguration } from "@/sentinel/app-url";
 import { getServerEnv } from "@/sentinel/config";
 import { getDatabase } from "@/sentinel/db";
 import { HttpError } from "@/sentinel/http";
@@ -21,7 +22,7 @@ export function createInvitationCredentials(now = new Date()) {
 }
 
 export function invitationUrl(token: string) {
-  return new URL(`/onboarding/${token}`, getServerEnv().APP_URL).toString();
+  return new URL(`/onboarding/${token}`, parseAppUrlConfiguration(getServerEnv().APP_URL).canonicalOrigin).toString();
 }
 
 export async function agreementFromInvitation(token: string) {

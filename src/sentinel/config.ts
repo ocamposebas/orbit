@@ -1,14 +1,22 @@
 import { z } from "zod";
+import { parseAppUrlConfiguration } from "./app-url";
 
 const int = (fallback: number) => z.coerce.number().int().positive().default(fallback);
 const nonNegativeInt = (fallback: number) => z.coerce.number().int().min(0).default(fallback);
 const nonNegative = (fallback: number) => z.coerce.number().min(0).default(fallback);
 const optionalNonEmpty = z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().trim().min(1).optional());
+const appUrl = z.string().trim().min(1).default("http://localhost:3000").superRefine((value, context) => {
+  try {
+    parseAppUrlConfiguration(value);
+  } catch (error) {
+    context.addIssue({ code: "custom", message: error instanceof Error ? error.message : "APP_URL is invalid" });
+  }
+});
 
 const serverEnvSchema = z.object({
   DATABASE_URL: z.string().default("postgresql://orbit:orbit@localhost:5432/orbit?schema=public"),
   REDIS_URL: z.string().default("redis://localhost:6379"),
-  APP_URL: z.string().url().default("http://localhost:3000"),
+  APP_URL: appUrl,
   AI_SCANNER_MODEL: z.string().default("gpt-5.6-luna"),
   AI_CRITIC_MODEL: optionalNonEmpty,
   AI_SCANNER_REASONING_EFFORT: z.enum(["none", "low", "medium", "high", "xhigh", "max"]).default("high"),

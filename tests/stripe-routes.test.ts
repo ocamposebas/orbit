@@ -17,7 +17,7 @@ vi.mock("@/sentinel/http", () => ({
   apiError: (error: { status?: number; message?: string }) => Response.json({ error: error.message ?? "Unexpected server error" }, { status: error.status ?? 500 }),
 }));
 vi.mock("@/sentinel/auth/session", () => ({ requestSession: mocks.requestSession }));
-vi.mock("@/sentinel/config", () => ({ getServerEnv: () => ({ APP_URL: "https://orbit.example" }) }));
+vi.mock("@/sentinel/config", () => ({ getServerEnv: () => ({ APP_URL: "https://orbit.example,https://alternate.example" }) }));
 vi.mock("@/sentinel/rate-limit", () => ({ enforceRateLimit: mocks.rateLimit }));
 vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({ auditLog: { create: mocks.auditCreate } }) }));
 vi.mock("@/stripe/service", () => ({
@@ -68,7 +68,7 @@ describe("Stripe Connect mutation routes", () => {
     expect(response.status).toBe(201);
     expect(mocks.requireAccess).toHaveBeenCalledWith(request, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"], mutation: true });
     expect(mocks.connect).toHaveBeenCalledWith(merchantId, `user_${role.toLowerCase()}`);
-    expect(mocks.onboarding).toHaveBeenCalledWith(merchantId, `user_${role.toLowerCase()}`);
+    expect(mocks.onboarding).toHaveBeenCalledWith(merchantId, `user_${role.toLowerCase()}`, "https://orbit.example");
   });
 
   it("returns the same canonical acct_* when a duplicate connect click reaches the idempotent service", async () => {
@@ -92,6 +92,18 @@ describe("Stripe Connect mutation routes", () => {
     expect(mocks.requireAccess).toHaveBeenCalledWith(request, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"], mutation: true });
   });
 
+  it("keeps a Stripe Account Link callback on the allowed alternate origin", async () => {
+    mocks.requireAccess.mockResolvedValueOnce(session("OWNER"));
+    const alternateRequest = new Request(`https://alternate.example/api/sentinel/merchants/${merchantId}/stripe/onboarding`, {
+      method: "POST",
+      headers: { origin: "https://alternate.example" },
+    });
+    const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/onboarding/route");
+    const response = await POST(alternateRequest as never, params);
+    expect(response.status).toBe(200);
+    expect(mocks.onboarding).toHaveBeenCalledWith(merchantId, "user_owner", "https://alternate.example");
+  });
+
   it("performs an authoritative manual synchronization", async () => {
     mocks.requireAccess.mockResolvedValueOnce(session("REVIEWER"));
     mocks.sync.mockResolvedValueOnce({ ...integration, displayStatus: "IN_REVIEW" });
@@ -110,6 +122,15 @@ describe("Stripe Connect mutation routes", () => {
     expect(response.headers.get("location")).toBe(`https://orbit.example/sentinel/merchant/${merchantId}?stripeReturn=1#stripe-connect`);
     expect(mocks.sync).toHaveBeenCalledWith(merchantId, { actorId: "user_owner", auditAction: "STRIPE_STATUS_SYNCED" });
     expect(mocks.auditCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: "STRIPE_ONBOARDING_RETURNED", metadata: { displayStatus: "ACTION_REQUIRED" } }) }));
+  });
+
+  it("redirects an alternate-domain Stripe return back to that domain", async () => {
+    mocks.requireAccess.mockResolvedValueOnce(session("OWNER"));
+    mocks.sync.mockResolvedValueOnce({ ...integration, displayStatus: "ACTION_REQUIRED" });
+    const { GET } = await import("@/app/merchants/[merchantId]/integrations/stripe/return/route");
+    const response = await GET(new Request(`https://alternate.example/merchants/${merchantId}/integrations/stripe/return`) as never, params);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(`https://alternate.example/sentinel/merchant/${merchantId}?stripeReturn=1#stripe-connect`);
   });
 
   it("sends an unauthenticated return through login with the merchant integration as its continuation", async () => {

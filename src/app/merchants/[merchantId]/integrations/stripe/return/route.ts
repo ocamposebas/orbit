@@ -3,7 +3,7 @@ import { requestSession } from "@/sentinel/auth/session";
 import { requireMerchantAccess } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { auditStripeConnectError, syncStripeConnectAccount } from "@/stripe/service";
-import { merchantStripeDashboardPath, orbitLoginUrl, orbitRedirectUrl, requireValidMerchantId } from "@/stripe/onboarding-navigation";
+import { merchantStripeDashboardPath, orbitLoginUrl, orbitRedirectUrl, orbitRequestOrigin, requireValidMerchantId } from "@/stripe/onboarding-navigation";
 
 export const runtime = "nodejs";
 
@@ -22,8 +22,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   const dashboardAfterLogin = merchantStripeDashboardPath(merchantId, "login");
   try {
+    const appOrigin = orbitRequestOrigin(request);
     const session = await requestSession(request);
-    if (!session) return NextResponse.redirect(orbitLoginUrl(dashboardAfterLogin), { status: 303 });
+    if (!session) return NextResponse.redirect(orbitLoginUrl(dashboardAfterLogin, appOrigin), { status: 303 });
 
     let actorId: string | undefined;
     try {
@@ -33,13 +34,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       const integration = await syncStripeConnectAccount(merchantId, { actorId, auditAction: "STRIPE_STATUS_SYNCED" });
       const db = (await import("@/sentinel/db")).getDatabase();
       await db.auditLog.create({ data: { organizationId: access.session.organization.id, merchantId, actorId, action: "STRIPE_ONBOARDING_RETURNED", targetType: "StripeConnectIntegration", targetId: integration.id, metadata: { displayStatus: integration.displayStatus } } });
-      return NextResponse.redirect(orbitRedirectUrl(merchantStripeDashboardPath(merchantId, "success")), { status: 303 });
+      return NextResponse.redirect(orbitRedirectUrl(merchantStripeDashboardPath(merchantId, "success"), appOrigin), { status: 303 });
     } catch (error) {
       if (actorId) await auditStripeConnectError(merchantId, actorId, "return", error);
       const status = errorStatus(error);
-      if (status === 401) return NextResponse.redirect(orbitLoginUrl(dashboardAfterLogin), { status: 303 });
-      if (status === 403 || status === 404) return NextResponse.redirect(orbitRedirectUrl("/sentinel?stripeReturn=unauthorized"), { status: 303 });
-      return NextResponse.redirect(orbitRedirectUrl(merchantStripeDashboardPath(merchantId, "error")), { status: 303 });
+      if (status === 401) return NextResponse.redirect(orbitLoginUrl(dashboardAfterLogin, appOrigin), { status: 303 });
+      if (status === 403 || status === 404) return NextResponse.redirect(orbitRedirectUrl("/sentinel?stripeReturn=unauthorized", appOrigin), { status: 303 });
+      return NextResponse.redirect(orbitRedirectUrl(merchantStripeDashboardPath(merchantId, "error"), appOrigin), { status: 303 });
     }
   } catch {
     return NextResponse.json({ error: "Unable to complete the Stripe return. Sign in to ORBIT and open the merchant's Stripe integration." }, { status: 503 });

@@ -191,14 +191,14 @@ export async function syncStripeConnectAccount(merchantId: string, options: { ac
   return safeStripeIntegration(updated);
 }
 
-export async function createStripeOnboardingLink(merchantId: string, actorId?: string) {
+export async function createStripeOnboardingLink(merchantId: string, actorId?: string, appOrigin?: string) {
   const db = getDatabase();
   const config = getStripeConfiguration();
   if (!config.configured) throw new HttpError(503, "Stripe Connect is not configured");
   const integration = await db.stripeConnectIntegration.findUnique({ where: { merchantId }, include: { merchant: { select: { organizationId: true } } } });
   if (!integration) throw new HttpError(409, "Connect Stripe before starting verification");
   if (integration.stripeEnvironment !== stripeEnvironment(config.mode)) throw new HttpError(409, "Stripe environment mismatch");
-  const { returnUrl, refreshUrl } = stripeOnboardingUrls(merchantId);
+  const { returnUrl, refreshUrl } = stripeOnboardingUrls(merchantId, appOrigin);
   const stripe = getStripeClient();
   const api = integration.accountApiVersion === "V2" ? "v2" : "v1";
   try {

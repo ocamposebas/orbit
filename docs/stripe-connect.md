@@ -22,7 +22,13 @@ STRIPE_CONNECT_WEBHOOK_SECRET=whsec_value
 STRIPE_API_VERSION=
 ```
 
-`APP_URL` must be the public ORBIT origin. Live mode requires an HTTPS `APP_URL`. Test and live keys, events, and stored accounts are checked against `STRIPE_MODE`; mismatches fail without changing the merchant relationship.
+`APP_URL` accepts one public ORBIT origin or two comma-separated origins. The first origin is canonical and is used for server-generated links; both origins are accepted for browser mutations. Stripe Account Links created from the alternate origin return to that same origin so its host-only session cookie remains available. Every configured origin used with Stripe must be HTTPS in live deployments.
+
+```dotenv
+APP_URL=https://orbit.example,https://alternate.example
+```
+
+Each entry must be an HTTP(S) origin only: no path, credentials, query string, or fragment. Do not wrap the pair in JSON. Test and live keys, events, and stored accounts are checked against `STRIPE_MODE`; mismatches fail without changing the merchant relationship.
 
 ## Stripe Dashboard setup
 

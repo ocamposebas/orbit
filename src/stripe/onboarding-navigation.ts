@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { appOriginForRequest, parseAppUrlConfiguration } from "@/sentinel/app-url";
 import { getServerEnv } from "@/sentinel/config";
 import { HttpError } from "@/sentinel/http";
 
@@ -10,11 +11,20 @@ export function requireValidMerchantId(value: string) {
 }
 
 export function canonicalOrbitOrigin(appUrl = getServerEnv().APP_URL) {
-  const url = new URL(appUrl);
-  if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+  let origin: string;
+  try {
+    origin = parseAppUrlConfiguration(appUrl).canonicalOrigin;
+  } catch {
     throw new HttpError(503, "APP_URL must be the canonical ORBIT HTTPS origin");
   }
-  return url.origin;
+  if (new URL(origin).protocol !== "https:") throw new HttpError(503, "APP_URL must be the canonical ORBIT HTTPS origin");
+  return origin;
+}
+
+export function orbitRequestOrigin(request: Pick<Request, "url" | "headers">, appUrl = getServerEnv().APP_URL) {
+  const origin = appOriginForRequest(appUrl, request);
+  if (new URL(origin).protocol !== "https:") throw new HttpError(503, "APP_URL must be the canonical ORBIT HTTPS origin");
+  return origin;
 }
 
 export function merchantStripeDashboardPath(merchantId: string, result: "login" | "success" | "error" = "login") {

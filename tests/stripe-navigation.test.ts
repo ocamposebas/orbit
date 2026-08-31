@@ -1,14 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { safeLoginContinuation } from "@/sentinel/auth/redirects";
-import { canonicalOrbitOrigin, stripeOnboardingUrls } from "@/stripe/onboarding-navigation";
+import { canonicalOrbitOrigin, orbitRequestOrigin, stripeOnboardingUrls } from "@/stripe/onboarding-navigation";
 
 const merchantId = "cm12345678901234567890123";
 
 describe("Stripe onboarding navigation", () => {
   it("builds canonical HTTPS return and refresh URLs from APP_URL", () => {
-    expect(stripeOnboardingUrls(merchantId, "https://orbit.example")).toEqual({
+    expect(stripeOnboardingUrls(merchantId, "https://orbit.example,https://alternate.example")).toEqual({
       returnUrl: `https://orbit.example/merchants/${merchantId}/integrations/stripe/return`,
       refreshUrl: `https://orbit.example/merchants/${merchantId}/integrations/stripe/refresh`,
+    });
+  });
+
+  it("uses an allowed alternate origin for request-local Stripe callbacks", () => {
+    const request = new Request(`https://alternate.example/api/sentinel/merchants/${merchantId}/stripe/onboarding`, {
+      method: "POST",
+      headers: { origin: "https://alternate.example" },
+    });
+    const origin = orbitRequestOrigin(request, "https://orbit.example,https://alternate.example");
+    expect(origin).toBe("https://alternate.example");
+    expect(stripeOnboardingUrls(merchantId, origin)).toEqual({
+      returnUrl: `https://alternate.example/merchants/${merchantId}/integrations/stripe/return`,
+      refreshUrl: `https://alternate.example/merchants/${merchantId}/integrations/stripe/refresh`,
     });
   });
 

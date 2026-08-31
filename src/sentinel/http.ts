@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 import { getServerEnv } from "./config";
+import { appOriginIsAllowed } from "./app-url";
 import { requestSession } from "./auth/session";
 import { getDatabase } from "./db";
 
@@ -38,7 +39,7 @@ export async function requireMerchantAccess(
   return { session, organization: session.organization, merchant };
 }
 
-export function validateMutationOrigin(request: NextRequest) { const origin = request.headers.get("origin"); if (origin && origin !== new URL(getServerEnv().APP_URL).origin) throw new HttpError(403, "Cross-origin mutation rejected"); }
+export function validateMutationOrigin(request: NextRequest) { const origin = request.headers.get("origin"); if (origin && !appOriginIsAllowed(getServerEnv().APP_URL, origin)) throw new HttpError(403, "Cross-origin mutation rejected"); }
 export async function requireRole(request: NextRequest, allowed: Role[]) {
   const session = await requestSession(request);
   if (!session) throw new HttpError(401, "Authentication is required");

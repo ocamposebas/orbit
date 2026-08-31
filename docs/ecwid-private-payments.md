@@ -43,7 +43,7 @@ An Ecwid API outage never charges the buyer again. The ORBIT transaction remains
 
 ## Custom payment domains
 
-The checkout does not use the incoming `Host` to identify a merchant. Merchant identity comes exclusively from the stored payment session. `ECWID_PUBLIC_CHECKOUT_ORIGIN` is a trusted routing-only origin for Stripe success/cancel callbacks; when omitted it defaults to `APP_URL`.
+The checkout does not use the incoming `Host` to identify a merchant. Merchant identity comes exclusively from the stored payment session. `ECWID_PUBLIC_CHECKOUT_ORIGIN` is a trusted routing-only origin for Stripe success/cancel callbacks; when omitted it defaults to the first, canonical origin in `APP_URL`.
 
 For `pay.coreaminosresearch.com`:
 

@@ -1,4 +1,5 @@
 import { getServerEnv } from "@/sentinel/config";
+import { parseAppUrlConfiguration } from "@/sentinel/app-url";
 import { HttpError } from "@/sentinel/http";
 
 export type EcwidConfiguration = {
@@ -42,7 +43,7 @@ export function getEcwidConfiguration(): EcwidConfiguration {
 
 export function getEcwidPublicCheckoutOrigin() {
   const env = getServerEnv();
-  const publicCheckoutUrl = new URL(process.env.ECWID_PUBLIC_CHECKOUT_ORIGIN?.trim() || env.APP_URL);
+  const publicCheckoutUrl = new URL(process.env.ECWID_PUBLIC_CHECKOUT_ORIGIN?.trim() || parseAppUrlConfiguration(env.APP_URL).canonicalOrigin);
   if (publicCheckoutUrl.username || publicCheckoutUrl.password || publicCheckoutUrl.pathname !== "/" || publicCheckoutUrl.search || publicCheckoutUrl.hash) {
     throw new HttpError(503, "Ecwid public checkout origin is invalid");
   }

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { apiError, requireMerchantAccess } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { auditStripeConnectError, connectStripeAccount, createStripeOnboardingLink } from "@/stripe/service";
+import { orbitRequestOrigin } from "@/stripe/onboarding-navigation";
 
 export const runtime = "nodejs";
 
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     context = { merchantId, actorId: session.user.id };
     await enforceRateLimit(request, `stripe-connect:${merchantId}:${session.user.id}`, 5);
     const integration = await connectStripeAccount(merchantId, session.user.id);
-    const { url } = await createStripeOnboardingLink(merchantId, session.user.id);
+    const { url } = await createStripeOnboardingLink(merchantId, session.user.id, orbitRequestOrigin(request));
     return NextResponse.json({ integration, url }, { status: 201, headers: { "Cache-Control": "no-store, private" } });
   } catch (error) {
     if (context) await auditStripeConnectError(context.merchantId, context.actorId, "connect", error);
