@@ -23,7 +23,7 @@ export function stripeFinancialIssue(error: unknown): StripeFinancialIssue {
   return "temporarily_unavailable";
 }
 
-function logStripeFinancialFailure(merchantId: string, surface: "balance" | "payouts", error: unknown) {
+function logStripeFinancialFailure(merchantId: string, surface: "balance" | "payouts" | "destination", error: unknown) {
   const value = error as { type?: string; code?: string; statusCode?: number };
   stripePortalLog.warn({ merchantId, surface, issue: stripeFinancialIssue(error), stripeErrorType: value?.type, stripeErrorCode: value?.code, stripeStatusCode: value?.statusCode }, "Stripe financial data request failed");
 }
@@ -37,6 +37,16 @@ export type PortalPayoutSummary = {
   created: number;
   destination: string;
   status: string;
+};
+export type PortalPayoutDestination = {
+  type: "bank_account" | "card";
+  name: string;
+  last4: string;
+  currency: string | null;
+  country: string | null;
+  status: string | null;
+  defaultForCurrency: boolean;
+  expires: string | null;
 };
 export type PortalPaymentSummary = {
   id: string;
@@ -93,6 +103,45 @@ function mapPayout(payout: Stripe.Payout): PortalPayoutSummary {
     destination: destinationLabel(payout.destination),
     status: payout.status,
   };
+}
+
+export function payoutDestinationSummary(account: Stripe.ExternalAccount): PortalPayoutDestination {
+  if (account.object === "bank_account") {
+    return {
+      type: "bank_account",
+      name: account.bank_name || "Bank account",
+      last4: account.last4,
+      currency: account.currency?.toUpperCase() ?? null,
+      country: account.country ?? null,
+      status: account.status ?? null,
+      defaultForCurrency: Boolean(account.default_for_currency),
+      expires: null,
+    };
+  }
+  return {
+    type: "card",
+    name: account.brand || "Debit card",
+    last4: account.last4,
+    currency: account.currency?.toUpperCase() ?? null,
+    country: account.country ?? null,
+    status: null,
+    defaultForCurrency: Boolean(account.default_for_currency),
+    expires: `${String(account.exp_month).padStart(2, "0")}/${String(account.exp_year).slice(-2)}`,
+  };
+}
+
+function selectPayoutDestination(accounts: Stripe.ExternalAccount[], currency?: string) {
+  const normalizedCurrency = currency?.toLowerCase();
+  const selected = accounts.find((account) => account.default_for_currency && account.currency?.toLowerCase() === normalizedCurrency)
+    ?? accounts.find((account) => account.currency?.toLowerCase() === normalizedCurrency)
+    ?? accounts.find((account) => account.default_for_currency)
+    ?? accounts[0];
+  return selected ? payoutDestinationSummary(selected) : null;
+}
+
+function payoutExternalAccount(destination: Stripe.Payout["destination"]): Stripe.ExternalAccount | null {
+  if (!destination || typeof destination === "string" || destination.deleted) return null;
+  return destination.object === "bank_account" || destination.object === "card" ? destination : null;
 }
 
 function dayKey(date: Date) {
@@ -745,17 +794,21 @@ export type PayoutListInput = { cursor?: string };
 export async function getMerchantPayouts(merchantId: string, input: PayoutListInput = {}) {
   const connection = await stripeMerchantConnection(merchantId);
   const processor = connection.processor;
-  if (!processor) return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, balanceAvailable: false, payoutsAvailable: false, balanceIssue: connection.issue, payoutsIssue: connection.issue, payoutSchedule: null, available: emptyBalance(), pending: emptyBalance() };
-  const [balanceResult, payoutsResult, settingsResult] = await Promise.allSettled([
+  if (!processor) return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, balanceAvailable: false, payoutsAvailable: false, balanceIssue: connection.issue, payoutsIssue: connection.issue, payoutSchedule: null, destination: null as PortalPayoutDestination | null, available: emptyBalance(), pending: emptyBalance() };
+  const [balanceResult, payoutsResult, settingsResult, destinationsResult] = await Promise.allSettled([
     processor.stripe.balance.retrieve({}, { stripeContext: processor.accountId }),
     processor.stripe.payouts.list({ limit: 20, ...(input.cursor ? { starting_after: input.cursor } : {}), expand: ["data.destination"] }, { stripeContext: processor.accountId }),
     processor.stripe.balanceSettings.retrieve({}, { stripeContext: processor.accountId }),
+    processor.stripe.accounts.listExternalAccounts(processor.accountId, { limit: 10 }),
   ]);
   if (balanceResult.status === "rejected") logStripeFinancialFailure(merchantId, "balance", balanceResult.reason);
   if (payoutsResult.status === "rejected") logStripeFinancialFailure(merchantId, "payouts", payoutsResult.reason);
+  if (destinationsResult.status === "rejected") logStripeFinancialFailure(merchantId, "destination", destinationsResult.reason);
   const balance = balanceResult.status === "fulfilled" ? balanceResult.value : null;
   const payouts = payoutsResult.status === "fulfilled" ? payoutsResult.value : null;
   const primaryCurrency = balance?.available[0]?.currency.toUpperCase();
+  const externalAccounts = destinationsResult.status === "fulfilled" ? destinationsResult.value.data : [];
+  const payoutFallback = payouts?.data.map((payout) => payoutExternalAccount(payout.destination)).find((destination) => destination !== null) ?? null;
   return {
     payouts: payouts?.data.map(mapPayout) ?? [],
     hasMore: payouts?.has_more ?? false,
@@ -766,6 +819,7 @@ export async function getMerchantPayouts(merchantId: string, input: PayoutListIn
     balanceIssue: balanceResult.status === "rejected" ? stripeFinancialIssue(balanceResult.reason) : null,
     payoutsIssue: payoutsResult.status === "rejected" ? stripeFinancialIssue(payoutsResult.reason) : null,
     payoutSchedule: settingsResult.status === "fulfilled" ? settingsResult.value.payments.payouts?.schedule?.interval ?? null : null,
+    destination: selectPayoutDestination(externalAccounts, primaryCurrency) ?? (payoutFallback ? payoutDestinationSummary(payoutFallback) : null),
     available: balance ? balanceForCurrency(balance.available, primaryCurrency) : emptyBalance(),
     pending: balance ? balanceForCurrency(balance.pending, primaryCurrency) : emptyBalance(),
   };
