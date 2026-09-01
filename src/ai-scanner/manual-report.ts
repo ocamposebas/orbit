@@ -529,13 +529,14 @@ function needsOcr(text: string) {
 }
 
 export async function extractOrbitReport(bytes: Uint8Array) {
-  const document = await importPdfDocument(bytes);
+  let document: Awaited<ReturnType<typeof importPdfDocument>> | undefined;
   const pages: ImportedPage[] = [];
   const metricTokens: string[] = [];
   let worker: Awaited<ReturnType<typeof createOcrWorker>> | undefined;
   let ocrPageCount = 0;
   let textLayerPageCount = 0;
   try {
+    document = await importPdfDocument(bytes);
     if (document.numPages < 1) throw new HttpError(422, "The PDF does not contain any pages");
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
@@ -548,11 +549,19 @@ export async function extractOrbitReport(bytes: Uint8Array) {
       // Sparse text layers often contain only a page number, watermark, or
       // invisible accessibility fragment while the real page is a scan.
       if (needsOcr(layer.text)) {
-        worker ??= await createOcrWorker();
-        const image = await renderPageForOcr(page);
-        const result = await worker.recognize(image);
-        ocrText = result.data.text.replace(/\r\n/g, "\n").trim();
-        if (ocrText) ocrPageCount += 1;
+        try {
+          worker ??= await createOcrWorker();
+          const image = await renderPageForOcr(page);
+          const result = await worker.recognize(image);
+          ocrText = result.data.text.replace(/\r\n/g, "\n").trim();
+          if (ocrText) ocrPageCount += 1;
+        } catch (error) {
+          // Generated ORBIT reports already contain a text layer. OCR is only
+          // an enhancement for sparse pages and must not make those reports
+          // impossible to import when the OCR runtime is unavailable.
+          if (!layer.text.trim()) throw new HttpError(422, `Page ${pageNumber} has no readable text and OCR could not process it`);
+          console.warn("AI Scanner PDF OCR enhancement skipped", { pageNumber, error });
+        }
       }
       const combined = layer.text && ocrText ? `${layer.text}\n\n[OCR TEXT]\n${ocrText}` : layer.text || ocrText;
       pages.push({
@@ -580,9 +589,15 @@ export async function extractOrbitReport(bytes: Uint8Array) {
       metrics.coverage.categoriesInspected ??= new Set(analysis.products.map((product) => product.category).filter(Boolean)).size;
     }
     return { metrics, pages, fullText, analysis };
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    const message = error instanceof Error ? error.message : "Unknown PDF extraction error";
+    console.error("AI Scanner PDF extraction failed", error);
+    if (/password|encrypted/i.test(message)) throw new HttpError(422, "The PDF is password-protected. Upload an unlocked copy of the scanner report");
+    throw new HttpError(422, "The PDF could not be read completely. Download the scanner report again and upload the new copy");
   } finally {
     await worker?.terminate().catch(() => undefined);
-    await document.destroy().catch(() => undefined);
+    await document?.destroy().catch(() => undefined);
   }
 }
 

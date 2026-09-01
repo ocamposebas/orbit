@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   update: vi.fn(),
   scanDeleteMany: vi.fn(),
   auditCreate: vi.fn(),
+  transaction: vi.fn(),
 }));
 
 vi.mock("@/ai-scanner/manual-report", () => ({
@@ -46,15 +47,7 @@ vi.mock("@/sentinel/db", () => ({
   getDatabase: () => ({
     aiScan: { findFirst: mocks.findFirst, deleteMany: mocks.scanDeleteMany },
     aiEvidence: { deleteMany: mocks.evidenceDeleteMany },
-    $transaction: async (callback: (tx: unknown) => Promise<void>) => callback({
-      aiEvidence: { upsert: mocks.upsert, createMany: mocks.createMany, findMany: mocks.evidenceFindMany, deleteMany: mocks.evidenceDeleteMany },
-      aiFinding: { deleteMany: mocks.findingDeleteMany, create: mocks.findingCreate },
-      aiFindingEvidence: { create: mocks.findingEvidenceCreate },
-      aiProduct: { deleteMany: mocks.productDeleteMany, createMany: mocks.productCreateMany },
-      aiScan: { update: mocks.update, deleteMany: mocks.scanDeleteMany },
-      merchant: { update: mocks.merchantUpdate },
-      auditLog: { create: mocks.auditCreate },
-    }),
+    $transaction: mocks.transaction,
   }),
 }));
 
@@ -63,6 +56,15 @@ import { POST } from "@/app/api/ai-scanner/scans/[scanId]/manual-report/route";
 describe("AI Scanner document import route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<void>) => callback({
+      aiEvidence: { upsert: mocks.upsert, createMany: mocks.createMany, findMany: mocks.evidenceFindMany, deleteMany: mocks.evidenceDeleteMany },
+      aiFinding: { deleteMany: mocks.findingDeleteMany, create: mocks.findingCreate },
+      aiFindingEvidence: { create: mocks.findingEvidenceCreate },
+      aiProduct: { deleteMany: mocks.productDeleteMany, createMany: mocks.productCreateMany },
+      aiScan: { update: mocks.update, deleteMany: mocks.scanDeleteMany },
+      merchant: { update: mocks.merchantUpdate },
+      auditLog: { create: mocks.auditCreate },
+    }));
     mocks.findFirst.mockResolvedValue({ id: "scan-1", merchantId: "merchant-1", importedReportSha256: "older-sha", site: { normalizedUrl: "https://merchant.example/" } });
     mocks.validate.mockResolvedValue({ bytes: new TextEncoder().encode("all source text"), sha256: "a".repeat(64), originalName: "evidence.txt", mimeType: "text/plain", kind: "TEXT", text: "all source text" });
     mocks.extract.mockResolvedValue({
@@ -110,5 +112,18 @@ describe("AI Scanner document import route", () => {
     expect(mocks.findingCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ title: "Policy contradiction", severity: "HIGH", remediation: "Consolidate the policies." }) }));
     expect(mocks.findingEvidenceCreate).toHaveBeenCalledOnce();
     expect(mocks.productCreateMany).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({ name: "Imported product", sku: "SKU-44", verified: true })] }));
+    expect(mocks.transaction).toHaveBeenCalledWith(expect.any(Function), { maxWait: 15_000, timeout: 120_000 });
+  });
+
+  it("returns a retryable message when storing a large import exceeds the transaction window", async () => {
+    mocks.transaction.mockRejectedValueOnce(Object.assign(new Error("Transaction expired"), { code: "P2028" }));
+    const formData = new FormData();
+    formData.set("content", "all source text");
+    formData.set("format", "text");
+    const request = new NextRequest("https://orbit.example/api/ai-scanner/scans/scan-1/manual-report", { method: "POST", body: formData, headers: { origin: "https://orbit.example" } });
+    const response = await POST(request, { params: Promise.resolve({ scanId: "scan-1" }) });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("saving its indexed results took too long") });
   });
 });

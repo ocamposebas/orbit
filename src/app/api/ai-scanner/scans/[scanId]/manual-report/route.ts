@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { extractManualImport, validateAiScanManualImport } from "@/ai-scanner/manual-report";
 import type { AiEvidenceKind, Prisma } from "@/generated/prisma/client";
@@ -37,7 +37,15 @@ function importedProductUrl(siteUrl: string, slug: string | undefined, sourceId:
   }
 }
 
+function manualImportError(error: unknown) {
+  if (error instanceof HttpError) return error;
+  const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  if (code === "P2028") return new HttpError(503, "The PDF was read, but saving its indexed results took too long. Please retry the upload");
+  return error;
+}
+
 export async function POST(request: NextRequest, { params }: { params: Promise<{ scanId: string }> }) {
+  const requestId = randomUUID();
   try {
     await enforceRateLimit(request, "ai-scanner-manual-report-upload", 10);
     const session = await requestSession(request);
@@ -235,7 +243,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           },
         },
       });
-    });
+    }, { maxWait: 15_000, timeout: 120_000 });
     return NextResponse.json({
       importedReport: {
         id: importEvidenceId,
@@ -248,7 +256,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         metrics,
       },
     }, { status: 201 });
-  } catch (error) { return apiError(error); }
+  } catch (error) { return apiError(manualImportError(error), requestId); }
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ scanId: string }> }) {

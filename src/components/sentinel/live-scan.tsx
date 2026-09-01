@@ -202,6 +202,10 @@ export function LiveScan({ scanId }: { scanId: string }) {
   };
   const uploadManualReport = async (file?: File, pastedContent?: string) => {
     if (!file && !pastedContent?.trim()) return;
+    if (file && file.size > 25 * 1024 * 1024) {
+      setError("The imported document must be smaller than 25 MB");
+      return;
+    }
     setUploadingReport(true);
     setNotice("");
     try {
