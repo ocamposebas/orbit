@@ -291,9 +291,10 @@ export async function getMerchantOverview(merchantId: string) {
 export type PortfolioMerchant = { id: string; businessName: string; portalEnabled: boolean };
 
 export async function getAdminPortfolioOverview(merchants: PortfolioMerchant[]) {
+  const db = getDatabase();
   const merchantIds = merchants.map((merchant) => merchant.id);
-  const [transactions, overviews] = await Promise.all([
-    getDatabase().paymentTransaction.findMany({
+  const [transactions, overviews, latestSuccessful] = await Promise.all([
+    db.paymentTransaction.findMany({
       where: { merchantId: { in: merchantIds }, status: "SUCCEEDED", createdAt: { gte: periodStart(90) } },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       select: {
@@ -310,9 +311,14 @@ export async function getAdminPortfolioOverview(merchants: PortfolioMerchant[]) 
       },
     }),
     Promise.all(merchants.map(async (merchant) => ({ merchant, overview: await getMerchantOverview(merchant.id) }))),
+    db.paymentTransaction.findFirst({
+      where: { merchantId: { in: merchantIds }, status: "SUCCEEDED" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { currency: true },
+    }),
   ]);
   const merchantNames = new Map(merchants.map((merchant) => [merchant.id, merchant.businessName]));
-  const primaryCurrency = transactions[0]?.currency ?? overviews.map((item) => item.overview.available.currency).find(Boolean) ?? "USD";
+  const primaryCurrency = transactions[0]?.currency ?? latestSuccessful?.currency ?? overviews.map((item) => item.overview.available.currency).find(Boolean) ?? "USD";
   const currencyTransactions = transactions.filter((transaction) => transaction.currency === primaryCurrency);
   const periods = [
     { key: "today" as const, label: "Today", days: 1 },
@@ -328,16 +334,26 @@ export async function getAdminPortfolioOverview(merchants: PortfolioMerchant[]) 
       payments: values.length,
     };
   });
+  const lifetimeOrbitRevenue = await db.paymentTransaction.aggregate({
+    where: { merchantId: { in: merchantIds }, status: "SUCCEEDED", currency: primaryCurrency },
+    _sum: { platformFeeMinor: true },
+  });
   const liveBalances = overviews.filter((item) => item.overview.balanceAvailable);
   const available = liveBalances.filter((item) => item.overview.available.amountMinor !== null && item.overview.available.currency === primaryCurrency).reduce((sum, item) => sum + (item.overview.available.amountMinor ?? 0), 0);
   const pending = liveBalances.filter((item) => item.overview.pending.amountMinor !== null && item.overview.pending.currency === primaryCurrency).reduce((sum, item) => sum + (item.overview.pending.amountMinor ?? 0), 0);
-  const nextPayouts = overviews.flatMap((item) => item.overview.nextPayout && item.overview.nextPayout.currency === primaryCurrency ? [{ ...item.overview.nextPayout, merchantId: item.merchant.id, merchantName: item.merchant.businessName }] : []);
+  const nextPayouts = overviews.flatMap((item) => item.overview.nextPayout ? [{ ...item.overview.nextPayout, merchantId: item.merchant.id, merchantName: item.merchant.businessName }] : []);
   return {
     currency: primaryCurrency,
     periods,
+    orbitEarnings: {
+      todayMinor: periods.find((period) => period.key === "today")?.orbitRevenueMinor ?? 0,
+      sevenDayMinor: periods.find((period) => period.key === "7d")?.orbitRevenueMinor ?? 0,
+      thirtyDayMinor: periods.find((period) => period.key === "30d")?.orbitRevenueMinor ?? 0,
+      lifetimeMinor: lifetimeOrbitRevenue._sum.platformFeeMinor ?? 0,
+    },
     available: { amountMinor: liveBalances.length ? available : null, currency: primaryCurrency },
     pending: { amountMinor: liveBalances.length ? pending : null, currency: primaryCurrency },
-    nextPayoutTotalMinor: nextPayouts.reduce((sum, payout) => sum + payout.amountMinor, 0),
+    nextPayoutTotalMinor: nextPayouts.filter((payout) => payout.currency === primaryCurrency).reduce((sum, payout) => sum + payout.amountMinor, 0),
     nextPayouts: nextPayouts.sort((left, right) => left.arrivalDate - right.arrivalDate),
     liveMerchantCount: liveBalances.length,
     brands: overviews.map(({ merchant, overview }) => {

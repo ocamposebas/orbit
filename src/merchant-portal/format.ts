@@ -26,6 +26,20 @@ export function formatPortalDateTime(value: Date | number) {
   return formatPortalDate(value, { hour: "numeric", minute: "2-digit" });
 }
 
+export function formatTransferDate(value: Date | number) {
+  return formatPortalDate(value, { month: "long", year: "numeric" });
+}
+
+export function transferArrivalTiming(value: Date | number, now = new Date()) {
+  const arrival = typeof value === "number" ? new Date(value * 1_000) : value;
+  const arrivalDay = Date.UTC(arrival.getUTCFullYear(), arrival.getUTCMonth(), arrival.getUTCDate());
+  const currentDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const days = Math.round((arrivalDay - currentDay) / 86_400_000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Tomorrow";
+  return `In ${days} days`;
+}
+
 export function relativeUpdatedAt(value: Date) {
   const seconds = Math.max(0, Math.round((Date.now() - value.getTime()) / 1_000));
   if (seconds < 45) return "just now";
@@ -57,4 +71,3 @@ export function payoutStatusLabel(status: string) {
   };
   return labels[status] ?? status.replaceAll("_", " ");
 }
-
