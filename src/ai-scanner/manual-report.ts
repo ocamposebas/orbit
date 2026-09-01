@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { copyFile, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { HttpError } from "@/sentinel/http";
 import type { PDFPageProxy, TextItem } from "pdfjs-dist/types/src/display/api";
@@ -22,6 +22,44 @@ export type ImportedReportMetrics = {
   healthScore?: number;
   coverage: Record<string, number>;
   severity: Record<"critical" | "high" | "medium" | "low", number>;
+};
+
+export type ImportedFinding = {
+  title: string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+  explanation: string;
+  remediation: string;
+  pageNumber: number;
+  priority?: string;
+  affectedProduct?: string;
+  affectedCategory?: string;
+};
+
+export type ImportedProduct = {
+  sourceId?: string;
+  name: string;
+  sku?: string;
+  price?: string;
+  currency?: string;
+  category?: string;
+  slug?: string;
+  pageNumber: number;
+};
+
+export type ImportedDocumentAnalysis = {
+  summary: string;
+  scoreBreakdown: Record<string, { score: number; maximum: number }>;
+  findings: ImportedFinding[];
+  products: ImportedProduct[];
+  observations: Array<{ text: string; pageNumber: number }>;
+  limitations: string[];
+};
+
+type ImportedPage = {
+  pageNumber: number;
+  text: string;
+  extraction: "TEXT_LAYER" | "OCR" | "TEXT_LAYER_AND_OCR" | "EMPTY";
+  layoutItems?: Array<{ text: string; x: number; y: number }>;
 };
 
 export type ValidatedManualImport = {
@@ -145,18 +183,20 @@ export function parseOrbitReportMetrics(text: string, pageCount: number): Import
   const integerLine = (value?: string) => Boolean(value && /^\d{1,9}$/.test(value.replaceAll(",", "")));
   const firstMetricLabel = lines.findIndex((line) => /^(URLs discovered|URLs descubiertas|Pages opened|Páginas abiertas)$/i.test(line));
   const valuesFollowLabels = firstMetricLabel >= 0 && integerLine(lines[firstMetricLabel + 1]) && !integerLine(lines[firstMetricLabel - 1]);
-  const scoreMatch = normalized.match(/(?:Health\s+Score|Posture\s+Score|Final\s+Assessment|Puntuaci[oó]n(?:\s+del)?(?:\s+esc[aá]ner(?:\s+de\s+IA)?|\s+de\s+salud)?)\D{0,40}(\d{1,3})\s*\/\s*100/i);
-  const healthScore = scoreMatch ? Number(scoreMatch[1]) : nearbyIntegerForLabels(lines, ["Health Score", "Posture Score", "Puntuación de salud", "Puntuación del escáner de IA transparente"]);
+  const scoreAfterLabel = normalized.match(/(?:Health\s+Score|Posture\s+Score|Final\s+Assessment|Internal\s+Score|Puntuaci[oó]n(?:\s+del)?(?:\s+esc[aá]ner(?:\s+de\s+IA)?|\s+de\s+salud)?)\D{0,80}(\d{1,3})\s*\/\s*100/i);
+  const scoreBeforeLabel = normalized.match(/(\d{1,3})\s*\/\s*100\D{0,80}(?:ORBIT\s+internal\s+health\s+score|Health\s+Score|Posture\s+Score)/i);
+  const totalScore = normalized.match(/\bTOTAL\s+(\d{1,3})\s*\/\s*100\b/i);
+  const healthScore = scoreAfterLabel ? Number(scoreAfterLabel[1]) : scoreBeforeLabel ? Number(scoreBeforeLabel[1]) : totalScore ? Number(totalScore[1]) : nearbyIntegerForLabels(lines, ["Health Score", "Posture Score", "Puntuación de salud", "Puntuación del escáner de IA transparente"]);
   const labels = {
-    urlsDiscovered: ["URLs discovered", "URLs descubiertas"],
-    pagesOpened: ["Pages opened", "Páginas abiertas"],
+    urlsDiscovered: ["URLs discovered", "First-party URLs discovered", "URLs descubiertas"],
+    pagesOpened: ["Pages opened", "URLs fetched / analyzed", "URLs fetched analyzed", "Páginas abiertas"],
     pagesVisuallyReviewed: ["Pages visually reviewed", "Visual pages", "Páginas visuales", "Páginas revisadas visualmente"],
     visualRegionsInspected: ["Visual regions inspected", "Visual regions", "Regiones visuales", "Regiones visuales inspeccionadas"],
-    imagesInspected: ["Images inspected", "Images", "Imágenes", "Imágenes inspeccionadas"],
+    imagesInspected: ["Images inspected", "Unique product images reviewed", "Images", "Imágenes", "Imágenes inspeccionadas"],
     categoriesInspected: ["Categories inspected", "Categories", "Categorías", "Categorías inspeccionadas"],
-    productsDiscovered: ["Products discovered", "Productos descubiertos"],
-    productsVerified: ["Products verified", "Productos verificados"],
-    documentsInspected: ["Documents inspected", "Documents", "Documentos", "Documentos inspeccionados"],
+    productsDiscovered: ["Products discovered", "Products discovered / reviewed", "Productos descubiertos"],
+    productsVerified: ["Products verified", "Products discovered / reviewed", "Products reviewed", "Productos verificados"],
+    documentsInspected: ["Documents inspected", "Policies reviewed", "Documents", "Documentos", "Documentos inspeccionados"],
     checkoutStatesInspected: ["Checkout states inspected", "Checkout states", "Estados de checkout", "Estados de pago"],
     totalLunaToolCalls: ["Luna tool calls", "Luna tools", "Herramientas Luna"],
   } as const;
@@ -164,6 +204,8 @@ export function parseOrbitReportMetrics(text: string, pageCount: number): Import
     const value = nearbyIntegerForLabels(lines, [...aliases], valuesFollowLabels);
     return value === undefined ? [] : [[key, value]];
   }));
+  const observedCoverage = normalized.match(/Observed\s+coverage\s+(\d{1,3})\s*%/i);
+  if (observedCoverage) coverage.observedCoveragePercent = Number(observedCoverage[1]);
   const severity = {
     critical: nearbyIntegerForLabels(lines, ["Critical", "Crítico", "Crítica"], valuesFollowLabels) ?? 0,
     high: nearbyIntegerForLabels(lines, ["High", "Alto", "Alta"], valuesFollowLabels) ?? 0,
@@ -232,6 +274,197 @@ function bestAvailableMetrics(text: string, pageCount: number, fallbackSource: I
   }
 }
 
+function cleanLine(value: string) {
+  return value.replace(/^\s*(?:â€¢|•)\s*/, "").replace(/\s+/g, " ").trim();
+}
+
+function severityValue(value: string): ImportedFinding["severity"] {
+  const upper = value.toUpperCase();
+  if (upper.includes("CRITICAL")) return "CRITICAL";
+  if (upper.includes("HIGH")) return "HIGH";
+  if (upper.includes("MEDIUM")) return "MEDIUM";
+  if (upper.includes("LOW")) return "LOW";
+  return "INFO";
+}
+
+function extractPriorityFindings(pages: ImportedPage[]) {
+  const findings: ImportedFinding[] = [];
+  for (const page of pages) {
+    const lines = page.text.split(/\r?\n/).map(cleanLine).filter(Boolean);
+    for (let index = 0; index < lines.length; index += 1) {
+      const match = lines[index].match(/^(P[0-3])\s+(.*?)\s+(CRITICAL(?:\s*\/\s*HIGH)?|HIGH|MEDIUM|LOW)\s+(.+)$/i);
+      if (!match) continue;
+      const remediation = [match[4]];
+      for (let following = index + 1; following < lines.length; following += 1) {
+        if (/^P[0-3]\s+/i.test(lines[following]) || /ORBIT Sentinel/i.test(lines[following])) break;
+        remediation.push(lines[following]);
+      }
+      const title = match[2].trim();
+      const detail = findSupportingDetail(title, pages, page.pageNumber);
+      findings.push({
+        title,
+        severity: severityValue(match[3]),
+        priority: match[1].toUpperCase(),
+        explanation: detail ?? `The imported report classifies this item as ${match[3].toUpperCase()} with ${match[1].toUpperCase()} remediation priority.`,
+        remediation: remediation.join(" ").trim(),
+        pageNumber: page.pageNumber,
+        affectedProduct: /calculator|policy|affiliate|registration|checkout|seo|index/i.test(title) ? undefined : title,
+      });
+    }
+  }
+  return findings.filter((finding, index, all) => all.findIndex((candidate) => candidate.title.toLowerCase() === finding.title.toLowerCase()) === index);
+}
+
+function findSupportingDetail(title: string, pages: ImportedPage[], excludedPage: number) {
+  const keywords = title.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4 && !["presentation", "product", "flow", "style"].includes(word));
+  let best: { score: number; text: string } | undefined;
+  for (const page of pages) {
+    if (page.pageNumber === excludedPage) continue;
+    const paragraphs = page.text.split(/\n(?=(?:P[0-3]\s*\||â€¢|•|[A-Z][A-Z /&-]{5,})\b)/).map(cleanLine).filter(Boolean);
+    for (const paragraph of paragraphs) {
+      const lower = paragraph.toLowerCase();
+      const score = keywords.filter((keyword) => lower.includes(keyword)).length;
+      if (score && (!best || score > best.score) && paragraph.length > 40) best = { score, text: paragraph.slice(0, 1_500) };
+    }
+  }
+  return best?.text;
+}
+
+function extractGenericFindings(pages: ImportedPage[]) {
+  const findings: ImportedFinding[] = [];
+  for (const page of pages) {
+    const lines = page.text.split(/\r?\n/).map(cleanLine).filter(Boolean);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index].replaceAll("**", "");
+      const match = line.match(/^(?:P[0-3]\s*[|:-]\s*)?(.{3,120}?)\s+(CRITICAL|HIGH|MEDIUM|LOW)(?:\s+(.+))?$/i)
+        ?? line.match(/^(?:P[0-3]\s*[|:-]\s*)?(.{3,120}?)\s*[|:-]\s*(CRITICAL|HIGH|MEDIUM|LOW)$/i);
+      if (!match) continue;
+      const title = match[1].trim();
+      if (/^(theme|severity|risk|disposition|finding)$/i.test(title)) continue;
+      const context = [match[3], lines[index + 1]].filter(Boolean).join(" ").slice(0, 1_500);
+      findings.push({
+        title,
+        severity: severityValue(match[2]),
+        explanation: context || `Imported ${match[2].toUpperCase()} finding on document page ${page.pageNumber}.`,
+        remediation: "Review the cited document page and complete the stated corrective action before the next assessment.",
+        pageNumber: page.pageNumber,
+        affectedProduct: title,
+      });
+    }
+  }
+  return findings.filter((finding, index, all) => all.findIndex((candidate) => candidate.title.toLowerCase() === finding.title.toLowerCase()) === index).slice(0, 250);
+}
+
+function appendColumn(current: Record<string, string>, key: string, value: string, joiner = " ") {
+  const cleaned = value.trim();
+  if (!cleaned) return;
+  current[key] = current[key] ? `${current[key]}${joiner}${cleaned}` : cleaned;
+}
+
+function extractLayoutProducts(pages: ImportedPage[]) {
+  const products: ImportedProduct[] = [];
+  for (const page of pages) {
+    if (!/Complete product inventory/i.test(page.text) || !page.layoutItems?.length) continue;
+    let current: Record<string, string> | undefined;
+    const flush = () => {
+      if (!current?.sourceId || !current.name) return;
+      const slug = current.slug?.replace(/[`\s]/g, "").replace(/^[-–—]+|[-–—]+$/g, "");
+      products.push({
+        sourceId: current.sourceId,
+        name: current.name.trim(),
+        ...(current.sku && current.sku !== "-" ? { sku: current.sku.trim() } : {}),
+        ...(current.price ? { price: current.price.trim(), currency: current.price.includes("$") ? "USD" : undefined } : {}),
+        ...(current.category && current.category !== "-" ? { category: current.category.trim() } : {}),
+        ...(slug ? { slug } : {}),
+        pageNumber: page.pageNumber,
+      });
+    };
+    for (const item of page.layoutItems) {
+      if (item.y < 50) continue;
+      const value = item.text.trim();
+      if (!value) continue;
+      if (item.x >= 45 && item.x < 75 && /^\d{2,9}$/.test(value)) {
+        flush();
+        current = { sourceId: value, name: "" };
+        continue;
+      }
+      if (!current) continue;
+      if (item.x >= 75 && item.x < 240) appendColumn(current, "name", value);
+      else if (item.x >= 240 && item.x < 310) appendColumn(current, "sku", value, "");
+      else if (item.x >= 310 && item.x < 380) appendColumn(current, "price", value);
+      else if (item.x >= 380 && item.x < 470) appendColumn(current, "category", value);
+      else if (item.x >= 470) appendColumn(current, "slug", value, "");
+    }
+    flush();
+  }
+  return products;
+}
+
+function extractScoreBreakdown(pages: ImportedPage[]) {
+  const breakdown: Record<string, { score: number; maximum: number }> = {};
+  for (const page of pages) {
+    if (!/(?:Score|Puntuaci[oó]n)[\s\S]*(?:limitations|breakdown|composition)|DOMAIN\s+SCORE/i.test(page.text)) continue;
+    for (const rawLine of page.text.split(/\r?\n/)) {
+      const match = cleanLine(rawLine).match(/^(.{3,100}?)\s+(\d{1,3})\s*\/\s*(\d{1,3})$/);
+      if (!match || /^(?:TOTAL|ORBIT Sentinel)/i.test(match[1])) continue;
+      breakdown[match[1].trim()] = { score: Number(match[2]), maximum: Number(match[3]) };
+    }
+  }
+  return breakdown;
+}
+
+function extractLimitations(pages: ImportedPage[]) {
+  const limitations: string[] = [];
+  for (const page of pages) {
+    const lines = page.text.split(/\r?\n/);
+    let collecting = false;
+    for (const rawLine of lines) {
+      const line = cleanLine(rawLine);
+      if (/^(NOT OBSERVED|Method & limitations|Limitations)$/i.test(line)) { collecting = true; continue; }
+      if (!collecting || !line || /ORBIT Sentinel/i.test(line)) continue;
+      if (/^(?:[A-Z][A-Z /&-]{5,}|\d{1,2})$/.test(line) && !/NOT OBSERVED/i.test(line)) break;
+      if (rawLine.match(/(?:â€¢|•)/) || /not observed|excluded|could not|unable|remain/i.test(line)) limitations.push(line);
+    }
+  }
+  return [...new Set(limitations)].slice(0, 100);
+}
+
+function analysisFromJson(text: string, pages: ImportedPage[]): ImportedDocumentAnalysis {
+  const parsed = validateJson(text);
+  const root = typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+  const findingsValue = root.findings ?? objectAt(parsed, ["report", "findings"]) ?? objectAt(parsed, ["assessment", "findings"]) ?? objectAt(parsed, ["data", "findings"]);
+  const rawFindings = Array.isArray(findingsValue) ? findingsValue : [];
+  const findings = rawFindings.flatMap((value, index): ImportedFinding[] => {
+    if (typeof value !== "object" || value === null) return [];
+    const item = value as Record<string, unknown>;
+    const title = String(item.title ?? item.name ?? `Imported finding ${index + 1}`).trim();
+    return [{ title, severity: severityValue(String(item.severity ?? "INFO")), explanation: String(item.explanation ?? item.description ?? item.reason ?? title), remediation: String(item.remediation ?? item.recommendedAction ?? item.recommendation ?? "Review and remediate this imported finding."), pageNumber: Number(item.pageNumber ?? 1) || 1, affectedProduct: typeof item.affectedProduct === "string" ? item.affectedProduct : undefined, affectedCategory: typeof item.affectedCategory === "string" ? item.affectedCategory : undefined }];
+  });
+  const productsValue = root.products ?? objectAt(parsed, ["report", "products"]) ?? objectAt(parsed, ["assessment", "products"]) ?? objectAt(parsed, ["data", "products"]);
+  const rawProducts = Array.isArray(productsValue) ? productsValue : [];
+  const products = rawProducts.flatMap((value): ImportedProduct[] => {
+    if (typeof value !== "object" || value === null) return [];
+    const item = value as Record<string, unknown>;
+    const name = String(item.name ?? item.title ?? "").trim();
+    if (!name) return [];
+    return [{ name, sourceId: item.id === undefined ? undefined : String(item.id), sku: item.sku === undefined ? undefined : String(item.sku), price: item.price === undefined ? undefined : String(item.price), currency: item.currency === undefined ? undefined : String(item.currency), category: item.category === undefined ? undefined : String(item.category), slug: item.slug === undefined ? undefined : String(item.slug), pageNumber: Number(item.pageNumber ?? 1) || 1 }];
+  });
+  const scoreBreakdown = root.scoreBreakdown ?? objectAt(parsed, ["report", "scoreBreakdown"]) ?? objectAt(parsed, ["metrics", "scoreBreakdown"]);
+  const limitations = root.limitations ?? objectAt(parsed, ["report", "limitations"]) ?? objectAt(parsed, ["assessment", "limitations"]);
+  const summary = root.summary ?? objectAt(parsed, ["report", "summary"]) ?? objectAt(parsed, ["assessment", "summary"]);
+  return { summary: String(summary ?? `Imported JSON documented with ${findings.length} findings and ${products.length} products.`), scoreBreakdown: typeof scoreBreakdown === "object" && scoreBreakdown !== null ? scoreBreakdown as ImportedDocumentAnalysis["scoreBreakdown"] : {}, findings, products, observations: pages.map((page) => ({ text: page.text, pageNumber: page.pageNumber })), limitations: Array.isArray(limitations) ? limitations.map(String) : [], };
+}
+
+export function analyzeImportedDocument(pages: ImportedPage[], metrics: ImportedReportMetrics, jsonText?: string): ImportedDocumentAnalysis {
+  if (jsonText !== undefined) return analysisFromJson(jsonText, pages);
+  const priorityFindings = extractPriorityFindings(pages);
+  const findings = priorityFindings.length ? priorityFindings : extractGenericFindings(pages);
+  const products = extractLayoutProducts(pages);
+  const observations = pages.filter((page) => page.text.trim()).map((page) => ({ text: page.text.trim().slice(0, 5_000), pageNumber: page.pageNumber }));
+  const summary = `Imported document fully indexed: ${metrics.pageCount} page${metrics.pageCount === 1 ? "" : "s"}, ${products.length} product${products.length === 1 ? "" : "s"}, and ${findings.length} prioritized finding${findings.length === 1 ? "" : "s"}${metrics.healthScore === undefined ? "." : `; reported score ${metrics.healthScore}/100.`}`;
+  return { summary, scoreBreakdown: extractScoreBreakdown(pages), findings, products, observations, limitations: extractLimitations(pages) };
+}
+
 async function prepareOcrLanguageDirectory() {
   const languageDirectory = join(tmpdir(), "orbit-tesseract-languages-v1");
   await mkdir(languageDirectory, { recursive: true });
@@ -258,23 +491,25 @@ async function createOcrWorker() {
 function textLayerFromItems(items: readonly unknown[]) {
   const grouped = new Map<number, Array<{ x: number; text: string }>>();
   const tokens: string[] = [];
+  const layoutItems: Array<{ text: string; x: number; y: number }> = [];
   for (const item of items) {
     if (typeof item !== "object" || item === null || !("str" in item)) continue;
     const textItem = item as TextItem;
     if (textItem.str.trim()) tokens.push(textItem.str.trim());
     const y = Math.round(textItem.transform[5]);
+    layoutItems.push({ text: textItem.str, x: textItem.transform[4], y: textItem.transform[5] });
     const row = grouped.get(y) ?? [];
     row.push({ x: textItem.transform[4], text: textItem.str });
     grouped.set(y, row);
   }
   const visualLines = [...grouped].sort(([a], [b]) => b - a).map(([, row]) => row.sort((a, b) => a.x - b.x).map((item) => item.text).join(" ").trim()).filter(Boolean);
-  return { tokens, text: visualLines.join("\n") || tokens.join("\n") };
+  return { tokens, text: visualLines.join("\n") || tokens.join("\n"), layoutItems };
 }
 
 async function importPdfDocument(bytes: Uint8Array) {
   const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   GlobalWorkerOptions.workerSrc = pathToFileURL(join(process.cwd(), "node_modules", "pdfjs-dist", "legacy", "build", "pdf.worker.mjs")).href;
-  return getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, isEvalSupported: false }).promise;
+  return getDocument({ data: new Uint8Array(bytes), useWorkerFetch: false, isEvalSupported: false, standardFontDataUrl: join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts") + sep }).promise;
 }
 
 async function renderPageForOcr(page: PDFPageProxy) {
@@ -286,9 +521,16 @@ async function renderPageForOcr(page: PDFPageProxy) {
   return canvas.toBuffer("image/png");
 }
 
+function needsOcr(text: string) {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length < 500) return true;
+  const readable = [...compact].filter((character) => /[\p{L}\p{N}\p{P}\p{Z}]/u.test(character)).length;
+  return compact.includes("�") || readable / compact.length < 0.82;
+}
+
 export async function extractOrbitReport(bytes: Uint8Array) {
   const document = await importPdfDocument(bytes);
-  const pages: Array<{ pageNumber: number; text: string; extraction: "TEXT_LAYER" | "OCR" | "TEXT_LAYER_AND_OCR" | "EMPTY" }> = [];
+  const pages: ImportedPage[] = [];
   const metricTokens: string[] = [];
   let worker: Awaited<ReturnType<typeof createOcrWorker>> | undefined;
   let ocrPageCount = 0;
@@ -305,7 +547,7 @@ export async function extractOrbitReport(bytes: Uint8Array) {
       let ocrText = "";
       // Sparse text layers often contain only a page number, watermark, or
       // invisible accessibility fragment while the real page is a scan.
-      if (layer.text.replace(/\s+/g, " ").trim().length < 500) {
+      if (needsOcr(layer.text)) {
         worker ??= await createOcrWorker();
         const image = await renderPageForOcr(page);
         const result = await worker.recognize(image);
@@ -317,6 +559,7 @@ export async function extractOrbitReport(bytes: Uint8Array) {
         pageNumber,
         text: combined,
         extraction: layer.text && ocrText ? "TEXT_LAYER_AND_OCR" : ocrText ? "OCR" : layer.text ? "TEXT_LAYER" : "EMPTY",
+        layoutItems: layer.layoutItems,
       });
       page.cleanup();
     }
@@ -325,7 +568,18 @@ export async function extractOrbitReport(bytes: Uint8Array) {
     metrics.characterCount = fullText.length;
     metrics.textLayerPageCount = textLayerPageCount;
     metrics.ocrPageCount = ocrPageCount;
-    return { metrics, pages, fullText };
+    const analysis = analyzeImportedDocument(pages, metrics);
+    metrics.severity = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const finding of analysis.findings) {
+      const key = finding.severity.toLowerCase();
+      if (key in metrics.severity) metrics.severity[key as keyof typeof metrics.severity] += 1;
+    }
+    if (analysis.products.length) {
+      metrics.coverage.productsDiscovered ??= analysis.products.length;
+      metrics.coverage.productsVerified ??= analysis.products.length;
+      metrics.coverage.categoriesInspected ??= new Set(analysis.products.map((product) => product.category).filter(Boolean)).size;
+    }
+    return { metrics, pages, fullText, analysis };
   } finally {
     await worker?.terminate().catch(() => undefined);
     await document.destroy().catch(() => undefined);
@@ -346,10 +600,12 @@ export async function extractManualImport(upload: ValidatedManualImport) {
   const metrics = upload.kind === "JSON" ? metricsFromJson(fullText) : bestAvailableMetrics(fullText, chunks.length || 1, "IMPORTED_TEXT");
   metrics.pageCount = chunks.length || 1;
   metrics.characterCount = fullText.length;
+  const pages: ImportedPage[] = chunks.map((chunk) => ({ pageNumber: chunk.chunkNumber, text: chunk.text, extraction: "TEXT_LAYER" as const }));
   return {
     metrics,
     fullText,
-    pages: chunks.map((chunk) => ({ pageNumber: chunk.chunkNumber, text: chunk.text, extraction: "TEXT_LAYER" as const })),
+    pages,
+    analysis: analyzeImportedDocument(pages, metrics, upload.kind === "JSON" ? fullText : undefined),
   };
 }
 

@@ -28,6 +28,15 @@ function metadataRecord(value: Prisma.JsonValue) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function importedProductUrl(siteUrl: string, slug: string | undefined, sourceId: string | undefined, index: number) {
+  try {
+    const path = slug ? `/shop/${slug.replace(/^\/+|\/+$/g, "")}/` : `/imported-product/${encodeURIComponent(sourceId ?? String(index + 1))}`;
+    return new URL(path, siteUrl).toString();
+  } catch {
+    return `${siteUrl.replace(/\/$/, "")}/imported-product/${encodeURIComponent(sourceId ?? String(index + 1))}`;
+  }
+}
+
 export async function POST(request: NextRequest, { params }: { params: Promise<{ scanId: string }> }) {
   try {
     await enforceRateLimit(request, "ai-scanner-manual-report-upload", 10);
@@ -45,7 +54,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const formData = await request.formData();
     const upload = await validateAiScanManualImport({ file: formData.get("report"), text: formData.get("content"), format: formData.get("format") });
-    const { metrics, pages, fullText } = await extractManualImport(upload);
+    const { metrics, pages, fullText, analysis } = await extractManualImport(upload);
     const storageKey = `ai-scanner/${scanId}/imported-reports/${upload.sha256}.${storageExtension(upload.mimeType)}`;
     await evidenceStorage().put(storageKey, upload.bytes);
     const uploadedAt = new Date();
@@ -60,8 +69,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       characterCount: fullText.length,
       extraction: { textLayerPages: metrics.textLayerPageCount ?? 0, ocrPages: metrics.ocrPageCount ?? 0 },
       metrics,
+      structuredCounts: { findings: analysis.findings.length, products: analysis.products.length, observations: analysis.observations.length, limitations: analysis.limitations.length },
       uploadedAt: uploadedAt.toISOString(),
     };
+    const evidenceUnits = pages.map((page) => ({
+      page,
+      sha256: evidenceDigest(`manual-import:${upload.sha256}:unit:${page.pageNumber}:${page.text}`),
+    }));
 
     let importEvidenceId = "";
     await db.$transaction(async (tx) => {
@@ -84,8 +98,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       });
       importEvidenceId = importedEvidence.id;
 
-      if (pages.length) await tx.aiEvidence.createMany({
-        data: pages.map((page) => ({
+      if (evidenceUnits.length) await tx.aiEvidence.createMany({
+        data: evidenceUnits.map(({ page, sha256 }) => ({
           scanId,
           toolName: "import_manual_report_content",
           kind: (upload.kind === "JSON" ? "STRUCTURED_DATA" : "VISIBLE_TEXT") as AiEvidenceKind,
@@ -93,7 +107,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           firstParty: true,
           exactText: page.text,
           mimeType: upload.kind === "JSON" ? "application/json" : "text/plain",
-          sha256: evidenceDigest(`manual-import:${upload.sha256}:unit:${page.pageNumber}:${page.text}`),
+          sha256,
           metadata: {
             imported: true,
             parentEvidenceId: importedEvidence.id,
@@ -107,6 +121,73 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         skipDuplicates: true,
       });
 
+      const indexedEvidence = evidenceUnits.length ? await tx.aiEvidence.findMany({
+        where: { scanId, sha256: { in: evidenceUnits.map((unit) => unit.sha256) } },
+        select: { id: true, sha256: true },
+      }) : [];
+      const evidenceIdByPage = new Map(evidenceUnits.flatMap((unit) => {
+        const evidence = indexedEvidence.find((candidate) => candidate.sha256 === unit.sha256);
+        return evidence ? [[unit.page.pageNumber, evidence.id] as const] : [];
+      }));
+
+      // The source/history evidence remains immutable. Only the active scan's
+      // derived dashboard entities are replaced by the newly selected import.
+      await tx.aiFinding.deleteMany({ where: { scanId } });
+      await tx.aiProduct.deleteMany({ where: { scanId } });
+
+      for (const [index, finding] of analysis.findings.entries()) {
+        const matchingProduct = analysis.products.find((product) => product.name.toLowerCase().includes((finding.affectedProduct ?? finding.title).toLowerCase()));
+        const affectedUrl = matchingProduct ? importedProductUrl(scan.site.normalizedUrl, matchingProduct.slug, matchingProduct.sourceId, index) : scan.site.normalizedUrl;
+        const created = await tx.aiFinding.create({
+          data: {
+            scanId,
+            organizationId: session.organization.id,
+            merchantId: scan.merchantId,
+            title: finding.title,
+            severity: finding.severity,
+            confidence: 1,
+            theme: "Imported report",
+            category: finding.affectedCategory ?? "Imported assessment",
+            materiality: ["CRITICAL", "HIGH"].includes(finding.severity) ? "MATERIAL" : "NON_MATERIAL",
+            materialityWeight: finding.severity === "CRITICAL" ? 1 : finding.severity === "HIGH" ? 0.8 : finding.severity === "MEDIUM" ? 0.5 : 0.25,
+            commercialProminence: 0.8,
+            visualProminence: 0.6,
+            productAssociation: Boolean(finding.affectedProduct),
+            mitigation: 0,
+            ambiguous: false,
+            contradictoryEvidence: false,
+            explanation: finding.explanation,
+            affectedUrl,
+            contentType: "IMPORTED_DOCUMENT",
+            affectedProduct: finding.affectedProduct,
+            affectedCategory: finding.affectedCategory,
+            remediation: finding.remediation,
+            status: "OPEN",
+          },
+          select: { id: true },
+        });
+        const evidenceId = evidenceIdByPage.get(finding.pageNumber) ?? importedEvidence.id;
+        await tx.aiFindingEvidence.create({ data: { findingId: created.id, evidenceId, role: "ADVERSE", rationale: `Imported report page ${finding.pageNumber}` } });
+      }
+
+      if (analysis.products.length) await tx.aiProduct.createMany({
+        data: analysis.products.map((product, index) => ({
+          scanId,
+          canonicalUrl: importedProductUrl(scan.site.normalizedUrl, product.slug, product.sourceId, index),
+          name: product.name,
+          sku: product.sku,
+          price: product.price,
+          currency: product.currency,
+          variants: [],
+          categories: product.category ? [product.category] : [],
+          objectiveSignals: { imported: true, sourceId: product.sourceId, pageNumber: product.pageNumber },
+          verified: true,
+        })),
+        skipDuplicates: true,
+      });
+
+      const observations = analysis.observations.map((observation) => ({ text: observation.text, evidenceIds: [evidenceIdByPage.get(observation.pageNumber) ?? importedEvidence.id] }));
+
       await tx.aiScan.update({
         where: { id: scanId },
         data: {
@@ -115,8 +196,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           error: null,
           resumeAfter: null,
           completedAt: uploadedAt,
-          summary: `Imported ${upload.kind.toLowerCase()} document saved with complete source content and ${pages.length} indexed unit${pages.length === 1 ? "" : "s"}.`,
+          summary: analysis.summary,
           score: metrics.healthScore ?? null,
+          scoreBreakdown: analysis.scoreBreakdown as unknown as Prisma.InputJsonValue,
+          coverage: { ...metrics.coverage, documentPages: pages.length, textLayerPages: metrics.textLayerPageCount ?? 0, ocrPages: metrics.ocrPageCount ?? 0 } as unknown as Prisma.InputJsonValue,
+          observations: observations as unknown as Prisma.InputJsonValue,
+          limitations: analysis.limitations as unknown as Prisma.InputJsonValue,
           importedReportStorageKey: storageKey,
           importedReportOriginalName: upload.originalName,
           importedReportMimeType: upload.mimeType,
@@ -127,6 +212,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           importedReportMetrics: metrics as unknown as Prisma.InputJsonValue,
         },
       });
+      await tx.merchant.update({ where: { id: scan.merchantId }, data: { status: analysis.findings.some((finding) => ["CRITICAL", "HIGH"].includes(finding.severity)) ? "REVIEW_REQUIRED" : "MONITORED" } });
       await tx.auditLog.create({
         data: {
           organizationId: session.organization.id,
@@ -145,6 +231,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             evidenceUnits: pages.length,
             characterCount: fullText.length,
             metrics,
+            structuredCounts: metadata.structuredCounts,
           },
         },
       });

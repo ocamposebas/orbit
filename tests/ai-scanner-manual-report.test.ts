@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractManualImport, parseOrbitReportMetrics, splitImportedText, validateAiScanManualImport, validateAiScanManualReport } from "@/ai-scanner/manual-report";
+import { analyzeImportedDocument, extractManualImport, parseOrbitReportMetrics, splitImportedText, validateAiScanManualImport, validateAiScanManualReport } from "@/ai-scanner/manual-report";
 
 function pdfBytes() {
   return new TextEncoder().encode(`%PDF-1.7\n${"0".repeat(100)}\n%%EOF`);
@@ -77,5 +77,22 @@ describe("AI Scanner manual PDF report", () => {
   it("accepts a post-remediation web audit with a posture score", () => {
     const metrics = parseOrbitReportMetrics(`CORE AMINOS\nWEB AUDIT\nVALIDATION 04 - POST-REMEDIATION REVIEW\nPOSTURE SCORE\n95 / 100\nMATERIAL ISSUES\n0 OPEN\n0 Critical - 0 High\nFINAL ASSESSMENT\n95 / 100 - Strong Compliance Posture`, 8);
     expect(metrics).toMatchObject({ source: "ORBIT_REPORT_PDF", pageCount: 8, healthScore: 95, severity: { critical: 0, high: 0 } });
+  });
+
+  it("recognizes the merchant intelligence layout and materializes its dashboard zones", () => {
+    const text = `ORBIT SENTINEL\n34 /100\nORBIT internal health score\nOBSERVED COVERAGE 93%\nFirst-party URLs discovered 106\nURLs fetched / analyzed 106/106\nProducts discovered / reviewed 50 / 50\nUnique product images reviewed 51 / 51\nPolicies reviewed 7 / 7 observed\nCheckout states 1\nTOTAL 34 / 100`;
+    const metrics = parseOrbitReportMetrics(text, 22);
+    const analysis = analyzeImportedDocument([
+      { pageNumber: 4, extraction: "TEXT_LAYER", text: "Priority findings\nP0   Peptide Calculator   CRITICAL   Remove the public dose workflow.\nP1   Policy contradictions   HIGH   Reconcile the policies." },
+      { pageNumber: 5, extraction: "TEXT_LAYER", text: "Complete product inventory 1/1", layoutItems: [
+        { text: "2231", x: 48, y: 600 }, { text: "Adamax-1032 10mg", x: 82, y: 600 }, { text: "PLR-AX-J101", x: 243, y: 600 }, { text: "$65.00", x: 313, y: 600 }, { text: "Peptides", x: 383, y: 600 }, { text: "`adamax-1032-10mg`", x: 475, y: 600 },
+      ] },
+      { pageNumber: 21, extraction: "TEXT_LAYER", text: "Score, acceptance checklist & limitations\nDOMAIN SCORE\nCatalog and intended-use controls   7 / 25\nTOTAL   34 / 100" },
+    ], metrics);
+
+    expect(metrics).toMatchObject({ healthScore: 34, coverage: { urlsDiscovered: 106, pagesOpened: 106, productsDiscovered: 50, productsVerified: 50, imagesInspected: 51, documentsInspected: 7, checkoutStatesInspected: 1, observedCoveragePercent: 93 } });
+    expect(analysis.findings).toMatchObject([{ title: "Peptide Calculator", severity: "CRITICAL", remediation: "Remove the public dose workflow." }, { title: "Policy contradictions", severity: "HIGH" }]);
+    expect(analysis.products).toMatchObject([{ sourceId: "2231", name: "Adamax-1032 10mg", sku: "PLR-AX-J101", price: "$65.00", category: "Peptides", slug: "adamax-1032-10mg" }]);
+    expect(analysis.scoreBreakdown).toEqual({ "Catalog and intended-use controls": { score: 7, maximum: 25 } });
   });
 });

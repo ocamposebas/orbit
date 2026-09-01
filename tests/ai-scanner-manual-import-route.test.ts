@@ -8,7 +8,14 @@ const mocks = vi.hoisted(() => ({
   findFirst: vi.fn(),
   upsert: vi.fn(),
   createMany: vi.fn(),
+  evidenceFindMany: vi.fn(),
   evidenceDeleteMany: vi.fn(),
+  findingDeleteMany: vi.fn(),
+  findingCreate: vi.fn(),
+  findingEvidenceCreate: vi.fn(),
+  productDeleteMany: vi.fn(),
+  productCreateMany: vi.fn(),
+  merchantUpdate: vi.fn(),
   update: vi.fn(),
   scanDeleteMany: vi.fn(),
   auditCreate: vi.fn(),
@@ -40,8 +47,12 @@ vi.mock("@/sentinel/db", () => ({
     aiScan: { findFirst: mocks.findFirst, deleteMany: mocks.scanDeleteMany },
     aiEvidence: { deleteMany: mocks.evidenceDeleteMany },
     $transaction: async (callback: (tx: unknown) => Promise<void>) => callback({
-      aiEvidence: { upsert: mocks.upsert, createMany: mocks.createMany, deleteMany: mocks.evidenceDeleteMany },
+      aiEvidence: { upsert: mocks.upsert, createMany: mocks.createMany, findMany: mocks.evidenceFindMany, deleteMany: mocks.evidenceDeleteMany },
+      aiFinding: { deleteMany: mocks.findingDeleteMany, create: mocks.findingCreate },
+      aiFindingEvidence: { create: mocks.findingEvidenceCreate },
+      aiProduct: { deleteMany: mocks.productDeleteMany, createMany: mocks.productCreateMany },
       aiScan: { update: mocks.update, deleteMany: mocks.scanDeleteMany },
+      merchant: { update: mocks.merchantUpdate },
       auditLog: { create: mocks.auditCreate },
     }),
   }),
@@ -58,9 +69,24 @@ describe("AI Scanner document import route", () => {
       fullText: "all source text",
       pages: [{ pageNumber: 1, text: "all source text", extraction: "TEXT_LAYER" }],
       metrics: { source: "IMPORTED_TEXT", pageCount: 1, characterCount: 15, coverage: {}, severity: { critical: 0, high: 0, medium: 0, low: 0 } },
+      analysis: {
+        summary: "Imported document fully indexed.",
+        scoreBreakdown: { Policies: { score: 8, maximum: 20 } },
+        findings: [{ title: "Policy contradiction", severity: "HIGH", explanation: "Two policies conflict.", remediation: "Consolidate the policies.", pageNumber: 1 }],
+        products: [{ sourceId: "44", name: "Imported product", sku: "SKU-44", price: "$10", currency: "USD", slug: "imported-product", pageNumber: 1 }],
+        observations: [{ text: "all source text", pageNumber: 1 }],
+        limitations: ["Checkout not observed."],
+      },
     });
     mocks.upsert.mockResolvedValue({ id: "evidence-import-1" });
     mocks.createMany.mockResolvedValue({ count: 1 });
+    mocks.evidenceFindMany.mockResolvedValue([{ id: "evidence-page-1", sha256: expect.anything() }]);
+    mocks.findingDeleteMany.mockResolvedValue({ count: 0 });
+    mocks.findingCreate.mockResolvedValue({ id: "finding-1" });
+    mocks.findingEvidenceCreate.mockResolvedValue({});
+    mocks.productDeleteMany.mockResolvedValue({ count: 0 });
+    mocks.productCreateMany.mockResolvedValue({ count: 0 });
+    mocks.merchantUpdate.mockResolvedValue({});
     mocks.update.mockResolvedValue({});
     mocks.auditCreate.mockResolvedValue({});
   });
@@ -78,6 +104,11 @@ describe("AI Scanner document import route", () => {
     expect(mocks.createMany).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({ exactText: "all source text" })], skipDuplicates: true }));
     expect(mocks.evidenceDeleteMany).not.toHaveBeenCalled();
     expect(mocks.scanDeleteMany).not.toHaveBeenCalled();
-    expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ importedReportMimeType: "text/plain", summary: expect.stringContaining("complete source content") }) }));
+    expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ importedReportMimeType: "text/plain", summary: "Imported document fully indexed.", observations: expect.any(Array) }) }));
+    expect(mocks.findingDeleteMany).toHaveBeenCalledWith({ where: { scanId: "scan-1" } });
+    expect(mocks.productDeleteMany).toHaveBeenCalledWith({ where: { scanId: "scan-1" } });
+    expect(mocks.findingCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ title: "Policy contradiction", severity: "HIGH", remediation: "Consolidate the policies." }) }));
+    expect(mocks.findingEvidenceCreate).toHaveBeenCalledOnce();
+    expect(mocks.productCreateMany).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({ name: "Imported product", sku: "SKU-44", verified: true })] }));
   });
 });
