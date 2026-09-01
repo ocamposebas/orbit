@@ -25,6 +25,13 @@ export function merchantScope(session: { role: string; user: { id: string }; org
   };
 }
 
+export function portalMerchantScope(session: { role: string; portalAllMerchants?: boolean; user: { id: string }; organization: { id: string } }) {
+  return {
+    organizationId: session.organization.id,
+    ...(session.role === "OWNER" || session.portalAllMerchants ? {} : { accessGrants: { some: { userId: session.user.id } } }),
+  };
+}
+
 export async function requireMerchantAccess(
   request: NextRequest,
   merchantId: string,

@@ -9,7 +9,7 @@ export { SESSION_COOKIE } from "./constants";
 export const sessionCookieOptions = { httpOnly: true, sameSite: "lax" as const, secure: process.env.NODE_ENV === "production", path: "/", priority: "high" as const };
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
-const sessionInclude = { user: { select: { id: true, email: true, name: true, active: true, memberships: { select: { organizationId: true, role: true } } } }, organization: { select: { id: true, name: true, isDemo: true } } } as const;
+const sessionInclude = { user: { select: { id: true, email: true, name: true, active: true, memberships: { select: { organizationId: true, role: true, portalAllMerchants: true } } } }, organization: { select: { id: true, name: true, isDemo: true } } } as const;
 
 export async function sessionFromToken(token: string | undefined) {
   if (!token) return null;
@@ -21,7 +21,7 @@ export async function sessionFromToken(token: string | undefined) {
   }
   const membership = session.user.memberships.find((item) => item.organizationId === session.organizationId);
   if (!membership) return null;
-  return { ...session, role: membership.role };
+  return { ...session, role: membership.role, portalAllMerchants: membership.portalAllMerchants };
 }
 
 export async function currentSession() { return sessionFromToken((await cookies()).get(SESSION_COOKIE)?.value); }

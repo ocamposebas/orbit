@@ -68,6 +68,7 @@ model Membership {
   organizationId String
   userId         String
   role           MembershipRole @default(VIEWER)
+  portalAllMerchants Boolean     @default(false)
   createdAt      DateTime       @default(now())
   organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)

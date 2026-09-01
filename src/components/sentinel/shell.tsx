@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, Bell, Boxes, FileClock, LogOut, Menu, Radar, Search, Settings, ShieldCheck, X } from "lucide-react";
+import { Activity, Bell, Boxes, FileClock, LogOut, Menu, Radar, Search, Settings, ShieldCheck, WalletCards, X } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { SentinelRoleProvider } from "./auth-context";
 
 const links = [
   { href: "/sentinel", label: "Watchtower", icon: Radar },
+  { href: "/dashboard", label: "Financial portfolio", icon: WalletCards },
   { href: "/sentinel#merchants", label: "Merchants", icon: Boxes },
   { href: "/sentinel#review", label: "Review queue", icon: ShieldCheck },
   { href: "/sentinel#activity", label: "Activity", icon: Activity },
@@ -19,7 +20,7 @@ export function SentinelShell({ children, workspace, userName, role }: { childre
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const visibleLinks = role === "VIEWER" ? [{ href: "/sentinel", label: "My report", icon: Radar }] : links;
+  const visibleLinks = role === "VIEWER" ? [{ href: "/sentinel", label: "My report", icon: Radar }, { href: "/dashboard", label: "Merchant Portal", icon: WalletCards }] : links;
   return <div className="min-h-dvh bg-[#090b0e] text-[#ecede9]">
     <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center border-b border-white/[.07] bg-[#090b0e]/95 px-4 backdrop-blur md:left-[228px] md:px-7">
       <button onClick={() => setOpen(true)} className="mr-3 grid size-8 place-items-center rounded-md border border-white/10 md:hidden" aria-label="Open navigation"><Menu className="size-4" /></button>

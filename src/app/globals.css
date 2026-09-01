@@ -175,3 +175,6 @@ form, fieldset, label { min-width: 0; }
 .merchant-portal input,
 .merchant-portal select { color-scheme: dark; }
 .merchant-portal input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.75); }
+.merchant-portal [class*="hover:bg-[#fafaff]"]:hover,
+.merchant-portal [class*="hover:bg-[#fcfcfd]"]:hover,
+.merchant-portal [class*="hover:bg-[#f0f1f3]"]:hover { background-color: rgba(255, 255, 255, .028) !important; }

@@ -11,15 +11,13 @@ const createUserSchema = z.object({
   name: z.string().trim().min(2).max(120),
   password: z.string().min(12).max(128),
   role: z.enum(["ADMIN", "ANALYST", "REVIEWER", "VIEWER"]).default("VIEWER"),
+  portalAllMerchants: z.boolean().default(false),
   merchantIds: z.array(z.string().min(1)).default([]),
-}).superRefine((input, context) => {
-  if (["REVIEWER", "VIEWER"].includes(input.role) && input.merchantIds.length === 0) {
-    context.addIssue({ code: "custom", path: ["merchantIds"], message: "Assign at least one merchant to this client account" });
-  }
 });
 
 const updateMerchantAccessSchema = z.object({
   userId: z.string().min(1),
+  portalAllMerchants: z.boolean(),
   merchantIds: z.array(z.string().min(1)),
 }).strict();
 
@@ -42,7 +40,7 @@ export async function GET(request: NextRequest) {
       }),
     ]);
     return NextResponse.json({
-      users: memberships.map((membership) => ({ ...membership.user, role: membership.role, merchantAccess: membership.user.merchantAccess.map(({ merchant }) => merchant) })),
+      users: memberships.map((membership) => ({ ...membership.user, role: membership.role, portalAllMerchants: membership.role === "OWNER" || membership.portalAllMerchants, merchantAccess: membership.user.merchantAccess.map(({ merchant }) => merchant) })),
       merchants: merchants.map((merchant) => ({ id: merchant.id, businessName: merchant.businessName, hostname: merchant.sites[0]?.hostname ?? null, portalEnabled: merchant.portalEnabled, agreementStatus: merchant.agreement?.status ?? null, stripeDisplayStatus: merchant.stripeConnect?.displayStatus ?? null, cardPaymentsStatus: merchant.stripeConnect?.cardPaymentsStatus ?? null, payoutsStatus: merchant.stripeConnect?.payoutsStatus ?? null })),
     });
   } catch (error) { return apiError(error); }
@@ -65,23 +63,22 @@ export async function POST(request: NextRequest) {
     if (validMerchantCount !== merchantIds.length) throw new HttpError(400, "One or more selected merchants are invalid");
     if (existingAccount && existingAccount.memberships.length === 0) throw new HttpError(409, "This email already belongs to an account outside this workspace");
     const passwordHash = await hashPassword(input.password);
-    const scopedRole = input.role === "VIEWER" || input.role === "REVIEWER";
     const user = await db.$transaction(async (tx) => {
       const account = await tx.user.upsert({
         where: { email: input.email },
         update: { name: input.name, passwordHash, passwordUpdatedAt: new Date(), active: true },
         create: { email: input.email, name: input.name, passwordHash, passwordUpdatedAt: new Date() },
       });
-      await tx.membership.upsert({ where: { organizationId_userId: { organizationId: organization.id, userId: account.id } }, update: { role: input.role }, create: { organizationId: organization.id, userId: account.id, role: input.role } });
+      await tx.membership.upsert({ where: { organizationId_userId: { organizationId: organization.id, userId: account.id } }, update: { role: input.role, portalAllMerchants: input.portalAllMerchants }, create: { organizationId: organization.id, userId: account.id, role: input.role, portalAllMerchants: input.portalAllMerchants } });
       await tx.merchantAccess.deleteMany({ where: { userId: account.id, merchant: { organizationId: organization.id } } });
-      if (scopedRole) await tx.merchantAccess.createMany({ data: merchantIds.map((merchantId) => ({ userId: account.id, merchantId })) });
+      if (!input.portalAllMerchants && merchantIds.length) await tx.merchantAccess.createMany({ data: merchantIds.map((merchantId) => ({ userId: account.id, merchantId })) });
       await tx.auditLog.create({ data: {
         organizationId: organization.id, actorId: session.user.id, action: "user.access_configured", targetType: "User", targetId: account.id,
-        metadata: { role: input.role, merchantIds: scopedRole ? merchantIds : [], access: scopedRole ? "ASSIGNED_MERCHANTS" : "WORKSPACE_WIDE" },
+        metadata: { role: input.role, merchantIds: input.portalAllMerchants ? [] : merchantIds, access: input.portalAllMerchants ? "ALL_MERCHANTS" : "ASSIGNED_MERCHANTS" },
       } });
       return account;
     });
-    return NextResponse.json({ user: { id: user.id, email: user.email, name: user.name, role: input.role, merchantIds: scopedRole ? merchantIds : [] } }, { status: 201 });
+    return NextResponse.json({ user: { id: user.id, email: user.email, name: user.name, role: input.role, portalAllMerchants: input.portalAllMerchants, merchantIds: input.portalAllMerchants ? [] : merchantIds } }, { status: 201 });
   } catch (error) { return apiError(error); }
 }
 
@@ -95,24 +92,26 @@ export async function PATCH(request: NextRequest) {
     const merchantIds = [...new Set(input.merchantIds)];
     const db = getDatabase();
     const [membership, validMerchantCount] = await Promise.all([
-      db.membership.findUnique({ where: { organizationId_userId: { organizationId: organization.id, userId: input.userId } }, select: { role: true, user: { select: { id: true, email: true } } } }),
+      db.membership.findUnique({ where: { organizationId_userId: { organizationId: organization.id, userId: input.userId } }, select: { role: true, portalAllMerchants: true, user: { select: { id: true, email: true } } } }),
       db.merchant.count({ where: { id: { in: merchantIds }, organizationId: organization.id } }),
     ]);
     if (!membership) throw new HttpError(404, "User not found");
-    if (!["VIEWER", "REVIEWER"].includes(membership.role)) throw new HttpError(409, "Workspace-wide roles cannot be limited to selected merchants");
+    if (membership.role === "OWNER") throw new HttpError(409, "The workspace owner always has access to every merchant");
+    if (membership.role === "ADMIN" && session.role !== "OWNER") throw new HttpError(403, "Only the owner can change another administrator's financial access");
     if (validMerchantCount !== merchantIds.length) throw new HttpError(400, "One or more selected merchants are invalid");
     await db.$transaction(async (tx) => {
       await tx.merchantAccess.deleteMany({ where: { userId: input.userId, merchant: { organizationId: organization.id } } });
-      if (merchantIds.length) await tx.merchantAccess.createMany({ data: merchantIds.map((merchantId) => ({ userId: input.userId, merchantId })) });
+      await tx.membership.update({ where: { organizationId_userId: { organizationId: organization.id, userId: input.userId } }, data: { portalAllMerchants: input.portalAllMerchants } });
+      if (!input.portalAllMerchants && merchantIds.length) await tx.merchantAccess.createMany({ data: merchantIds.map((merchantId) => ({ userId: input.userId, merchantId })) });
       await tx.auditLog.create({ data: {
         organizationId: organization.id,
         actorId: session.user.id,
         action: "user.merchant_access_updated",
         targetType: "User",
         targetId: input.userId,
-        metadata: { merchantIds, role: membership.role },
+        metadata: { merchantIds: input.portalAllMerchants ? [] : merchantIds, portalAllMerchants: input.portalAllMerchants, role: membership.role },
       } });
     });
-    return NextResponse.json({ user: { id: membership.user.id, email: membership.user.email, role: membership.role, merchantIds } });
+    return NextResponse.json({ user: { id: membership.user.id, email: membership.user.email, role: membership.role, portalAllMerchants: input.portalAllMerchants, merchantIds: input.portalAllMerchants ? [] : merchantIds } });
   } catch (error) { return apiError(error); }
 }
