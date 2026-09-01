@@ -145,3 +145,10 @@ form, fieldset, label { min-width: 0; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.merchant-portal {
+  --portal-accent: #7363e7;
+  color-scheme: light;
+  font-variant-numeric: tabular-nums;
+}
+.merchant-portal ::selection { background: rgba(115, 99, 231, .22); color: #1b1c22; }

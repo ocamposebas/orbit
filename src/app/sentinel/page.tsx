@@ -8,9 +8,9 @@ export default async function Page() {
   if (session && ["VIEWER", "REVIEWER"].includes(session.role)) {
     const grants = await getDatabase().merchantAccess.findMany({
       where: { userId: session.user.id, merchant: { organizationId: session.organization.id } },
-      take: 2,
-      select: { merchantId: true },
+      select: { merchantId: true, merchant: { select: { portalEnabled: true } } },
     });
+    if (grants.some((grant) => grant.merchant.portalEnabled)) redirect("/dashboard");
     if (grants.length === 1) redirect(`/sentinel/merchant/${grants[0].merchantId}?integration=stripe#stripe-connect`);
   }
   return <Watchtower />;

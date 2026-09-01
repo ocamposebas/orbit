@@ -1,0 +1,2 @@
+export default function Loading() { return <div className="mx-auto w-full max-w-[1480px] animate-pulse px-4 py-10 sm:px-7 lg:px-10"><div className="h-10 w-56 rounded-xl bg-black/[.07]" /><div className="mt-8 grid gap-4 lg:grid-cols-3"><div className="h-52 rounded-[22px] bg-black/[.05]" /><div className="h-52 rounded-[22px] bg-black/[.05]" /><div className="h-52 rounded-[22px] bg-black/[.1]" /></div><div className="mt-8 h-96 rounded-[20px] bg-black/[.045]" /></div>; }
+

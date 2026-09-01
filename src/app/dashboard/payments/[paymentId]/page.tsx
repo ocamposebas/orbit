@@ -1,0 +1,55 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { ArrowLeft, CalendarClock, CircleOff, CreditCard, Landmark, Mail, MapPin, RotateCcw, ShieldAlert, UserRound } from "lucide-react";
+import { notFound } from "next/navigation";
+import { CopyButton } from "@/components/merchant-portal/copy-button";
+import { StatusPill } from "@/components/merchant-portal/status-pill";
+import { getPortalContext } from "@/merchant-portal/access";
+import { getMerchantPayment } from "@/merchant-portal/data";
+import { formatMoney, formatPortalDate, formatPortalDateTime } from "@/merchant-portal/format";
+
+export const metadata: Metadata = { title: "Payment details", robots: { index: false, follow: false } };
+
+export default async function PaymentDetailPage({ params }: { params: Promise<{ paymentId: string }> }) {
+  const [{ merchant }, { paymentId }] = await Promise.all([getPortalContext(), params]);
+  if (!merchant) notFound();
+  const payment = await getMerchantPayment(merchant.id, decodeURIComponent(paymentId));
+  if (!payment) notFound();
+  const netAmount = payment.netMinor;
+  const refundedLabel = payment.refundAmountMinor >= payment.amountMinor ? "Fully refunded" : payment.refundAmountMinor > 0 ? "Partially refunded" : "No refunds";
+  const timeline = [
+    { label: "Payment created", date: payment.createdAt, detail: `ORBIT ${payment.source.toLowerCase()} record` },
+    ...(payment.succeededAt ? [{ label: "Payment succeeded", date: payment.succeededAt, detail: "Observed by ORBIT from Stripe" }] : []),
+    ...(payment.fundsAvailableOn ? [{ label: "Funds available", date: payment.fundsAvailableOn, detail: "Stripe balance availability" }] : []),
+  ];
+
+  return <div className="mx-auto w-full max-w-[1240px] px-4 py-7 sm:px-7 lg:px-10 lg:py-10">
+    <Link href="/dashboard/payments" className="inline-flex items-center gap-1.5 text-[10px] font-medium text-[#7c8088] hover:text-[#393c42]"><ArrowLeft className="size-3.5" />Payments</Link>
+    <header className="mt-6 flex flex-col gap-5 border-b border-[#dfe1e5] pb-7 sm:flex-row sm:items-end sm:justify-between"><div><div className="flex items-center gap-3"><h1 className="text-[36px] font-semibold tracking-[-.055em] tabular-nums text-[#191b20] sm:text-[44px]">{formatMoney(payment.amountMinor, payment.currency)}</h1><StatusPill status={payment.displayStatus} /></div><p className="mt-3 text-[12px] text-[#696d75]">Order #{payment.orderId}</p><p className="mt-1 text-[10px] text-[#969aa2]">{formatPortalDateTime(payment.createdAt)} UTC</p></div><CopyButton value={payment.publicId} label="Copy payment ID" /></header>
+
+    <div className="mt-8 grid gap-6 lg:grid-cols-[1.15fr_.85fr]">
+      <div className="space-y-6">
+        <section className="overflow-hidden rounded-[22px] bg-[#1d1f25] p-6 text-white shadow-[0_20px_55px_rgba(24,26,33,.14)] sm:p-8"><p className="text-[10px] font-semibold uppercase tracking-[.14em] text-[#9da1aa]">Payment breakdown</p><div className="mt-7 space-y-4"><BreakdownRow label="Gross amount" value={formatMoney(payment.amountMinor, payment.currency)} /><BreakdownRow label="ORBIT platform fee" value={`-${formatMoney(payment.platformFeeMinor, payment.currency)}`} muted /><BreakdownRow label="Processing fee" value={payment.processingFeeMinor === null ? "—" : `-${formatMoney(payment.processingFeeMinor, payment.currency)}`} muted /><div className="border-t border-white/[.12] pt-5"><BreakdownRow label="Net amount" value={netAmount === null ? "—" : formatMoney(netAmount, payment.currency)} strong /></div></div>{payment.processingFeeMinor === null && <p className="mt-5 text-[9px] leading-4 text-[#858a94]">Stripe has not provided a processing fee for this payment, so ORBIT does not estimate the net amount.</p>}</section>
+
+        <section className="rounded-[20px] border border-[#dfe1e5] bg-white p-6 sm:p-7"><p className="text-[10px] font-semibold uppercase tracking-[.14em] text-[#979ba3]">Payment information</p><div className="mt-5 divide-y divide-[#eceef0]"><InfoRow label="ORBIT Payment ID" value={payment.publicId} copy /><InfoRow label="Order ID" value={payment.orderId} /><InfoRow label="Source" value={payment.source.charAt(0) + payment.source.slice(1).toLowerCase()} /><InfoRow label="Created" value={`${formatPortalDateTime(payment.createdAt)} UTC`} /><InfoRow label="Currency" value={payment.currency.toUpperCase()} /><InfoRow label="Status" value={payment.displayStatus} /><InfoRow label="PaymentIntent reference" value={payment.stripePaymentIntentId ?? "—"} copy={Boolean(payment.stripePaymentIntentId)} /><InfoRow label="Charge reference" value={payment.chargeId ?? "—"} copy={Boolean(payment.chargeId)} /></div></section>
+
+        <section className="rounded-[20px] border border-[#dfe1e5] bg-white p-6 sm:p-7"><p className="text-[10px] font-semibold uppercase tracking-[.14em] text-[#979ba3]">Payment timeline</p><div className="mt-6">{timeline.map((event, index) => <div key={`${event.label}-${index}`} className="grid grid-cols-[22px_1fr] gap-3"><div className="flex flex-col items-center"><span className="mt-0.5 size-2.5 rounded-full border-[3px] border-[#7061df] bg-white" />{index < timeline.length - 1 && <span className="min-h-14 w-px flex-1 bg-[#dedbeF]" />}</div><div className="pb-6"><p className="text-[11px] font-medium text-[#373a40]">{event.label}</p><p className="mt-1 text-[9px] text-[#8d9199]">{formatPortalDateTime(event.date)} UTC</p><p className="mt-1 text-[9px] text-[#a3a6ad]">{event.detail}</p></div></div>)}</div></section>
+      </div>
+
+      <aside className="space-y-6">
+        <section className="rounded-[20px] border border-[#dfe1e5] bg-white p-6"><div className="flex items-start gap-4"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#efecff] text-[#6c5bd9]"><CreditCard className="size-4" /></span><div><p className="text-[9px] font-semibold uppercase tracking-[.13em] text-[#999da5]">Payment method</p>{payment.methodBrand ? <><h2 className="mt-2 text-[15px] font-semibold capitalize text-[#303339]">{payment.methodBrand} {payment.methodLast4 ? `•••• ${payment.methodLast4}` : ""}</h2><p className="mt-1 text-[10px] capitalize text-[#858991]">{payment.methodType ?? "Payment method"}</p></> : <p className="mt-2 text-[11px] text-[#858991]">Payment method unavailable</p>}</div></div></section>
+
+        <section className="rounded-[20px] border border-[#dfe1e5] bg-white p-6"><div className="flex items-start gap-4"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#f0f2f4] text-[#747981]"><UserRound className="size-4" /></span><div className="min-w-0"><p className="text-[9px] font-semibold uppercase tracking-[.13em] text-[#999da5]">Customer</p>{payment.customerName || payment.customerEmail || payment.billingCountry ? <div className="mt-3 space-y-2">{payment.customerName && <p className="text-[12px] font-medium text-[#373a40]">{payment.customerName}</p>}{payment.customerEmail && <p className="flex items-center gap-2 break-all text-[10px] text-[#737780]"><Mail className="size-3 shrink-0" />{payment.customerEmail}</p>}{payment.billingCountry && <p className="flex items-center gap-2 text-[10px] text-[#737780]"><MapPin className="size-3 shrink-0" />{payment.billingCountry}</p>}</div> : <p className="mt-2 text-[11px] text-[#858991]">No customer details available</p>}</div></div></section>
+
+        <section className="rounded-[20px] border border-[#dfe1e5] bg-white p-6"><div className="flex items-start gap-4"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#eef8f3] text-[#4a9a79]"><RotateCcw className="size-4" /></span><div><p className="text-[9px] font-semibold uppercase tracking-[.13em] text-[#999da5]">Refund status</p><h2 className="mt-2 text-[13px] font-semibold text-[#373a40]">{refundedLabel}</h2>{payment.refundAmountMinor > 0 && <p className="mt-1 text-[10px] text-[#737780]">{formatMoney(payment.refundAmountMinor, payment.currency)} refunded</p>}</div></div></section>
+
+        <section className="rounded-[20px] border border-[#dfe1e5] bg-white p-6"><div className="flex items-start gap-4"><span className={`grid size-10 shrink-0 place-items-center rounded-xl ${payment.dispute ? "bg-[#fff0f3] text-[#b65368]" : "bg-[#f0f2f4] text-[#747981]"}`}>{payment.dispute ? <ShieldAlert className="size-4" /> : <CircleOff className="size-4" />}</span><div><p className="text-[9px] font-semibold uppercase tracking-[.13em] text-[#999da5]">Dispute status</p><h2 className="mt-2 text-[13px] font-semibold text-[#373a40]">{payment.dispute ? "Dispute open" : "No dispute"}</h2>{payment.dispute && <><p className="mt-1 text-[10px] text-[#737780]">{formatMoney(payment.dispute.amountMinor, payment.currency)}</p><p className="mt-1 text-[9px] capitalize text-[#b65368]">{payment.dispute.status.replaceAll("_", " ")}</p></>}</div></div></section>
+
+        {payment.payout ? <Link href={`/dashboard/payouts/${payment.payout.id}`} className="block rounded-[20px] border border-[#dedaf5] bg-[#f4f2ff] p-6 transition hover:border-[#c9c2ef]"><div className="flex items-center gap-3"><Landmark className="size-4 text-[#6e60d5]" /><p className="text-[9px] font-semibold uppercase tracking-[.13em] text-[#7569c9]">Included in payout</p></div><p className="mt-4 text-[24px] font-semibold tracking-[-.04em] text-[#302c4a]">{formatMoney(payment.payout.amountMinor, payment.payout.currency)}</p><p className="mt-2 text-[10px] text-[#716b91]">{payment.payout.status === "paid" ? "Paid" : "Expected"} {formatPortalDate(payment.payout.arrivalDate)} · {payment.payout.destination}</p></Link> : <section className="rounded-[20px] border border-[#dfe1e5] bg-white p-6"><div className="flex items-center gap-3"><CalendarClock className="size-4 text-[#7b6de0]" /><p className="text-[9px] font-semibold uppercase tracking-[.13em] text-[#999da5]">Payout relation</p></div>{payment.fundsAvailableOn ? <><p className="mt-4 text-[13px] font-semibold text-[#373a40]">Expected availability</p><p className="mt-1 text-[10px] text-[#737780]">{formatPortalDate(payment.fundsAvailableOn)}</p></> : <p className="mt-4 text-[11px] text-[#858991]">Currently pending</p>}</section>}
+      </aside>
+    </div>
+  </div>;
+}
+
+function BreakdownRow({ label, value, muted, strong }: { label: string; value: string; muted?: boolean; strong?: boolean }) { return <div className="flex items-center justify-between gap-4"><span className={`${strong ? "text-[13px] font-semibold text-white" : "text-[11px]"} ${muted ? "text-[#9da1aa]" : "text-[#d8dae0]"}`}>{label}</span><span className={`${strong ? "text-[22px] font-semibold" : "text-[12px] font-medium"} tabular-nums`}>{value}</span></div>; }
+function InfoRow({ label, value, copy }: { label: string; value: string; copy?: boolean }) { return <div className="flex min-h-12 items-center gap-4 py-2"><span className="w-36 shrink-0 text-[10px] text-[#8b8f97]">{label}</span><span className="min-w-0 flex-1 break-all text-right font-mono text-[9px] text-[#484c53] sm:text-[10px]">{value}</span>{copy && value !== "—" && <CopyButton value={value} label="Copy" />}</div>; }

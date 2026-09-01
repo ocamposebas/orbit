@@ -90,6 +90,8 @@ model Merchant {
   expectedMonthlyVolume      String?
   status                     MerchantStatus               @default(ONBOARDING)
   isDemo                     Boolean                      @default(false)
+  portalEnabled              Boolean                      @default(false)
+  portalEnabledAt            DateTime?
   createdAt                  DateTime                     @default(now())
   updatedAt                  DateTime                     @updatedAt
   alerts                     Alert[]

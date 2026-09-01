@@ -8,6 +8,8 @@ import { safeRelayIntegration } from "@/commerce/woocommerce/service";
 import { safeWooCommerceInstallation } from "@/commerce/woocommerce/installations";
 import { agreementAdminState } from "@/contracts/service";
 import { deriveAiPolicyCoverage } from "@/ai-scanner/policy-coverage";
+import { z } from "zod";
+import { portalActivationEligibility } from "@/merchant-portal/eligibility";
 
 export const runtime = "nodejs";
 const log = childLogger({ component: "merchant-api" });
@@ -108,8 +110,46 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     await enforceRateLimit(request, "merchant-update", 30);
     const { merchantId } = await params;
     const { session, organization, merchant } = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN"], mutation: true });
-    const input = updateMerchantLegalCountrySchema.parse(await request.json());
+    const body = await request.json();
     const db = getDatabase();
+    if (Object.hasOwn(body, "portalEnabled")) {
+      const input = z.object({ portalEnabled: z.boolean() }).strict().parse(body);
+      const current = await db.merchant.findUnique({
+        where: { id: merchantId },
+        select: {
+          portalEnabled: true,
+          agreement: { select: { status: true } },
+          stripeConnect: { select: { displayStatus: true, cardPaymentsStatus: true, payoutsStatus: true } },
+        },
+      });
+      if (!current) throw new HttpError(404, "Merchant not found");
+      const eligibility = portalActivationEligibility({
+        agreementStatus: current.agreement?.status,
+        stripeDisplayStatus: current.stripeConnect?.displayStatus,
+        cardPaymentsStatus: current.stripeConnect?.cardPaymentsStatus,
+        payoutsStatus: current.stripeConnect?.payoutsStatus,
+      });
+      if (input.portalEnabled && !eligibility.eligible) {
+        const missing = eligibility.requirements.filter((item) => !item.complete).map((item) => item.label);
+        throw new HttpError(409, `Complete these requirements before activation: ${missing.join(", ")}`);
+      }
+      const updated = await db.merchant.update({
+        where: { id: merchantId },
+        data: { portalEnabled: input.portalEnabled, portalEnabledAt: input.portalEnabled ? new Date() : null },
+        select: { id: true, portalEnabled: true, portalEnabledAt: true },
+      });
+      await db.auditLog.create({ data: {
+        organizationId: organization.id,
+        merchantId,
+        actorId: session.user.id,
+        action: input.portalEnabled ? "MERCHANT_PORTAL_ENABLED" : "MERCHANT_PORTAL_DISABLED",
+        targetType: "Merchant",
+        targetId: merchantId,
+        metadata: { previousPortalEnabled: current.portalEnabled, portalEnabled: input.portalEnabled },
+      } });
+      return NextResponse.json({ merchant: updated });
+    }
+    const input = updateMerchantLegalCountrySchema.parse(body);
     const integration = await db.stripeConnectIntegration.findUnique({ where: { merchantId }, select: { id: true } });
     if (integration && merchant.legalCountry && input.legalCountry !== merchant.legalCountry) {
       throw new HttpError(409, "The legal business country cannot be changed after Stripe is connected");

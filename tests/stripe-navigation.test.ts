@@ -46,6 +46,7 @@ describe("Stripe onboarding navigation", () => {
 
   it("allows only the generated merchant dashboard and Stripe refresh continuations", () => {
     expect(safeLoginContinuation(`/sentinel/merchant/${merchantId}?stripeReturn=login#stripe-connect`)).toBe(`/sentinel/merchant/${merchantId}?stripeReturn=login#stripe-connect`);
+    expect(safeLoginContinuation("/dashboard/payments?status=succeeded")).toBe("/dashboard/payments?status=succeeded");
     expect(safeLoginContinuation(`/merchants/${merchantId}/integrations/stripe/refresh`)).toBe(`/merchants/${merchantId}/integrations/stripe/refresh`);
   });
 });
