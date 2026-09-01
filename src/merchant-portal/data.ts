@@ -1,6 +1,32 @@
 import type Stripe from "stripe";
 import { getDatabase } from "@/sentinel/db";
+import { childLogger } from "@/sentinel/logger";
 import { getStripeClient, getStripeConfiguration, stripeEnvironment } from "@/stripe/client";
+
+const stripePortalLog = childLogger({ component: "merchant-portal-stripe" });
+
+export type StripeFinancialIssue = "not_connected" | "not_configured" | "environment_mismatch" | "authentication" | "permission" | "account_unavailable" | "rate_limited" | "temporarily_unavailable";
+export type FinancialProcessorState = "live" | "partial" | "not_connected" | "unavailable";
+
+export function stripeFinancialIssue(error: unknown): StripeFinancialIssue {
+  const value = error as { type?: string; code?: string; status?: number; statusCode?: number; message?: string };
+  const type = String(value?.type ?? "");
+  const code = String(value?.code ?? "");
+  const message = String(value?.message ?? "");
+  const status = value?.statusCode ?? value?.status;
+  if (/not configured|unsupported secret key/i.test(message)) return "not_configured";
+  if (/environment.*(?:does not match|mismatch)|does not match STRIPE_MODE/i.test(message)) return "environment_mismatch";
+  if (type === "StripeAuthenticationError" || status === 401) return "authentication";
+  if (type === "StripePermissionError" || status === 403 || /permission|not authorized|access denied/i.test(message)) return "permission";
+  if (value?.statusCode === 429 || type === "StripeRateLimitError") return "rate_limited";
+  if (code === "resource_missing" || /no such account|account.*(?:missing|invalid|not found)|not connected to/i.test(message)) return "account_unavailable";
+  return "temporarily_unavailable";
+}
+
+function logStripeFinancialFailure(merchantId: string, surface: "balance" | "payouts", error: unknown) {
+  const value = error as { type?: string; code?: string; statusCode?: number };
+  stripePortalLog.warn({ merchantId, surface, issue: stripeFinancialIssue(error), stripeErrorType: value?.type, stripeErrorCode: value?.code, stripeStatusCode: value?.statusCode }, "Stripe financial data request failed");
+}
 
 export type BalanceAmount = { amountMinor: number | null; currency: string };
 export type PortalPayoutSummary = {
@@ -190,28 +216,57 @@ export async function getMerchantOverview(merchantId: string) {
   let available = emptyBalance(primaryCurrency);
   let pending = emptyBalance(primaryCurrency);
   let nextPayout: PortalPayoutSummary | null = null;
-  let processorState: "live" | "not_connected" | "unavailable" = merchant?.stripeConnect ? "unavailable" : "not_connected";
+  let processorState: FinancialProcessorState = merchant?.stripeConnect ? "unavailable" : "not_connected";
+  let balanceAvailable = false;
+  let payoutsAvailable = false;
+  let balanceIssue: StripeFinancialIssue | null = merchant?.stripeConnect ? null : "not_connected";
+  let payoutsIssue: StripeFinancialIssue | null = merchant?.stripeConnect ? null : "not_connected";
   let financials: Map<string, ChargeFinancial> | null = null;
 
   if (merchant?.stripeConnect) {
     try {
       const configuration = getStripeConfiguration();
-      if (!configuration.configured || merchant.stripeConnect.stripeEnvironment !== stripeEnvironment(configuration.mode)) throw new Error("stripe_unavailable");
+      if (!configuration.configured) {
+        balanceIssue = "not_configured";
+        payoutsIssue = "not_configured";
+        throw new Error("stripe_not_configured");
+      }
+      if (merchant.stripeConnect.stripeEnvironment !== stripeEnvironment(configuration.mode)) {
+        balanceIssue = "environment_mismatch";
+        payoutsIssue = "environment_mismatch";
+        throw new Error("stripe_environment_mismatch");
+      }
       const stripe = getStripeClient();
       const options = { stripeContext: merchant.stripeConnect.stripeAccountId };
-      const [balance, payouts] = await Promise.all([
+      const [balanceResult, payoutsResult] = await Promise.allSettled([
         stripe.balance.retrieve({}, options),
         stripe.payouts.list({ limit: 25, expand: ["data.destination"] }, options),
       ]);
-      available = balanceForCurrency(balance.available, primaryCurrency);
-      pending = balanceForCurrency(balance.pending, available.currency);
-      const upcoming = payouts.data
-        .filter((payout) => ["pending", "in_transit"].includes(payout.status))
-        .sort((a, b) => a.arrival_date - b.arrival_date)[0];
-      nextPayout = upcoming ? mapPayout(upcoming) : null;
-      processorState = "live";
+      if (balanceResult.status === "fulfilled") {
+        available = balanceForCurrency(balanceResult.value.available, primaryCurrency);
+        pending = balanceForCurrency(balanceResult.value.pending, available.currency);
+        balanceAvailable = true;
+        balanceIssue = null;
+      } else {
+        balanceIssue = stripeFinancialIssue(balanceResult.reason);
+        logStripeFinancialFailure(merchantId, "balance", balanceResult.reason);
+      }
+      if (payoutsResult.status === "fulfilled") {
+        const upcoming = payoutsResult.value.data
+          .filter((payout) => ["pending", "in_transit"].includes(payout.status))
+          .sort((a, b) => a.arrival_date - b.arrival_date)[0];
+        nextPayout = upcoming ? mapPayout(upcoming) : null;
+        payoutsAvailable = true;
+        payoutsIssue = null;
+      } else {
+        payoutsIssue = stripeFinancialIssue(payoutsResult.reason);
+        logStripeFinancialFailure(merchantId, "payouts", payoutsResult.reason);
+      }
+      processorState = balanceAvailable && payoutsAvailable ? "live" : balanceAvailable || payoutsAvailable ? "partial" : "unavailable";
       financials = await chargeFinancialsForPayments({ accountId: merchant.stripeConnect.stripeAccountId, stripe }, payments);
-    } catch {
+    } catch (error) {
+      if (!balanceIssue) balanceIssue = stripeFinancialIssue(error);
+      if (!payoutsIssue) payoutsIssue = stripeFinancialIssue(error);
       processorState = "unavailable";
     }
   }
@@ -226,6 +281,10 @@ export async function getMerchantOverview(merchantId: string) {
     recentPayments: payments.slice(0, 6),
     updatedAt: new Date(),
     processorState,
+    balanceAvailable,
+    payoutsAvailable,
+    balanceIssue,
+    payoutsIssue,
   };
 }
 
@@ -269,7 +328,7 @@ export async function getAdminPortfolioOverview(merchants: PortfolioMerchant[]) 
       payments: values.length,
     };
   });
-  const liveBalances = overviews.filter((item) => item.overview.processorState === "live");
+  const liveBalances = overviews.filter((item) => item.overview.balanceAvailable);
   const available = liveBalances.filter((item) => item.overview.available.amountMinor !== null && item.overview.available.currency === primaryCurrency).reduce((sum, item) => sum + (item.overview.available.amountMinor ?? 0), 0);
   const pending = liveBalances.filter((item) => item.overview.pending.amountMinor !== null && item.overview.pending.currency === primaryCurrency).reduce((sum, item) => sum + (item.overview.pending.amountMinor ?? 0), 0);
   const nextPayouts = overviews.flatMap((item) => item.overview.nextPayout && item.overview.nextPayout.currency === primaryCurrency ? [{ ...item.overview.nextPayout, merchantId: item.merchant.id, merchantName: item.merchant.businessName }] : []);
@@ -288,6 +347,10 @@ export async function getAdminPortfolioOverview(merchants: PortfolioMerchant[]) 
       return {
         ...merchant,
         processorState: overview.processorState,
+        balanceAvailable: overview.balanceAvailable,
+        payoutsAvailable: overview.payoutsAvailable,
+        balanceIssue: overview.balanceIssue,
+        payoutsIssue: overview.payoutsIssue,
         todayGrossMinor: today?.currency === primaryCurrency ? today.amountMinor : 0,
         todayPayments: today?.payments ?? 0,
         todayOrbitRevenueMinor: todayTransactions.reduce((sum, transaction) => sum + transaction.platformFeeMinor, 0),
@@ -341,16 +404,21 @@ export type PaymentListInput = {
 
 type StripeMerchant = { accountId: string; stripe: ReturnType<typeof getStripeClient> };
 
-async function stripeMerchant(merchantId: string): Promise<StripeMerchant | null> {
+async function stripeMerchantConnection(merchantId: string): Promise<{ processor: StripeMerchant | null; issue: StripeFinancialIssue | null }> {
   const integration = await getDatabase().stripeConnectIntegration.findUnique({ where: { merchantId } });
-  if (!integration) return null;
+  if (!integration) return { processor: null, issue: "not_connected" };
   try {
     const configuration = getStripeConfiguration();
-    if (!configuration.configured || integration.stripeEnvironment !== stripeEnvironment(configuration.mode)) return null;
-    return { accountId: integration.stripeAccountId, stripe: getStripeClient() };
-  } catch {
-    return null;
+    if (!configuration.configured) return { processor: null, issue: "not_configured" };
+    if (integration.stripeEnvironment !== stripeEnvironment(configuration.mode)) return { processor: null, issue: "environment_mismatch" };
+    return { processor: { accountId: integration.stripeAccountId, stripe: getStripeClient() }, issue: null };
+  } catch (error) {
+    return { processor: null, issue: stripeFinancialIssue(error) };
   }
+}
+
+async function stripeMerchant(merchantId: string): Promise<StripeMerchant | null> {
+  return (await stripeMerchantConnection(merchantId)).processor;
 }
 
 function cursorValue(value: string | undefined) {
@@ -659,25 +727,30 @@ export async function getMerchantPayment(merchantId: string, paymentId: string):
 export type PayoutListInput = { cursor?: string };
 
 export async function getMerchantPayouts(merchantId: string, input: PayoutListInput = {}) {
-  const processor = await stripeMerchant(merchantId);
-  if (!processor) return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, available: emptyBalance(), pending: emptyBalance() };
-  try {
-    const [balance, payouts] = await Promise.all([
-      processor.stripe.balance.retrieve({}, { stripeContext: processor.accountId }),
-      processor.stripe.payouts.list({ limit: 20, ...(input.cursor ? { starting_after: input.cursor } : {}), expand: ["data.destination"] }, { stripeContext: processor.accountId }),
-    ]);
-    const primaryCurrency = balance.available[0]?.currency.toUpperCase();
-    return {
-      payouts: payouts.data.map(mapPayout),
-      hasMore: payouts.has_more,
-      nextCursor: payouts.has_more ? payouts.data.at(-1)?.id ?? null : null,
-      processorAvailable: true,
-      available: balanceForCurrency(balance.available, primaryCurrency),
-      pending: balanceForCurrency(balance.pending, primaryCurrency),
-    };
-  } catch {
-    return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, available: emptyBalance(), pending: emptyBalance() };
-  }
+  const connection = await stripeMerchantConnection(merchantId);
+  const processor = connection.processor;
+  if (!processor) return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, balanceAvailable: false, payoutsAvailable: false, balanceIssue: connection.issue, payoutsIssue: connection.issue, available: emptyBalance(), pending: emptyBalance() };
+  const [balanceResult, payoutsResult] = await Promise.allSettled([
+    processor.stripe.balance.retrieve({}, { stripeContext: processor.accountId }),
+    processor.stripe.payouts.list({ limit: 20, ...(input.cursor ? { starting_after: input.cursor } : {}), expand: ["data.destination"] }, { stripeContext: processor.accountId }),
+  ]);
+  if (balanceResult.status === "rejected") logStripeFinancialFailure(merchantId, "balance", balanceResult.reason);
+  if (payoutsResult.status === "rejected") logStripeFinancialFailure(merchantId, "payouts", payoutsResult.reason);
+  const balance = balanceResult.status === "fulfilled" ? balanceResult.value : null;
+  const payouts = payoutsResult.status === "fulfilled" ? payoutsResult.value : null;
+  const primaryCurrency = balance?.available[0]?.currency.toUpperCase();
+  return {
+    payouts: payouts?.data.map(mapPayout) ?? [],
+    hasMore: payouts?.has_more ?? false,
+    nextCursor: payouts?.has_more ? payouts.data.at(-1)?.id ?? null : null,
+    processorAvailable: Boolean(balance || payouts),
+    balanceAvailable: Boolean(balance),
+    payoutsAvailable: Boolean(payouts),
+    balanceIssue: balanceResult.status === "rejected" ? stripeFinancialIssue(balanceResult.reason) : null,
+    payoutsIssue: payoutsResult.status === "rejected" ? stripeFinancialIssue(payoutsResult.reason) : null,
+    available: balance ? balanceForCurrency(balance.available, primaryCurrency) : emptyBalance(),
+    pending: balance ? balanceForCurrency(balance.pending, primaryCurrency) : emptyBalance(),
+  };
 }
 
 export type PortalPayoutDetail = PortalPayoutSummary & {

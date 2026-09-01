@@ -164,7 +164,8 @@ form, fieldset, label { min-width: 0; }
 .merchant-portal [class~="bg-[#f4f2ff]"],
 .merchant-portal [class~="bg-[#f0edff]"],
 .merchant-portal [class~="bg-[#eeecff]"],
-.merchant-portal [class~="bg-[#ebe8ff]"] { background-color: rgba(120, 104, 232, .10) !important; }
+.merchant-portal [class~="bg-[#ebe8ff]"],
+.merchant-portal [class~="bg-[#fbf8e9]"] { background-color: rgba(120, 104, 232, .10) !important; }
 .merchant-portal [class*="border-[#d"],
 .merchant-portal [class*="border-[#e"] { border-color: rgba(255, 255, 255, .075) !important; }
 .merchant-portal [class*="text-[#1"],
