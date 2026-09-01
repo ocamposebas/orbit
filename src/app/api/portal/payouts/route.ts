@@ -7,6 +7,7 @@ import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { portalActivationEligibility } from "@/merchant-portal/eligibility";
 import { getStripeClient } from "@/stripe/client";
 import { childLogger } from "@/sentinel/logger";
+import { requireTwoFactorCode } from "@/sentinel/auth/two-factor";
 
 const log = childLogger({ component: "orbit-payment-transfers" });
 
@@ -15,6 +16,7 @@ const requestSchema = z.object({
   amountMinor: z.number().int().positive().max(999_999_999),
   currency: z.string().trim().length(3).transform((value) => value.toLowerCase()),
   idempotencyKey: z.string().uuid(),
+  twoFactorCode: z.string().trim().regex(/^\d{6}$/),
 }).strict();
 
 function payoutError(error: unknown): unknown {
@@ -37,6 +39,7 @@ export async function POST(request: NextRequest) {
     if (!session) throw new HttpError(401, "Authentication is required");
     await enforceRateLimit(request, "portal-payout-create", 5, session.user.id);
     const input = requestSchema.parse(await request.json());
+    await requireTwoFactorCode(session.user.id, input.twoFactorCode);
     const db = getDatabase();
     const merchant = await db.merchant.findFirst({
       where: { id: input.merchantId, ...portalMerchantScope(session) },
@@ -99,7 +102,8 @@ export async function PATCH(request: NextRequest) {
     if (!session) throw new HttpError(401, "Authentication is required");
     if (!["OWNER", "ADMIN"].includes(session.role)) throw new HttpError(403, "Only an ORBIT administrator can enable on-demand transfers.");
     await enforceRateLimit(request, "portal-payout-schedule", 5, session.user.id);
-    const input = z.object({ merchantId: z.string().min(1) }).strict().parse(await request.json());
+    const input = z.object({ merchantId: z.string().min(1), twoFactorCode: z.string().trim().regex(/^\d{6}$/) }).strict().parse(await request.json());
+    await requireTwoFactorCode(session.user.id, input.twoFactorCode);
     const db = getDatabase();
     const merchant = await db.merchant.findFirst({
       where: { id: input.merchantId, ...portalMerchantScope(session) },

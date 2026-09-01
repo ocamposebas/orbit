@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/sentinel/auth/session", () => ({ requestSession: mocks.session }));
+vi.mock("@/sentinel/auth/two-factor", () => ({ requireTwoFactorCode: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/sentinel/rate-limit", () => ({ enforceRateLimit: mocks.rateLimit }));
 vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({ merchant: { findFirst: mocks.merchant }, auditLog: { create: mocks.audit } }) }));
 vi.mock("@/stripe/client", () => ({ getStripeClient: () => ({ balance: { retrieve: mocks.balance }, balanceSettings: { retrieve: mocks.retrieveSettings, update: mocks.updateSettings }, payouts: { create: mocks.createPayout } }) }));
@@ -32,7 +33,7 @@ const merchant = {
 function request(amountMinor = 2500) {
   return new Request("https://orbit.example/api/portal/payouts", {
     method: "POST", headers: { origin: "https://orbit.example", "content-type": "application/json" },
-    body: JSON.stringify({ merchantId: merchant.id, amountMinor, currency: "USD", idempotencyKey: "00000000-0000-4000-8000-000000000001" }),
+    body: JSON.stringify({ merchantId: merchant.id, amountMinor, currency: "USD", idempotencyKey: "00000000-0000-4000-8000-000000000001", twoFactorCode: "123456" }),
   });
 }
 
@@ -98,7 +99,7 @@ describe("ORBIT Payment transfer route", () => {
   it("lets an owner explicitly switch the brand to on-demand transfers", async () => {
     mocks.session.mockResolvedValue({ role: "OWNER", user: { id: "owner_1" }, organization: { id: "org_1" } });
     const { PATCH } = await import("@/app/api/portal/payouts/route");
-    const response = await PATCH(new Request("https://orbit.example/api/portal/payouts", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ merchantId: merchant.id }) }) as never);
+    const response = await PATCH(new Request("https://orbit.example/api/portal/payouts", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ merchantId: merchant.id, twoFactorCode: "123456" }) }) as never);
     expect(response.status).toBe(200);
     expect(mocks.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ payments: { payouts: { schedule: { interval: "manual" } } } }), { stripeContext: "acct_1" });
   });

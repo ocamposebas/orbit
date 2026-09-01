@@ -9,7 +9,7 @@ import type { PortalPayoutDestination } from "@/merchant-portal/data";
 
 type TransferResult = { id: string; amountMinor: number; currency: string; status: string; arrivalDate: number };
 
-export function WithdrawalCard({ merchantId, availableMinor, currency, canInitiate, balanceAvailable, administrator, payoutSchedule, destination }: { merchantId: string; availableMinor: number | null; currency: string; canInitiate: boolean; balanceAvailable: boolean; administrator: boolean; payoutSchedule: string | null; destination: PortalPayoutDestination | null }) {
+export function WithdrawalCard({ merchantId, availableMinor, currency, canInitiate, balanceAvailable, administrator, payoutSchedule, destination, twoFactorEnabled }: { merchantId: string; availableMinor: number | null; currency: string; canInitiate: boolean; balanceAvailable: boolean; administrator: boolean; payoutSchedule: string | null; destination: PortalPayoutDestination | null; twoFactorEnabled: boolean }) {
   const router = useRouter();
   const [amount, setAmount] = useState(availableMinor !== null && availableMinor > 0 ? (availableMinor / 100).toFixed(2) : "");
   const [confirming, setConfirming] = useState(false);
@@ -19,6 +19,7 @@ export function WithdrawalCard({ merchantId, availableMinor, currency, canInitia
   const [activeSchedule, setActiveSchedule] = useState(payoutSchedule);
   const [error, setError] = useState("");
   const [result, setResult] = useState<TransferResult | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState("");
   const requestKey = useRef<string | null>(null);
   const amountMinor = useMemo(() => {
     if (!/^\d+(?:\.\d{1,2})?$/.test(amount.trim())) return 0;
@@ -28,28 +29,32 @@ export function WithdrawalCard({ merchantId, availableMinor, currency, canInitia
 
   async function submit() {
     if (!valid || submitting) return;
+    if (!twoFactorEnabled) { router.push("/dashboard/settings"); return; }
+    if (!/^\d{6}$/.test(twoFactorCode)) { setError("A valid 6-digit authenticator code is required."); return; }
     setSubmitting(true); setError("");
     try {
       requestKey.current ??= crypto.randomUUID();
       const response = await fetch("/api/portal/payouts", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ merchantId, amountMinor, currency, idempotencyKey: requestKey.current }),
+        body: JSON.stringify({ merchantId, amountMinor, currency, idempotencyKey: requestKey.current, twoFactorCode }),
       });
       const body = await response.json() as { transfer?: TransferResult; error?: string };
       if (!response.ok || !body.transfer) throw new Error(body.error ?? "Unable to create transfer");
-      setResult(body.transfer); requestKey.current = null; setConfirming(false); router.refresh();
+      setResult(body.transfer); requestKey.current = null; setConfirming(false); setTwoFactorCode(""); router.refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to create transfer"); }
     finally { setSubmitting(false); }
   }
 
   async function enableOnDemandTransfers() {
+    if (!twoFactorEnabled) { router.push("/dashboard/settings"); return; }
+    if (!/^\d{6}$/.test(twoFactorCode)) { setError("A valid 6-digit authenticator code is required."); return; }
     setEnabling(true); setError("");
     try {
-      const response = await fetch("/api/portal/payouts", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ merchantId }) });
+      const response = await fetch("/api/portal/payouts", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ merchantId, twoFactorCode }) });
       const body = await response.json() as { enabled?: boolean; error?: string };
       if (!response.ok || !body.enabled) throw new Error(body.error ?? "Unable to enable on-demand transfers");
-      setActiveSchedule("manual"); setSetupConfirm(false); router.refresh();
+      setActiveSchedule("manual"); setSetupConfirm(false); setTwoFactorCode(""); router.refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to enable on-demand transfers"); }
     finally { setEnabling(false); }
   }
@@ -60,6 +65,7 @@ export function WithdrawalCard({ merchantId, availableMinor, currency, canInitia
     <div className="relative">
       <div className="flex items-start justify-between gap-4"><div><p className="flex items-center gap-2 text-[9px] font-semibold uppercase text-[#a99cff]"><Sparkles className="size-3" />ORBIT Payment</p><h2 className="mt-2 text-[21px] font-semibold text-white">Transfer your balance</h2><p className="mt-2 max-w-md text-[10px] leading-5 text-[#8d92a0]">Send available funds to the payout account connected to this brand.</p></div><span className="grid size-11 shrink-0 place-items-center rounded-2xl border border-[#8f7dff]/20 bg-[#8f7dff]/10 text-[#b2a7ff]"><Send className="size-4" /></span></div>
       <DestinationCard destination={destination} />
+      {canInitiate && !result && (twoFactorEnabled ? <label className="mt-4 block rounded-2xl border border-[#8f7dff]/15 bg-[#8f7dff]/[.045] p-4"><span className="flex items-center gap-2 text-[9px] font-medium text-[#bcb5f3]"><ShieldCheck className="size-3.5" />Authenticator confirmation</span><span className="mt-1 block text-[8px] leading-4 text-[#6f7581]">Required for schedule changes and every balance transfer.</span><input value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" aria-label="6-digit authenticator code" placeholder="000000" className="mt-3 h-10 w-full rounded-xl border border-white/[.09] bg-black/25 px-3 text-center text-[14px] tracking-[.3em] text-white outline-none focus:border-[#8f7dff]/50" /></label> : <div className="mt-4 rounded-2xl border border-[#e2bd68]/15 bg-[#e2bd68]/[.045] p-4"><p className="flex items-center gap-2 text-[9px] font-medium text-[#d6c08a]"><LockKeyhole className="size-3.5" />2FA required for money movement</p><Link href="/dashboard/settings" className="mt-3 inline-flex h-8 items-center rounded-lg bg-[#8f7dff] px-3 text-[8px] font-semibold text-white">Set up authenticator</Link></div>)}
       {result ? <div className="mt-5 rounded-2xl border border-[#58d6aa]/20 bg-[#58d6aa]/[.07] p-5"><div className="flex items-center gap-2 text-[11px] font-semibold text-[#81e2bf]"><CheckCircle2 className="size-4" />Transfer requested</div><p className="mt-3 text-[28px] font-semibold text-white">{formatMoney(result.amountMinor, result.currency)}</p><p className="mt-2 text-[9px] text-[#8d9c98]">ORBIT Payment is processing the transfer to your payout destination.</p><Link href={`/dashboard/payouts/${result.id}`} className="mt-4 inline-flex items-center gap-1.5 text-[9px] font-semibold text-[#a99cff]">View transfer <ArrowRight className="size-3" /></Link></div> : !balanceAvailable ? <TransferState icon={<AlertTriangle className="size-4" />} title="Live balance unavailable" detail="ORBIT Payment cannot validate a transferable amount right now. Refresh after the financial connection is available." tone="warning" /> : !canInitiate ? <TransferState icon={<LockKeyhole className="size-4" />} title="Read-only access" detail="Ask your ORBIT administrator to enable balance transfers for this brand." /> : activeSchedule !== "manual" ? <div className="mt-5 rounded-2xl border border-[#8f7dff]/20 bg-black/20 p-5"><div className="flex items-center gap-2 text-[10px] font-medium text-[#83d5b6]"><CheckCircle2 className="size-4" />Your transfer permission is active</div><div className="mt-3 flex items-start gap-2.5 rounded-xl border border-white/[.06] bg-white/[.02] p-3"><LockKeyhole className="mt-0.5 size-3.5 shrink-0 text-[#9b8cff]" /><div><p className="text-[9px] font-medium text-[#c9c5ff]">One administrator setup step remains</p><p className="mt-1 text-[8px] leading-4 text-[#737985]">This brand still uses automatic scheduled deposits. An ORBIT administrator must explicitly switch it to on-demand transfers before authorized users can send money.</p></div></div>{error && <p role="alert" className="mt-3 text-[9px] text-[#e69aae]">{error}</p>}{administrator ? setupConfirm ? <div className="mt-4 rounded-xl border border-[#e2bd68]/15 bg-[#e2bd68]/[.05] p-3"><p className="text-[9px] leading-4 text-[#c9b477]">Scheduled automatic deposits will stop. ORBIT administrators become responsible for sending available funds within the applicable holding period.</p><div className="mt-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setSetupConfirm(false)} className="h-9 rounded-lg border border-white/[.08] text-[8px] text-[#8f949f]">Keep scheduled</button><button type="button" disabled={enabling} onClick={() => void enableOnDemandTransfers()} className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-[#8f7dff] text-[8px] font-semibold text-white disabled:opacity-50">{enabling && <LoaderCircle className="size-3 animate-spin" />}Enable on-demand</button></div></div> : <button type="button" onClick={() => setSetupConfirm(true)} className="mt-4 h-10 w-full rounded-xl border border-[#8f7dff]/25 bg-[#8f7dff]/10 text-[9px] font-semibold text-[#c9c5ff]">Complete administrator setup</button> : <p className="mt-3 text-[8px] text-[#696f7a]">Your permission is ready. Ask an administrator to complete this brand&apos;s transfer setup.</p>}</div> : availableMinor === null || availableMinor <= 0 ? <TransferState icon={<AlertTriangle className="size-4" />} title={availableMinor !== null && availableMinor < 0 ? "Negative balance — transfers paused" : "No available balance to transfer"} detail={availableMinor !== null && availableMinor < 0 ? `${formatMoney(Math.abs(availableMinor), currency)} must be covered before a bank transfer can be created. Pending funds cannot be sent until they clear.` : "Pending funds cannot be transferred yet. This form will unlock automatically when funds become available."} tone="warning" /> : <>
         <div className="mt-6"><div className="flex items-center justify-between"><label htmlFor="transfer-amount" className="text-[9px] font-medium text-[#9ca0aa]">Transfer amount</label><button type="button" disabled={!availableMinor} onClick={() => { if (availableMinor) { setAmount((availableMinor / 100).toFixed(2)); requestKey.current = null; } }} className="text-[8px] font-semibold uppercase text-[#a99cff] disabled:opacity-40">Use full balance</button></div><div className="mt-2 flex h-14 items-center rounded-2xl border border-white/[.1] bg-black/25 px-4 focus-within:border-[#8f7dff]/50 focus-within:ring-4 focus-within:ring-[#7c5cff]/10"><span className="text-[11px] font-semibold text-[#777d89]">{currency.toUpperCase()}</span><input id="transfer-amount" inputMode="decimal" value={amount} onChange={(event) => { setAmount(event.target.value); requestKey.current = null; setConfirming(false); setError(""); }} className="min-w-0 flex-1 bg-transparent px-3 text-right text-[24px] font-semibold text-white outline-none" aria-describedby="transfer-available" /></div><p id="transfer-available" className="mt-2 text-right text-[9px] text-[#666c78]">Available {availableMinor === null ? "—" : formatMoney(availableMinor, currency)}</p></div>
         {error && <p role="alert" className="mt-4 rounded-xl border border-[#ff87a7]/20 bg-[#ff87a7]/[.06] px-3.5 py-3 text-[9px] leading-4 text-[#e69aae]">{error}</p>}

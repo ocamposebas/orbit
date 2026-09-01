@@ -5,5 +5,5 @@ import { redirect } from "next/navigation";
 export default async function ProfilePage() {
   const session = await currentSession();
   if (!session) redirect("/login?next=/sentinel/profile");
-  return <ProfileSecurity email={session.user.email} role={session.role} />;
+  return <ProfileSecurity email={session.user.email} role={session.role} twoFactorEnabled={Boolean(session.user.twoFactorEnabledAt)} />;
 }

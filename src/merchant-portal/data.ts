@@ -23,7 +23,7 @@ export function stripeFinancialIssue(error: unknown): StripeFinancialIssue {
   return "temporarily_unavailable";
 }
 
-function logStripeFinancialFailure(merchantId: string, surface: "balance" | "payouts" | "destination", error: unknown) {
+function logStripeFinancialFailure(merchantId: string, surface: "balance" | "payouts" | "destination" | "availability", error: unknown) {
   const value = error as { type?: string; code?: string; statusCode?: number };
   stripePortalLog.warn({ merchantId, surface, issue: stripeFinancialIssue(error), stripeErrorType: value?.type, stripeErrorCode: value?.code, stripeStatusCode: value?.statusCode }, "Stripe financial data request failed");
 }
@@ -48,6 +48,20 @@ export type PortalPayoutDestination = {
   defaultForCurrency: boolean;
   expires: string | null;
 };
+export type PortalAvailabilityDay = { availableOn: number; amountMinor: number; currency: string; transactionCount: number };
+
+export function pendingAvailabilityCalendar(transactions: Pick<Stripe.BalanceTransaction, "available_on" | "currency" | "net" | "status">[], currency?: string): PortalAvailabilityDay[] {
+  const grouped = new Map<string, PortalAvailabilityDay>();
+  for (const transaction of transactions) {
+    if (transaction.status !== "pending" || transaction.net <= 0 || (currency && transaction.currency.toLowerCase() !== currency.toLowerCase())) continue;
+    const key = `${transaction.available_on}:${transaction.currency}`;
+    const current = grouped.get(key) ?? { availableOn: transaction.available_on, amountMinor: 0, currency: transaction.currency.toUpperCase(), transactionCount: 0 };
+    current.amountMinor += transaction.net;
+    current.transactionCount += 1;
+    grouped.set(key, current);
+  }
+  return [...grouped.values()].sort((left, right) => left.availableOn - right.availableOn);
+}
 export type PortalPaymentSummary = {
   id: string;
   publicId: string;
@@ -446,6 +460,47 @@ export async function getAdminPortfolioOverview(merchants: PortfolioMerchant[]) 
   };
 }
 
+export type OrbitEarningsOverview = Awaited<ReturnType<typeof getOrbitEarningsOverview>>;
+
+export async function getOrbitEarningsOverview(merchants: PortfolioMerchant[]) {
+  const db = getDatabase();
+  const integrations = await db.stripeConnectIntegration.findMany({ where: { merchantId: { in: merchants.map((merchant) => merchant.id) } }, select: { merchantId: true, stripeAccountId: true } });
+  const merchantByAccount = new Map(integrations.map((integration) => [integration.stripeAccountId, integration.merchantId]));
+  const merchantName = new Map(merchants.map((merchant) => [merchant.id, merchant.businessName]));
+  const since = periodStart(365);
+  const fees: Array<{ id: string; created: number; currency: string; grossMinor: number; refundedMinor: number; netMinor: number; merchantId: string | null }> = [];
+  try {
+    const stripe = getStripeClient();
+    for await (const fee of stripe.applicationFees.list({ created: { gte: Math.floor(since.getTime() / 1000) }, limit: 100 })) {
+      const accountId = typeof fee.account === "string" ? fee.account : fee.account.id;
+      fees.push({ id: fee.id, created: fee.created, currency: fee.currency.toUpperCase(), grossMinor: fee.amount, refundedMinor: fee.amount_refunded, netMinor: fee.amount - fee.amount_refunded, merchantId: merchantByAccount.get(accountId) ?? null });
+      if (fees.length >= 5_000) break;
+    }
+  } catch (error) {
+    return { available: false as const, issue: stripeFinancialIssue(error), currency: "USD", periods: [], trend: [], brands: [], recent: [] };
+  }
+  const currency = fees[0]?.currency ?? "USD";
+  const values = fees.filter((fee) => fee.currency === currency);
+  const periods = [
+    { key: "today", label: "Today", days: 1 }, { key: "7d", label: "Last 7 days", days: 7 }, { key: "30d", label: "Last 30 days", days: 30 }, { key: "365d", label: "Last 12 months", days: 365 },
+  ].map((period) => {
+    const start = periodStart(period.days).getTime() / 1000;
+    const selected = values.filter((fee) => fee.created >= start);
+    return { ...period, grossMinor: selected.reduce((sum, fee) => sum + fee.grossMinor, 0), refundedMinor: selected.reduce((sum, fee) => sum + fee.refundedMinor, 0), netMinor: selected.reduce((sum, fee) => sum + fee.netMinor, 0), fees: selected.length };
+  });
+  const trend = Array.from({ length: 30 }, (_, index) => {
+    const date = periodStart(30 - index);
+    const key = dayKey(date);
+    const selected = values.filter((fee) => dayKey(new Date(fee.created * 1000)) === key);
+    return { date: key, netMinor: selected.reduce((sum, fee) => sum + fee.netMinor, 0) };
+  });
+  const brands = merchants.map((merchant) => {
+    const selected = values.filter((fee) => fee.merchantId === merchant.id && fee.created >= periodStart(30).getTime() / 1000);
+    return { merchantId: merchant.id, name: merchant.businessName, netMinor: selected.reduce((sum, fee) => sum + fee.netMinor, 0), grossMinor: selected.reduce((sum, fee) => sum + fee.grossMinor, 0), refundedMinor: selected.reduce((sum, fee) => sum + fee.refundedMinor, 0), fees: selected.length };
+  }).sort((left, right) => right.netMinor - left.netMinor);
+  return { available: true as const, issue: null, currency, periods, trend, brands, recent: values.slice(0, 20).map((fee) => ({ ...fee, merchantName: fee.merchantId ? merchantName.get(fee.merchantId) ?? "Unknown brand" : "Unassigned account" })) };
+}
+
 export type PortalPaymentRow = PortalPaymentSummary & {
   customerEmail: string | null;
   methodBrand: string | null;
@@ -794,16 +849,18 @@ export type PayoutListInput = { cursor?: string };
 export async function getMerchantPayouts(merchantId: string, input: PayoutListInput = {}) {
   const connection = await stripeMerchantConnection(merchantId);
   const processor = connection.processor;
-  if (!processor) return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, balanceAvailable: false, payoutsAvailable: false, balanceIssue: connection.issue, payoutsIssue: connection.issue, payoutSchedule: null, destination: null as PortalPayoutDestination | null, available: emptyBalance(), pending: emptyBalance() };
-  const [balanceResult, payoutsResult, settingsResult, destinationsResult] = await Promise.allSettled([
+  if (!processor) return { payouts: [] as PortalPayoutSummary[], availability: [] as PortalAvailabilityDay[], hasMore: false, nextCursor: null, processorAvailable: false, balanceAvailable: false, payoutsAvailable: false, availabilityAvailable: false, balanceIssue: connection.issue, payoutsIssue: connection.issue, availabilityIssue: connection.issue, payoutSchedule: null, destination: null as PortalPayoutDestination | null, available: emptyBalance(), pending: emptyBalance() };
+  const [balanceResult, payoutsResult, settingsResult, destinationsResult, availabilityResult] = await Promise.allSettled([
     processor.stripe.balance.retrieve({}, { stripeContext: processor.accountId }),
     processor.stripe.payouts.list({ limit: 20, ...(input.cursor ? { starting_after: input.cursor } : {}), expand: ["data.destination"] }, { stripeContext: processor.accountId }),
     processor.stripe.balanceSettings.retrieve({}, { stripeContext: processor.accountId }),
     processor.stripe.accounts.listExternalAccounts(processor.accountId, { limit: 10 }),
+    processor.stripe.balanceTransactions.list({ limit: 100 }, { stripeContext: processor.accountId }),
   ]);
   if (balanceResult.status === "rejected") logStripeFinancialFailure(merchantId, "balance", balanceResult.reason);
   if (payoutsResult.status === "rejected") logStripeFinancialFailure(merchantId, "payouts", payoutsResult.reason);
   if (destinationsResult.status === "rejected") logStripeFinancialFailure(merchantId, "destination", destinationsResult.reason);
+  if (availabilityResult.status === "rejected") logStripeFinancialFailure(merchantId, "availability", availabilityResult.reason);
   const balance = balanceResult.status === "fulfilled" ? balanceResult.value : null;
   const payouts = payoutsResult.status === "fulfilled" ? payoutsResult.value : null;
   const primaryCurrency = balance?.available[0]?.currency.toUpperCase();
@@ -811,13 +868,16 @@ export async function getMerchantPayouts(merchantId: string, input: PayoutListIn
   const payoutFallback = payouts?.data.map((payout) => payoutExternalAccount(payout.destination)).find((destination) => destination !== null) ?? null;
   return {
     payouts: payouts?.data.map(mapPayout) ?? [],
+    availability: availabilityResult.status === "fulfilled" ? pendingAvailabilityCalendar(availabilityResult.value.data, primaryCurrency) : [],
     hasMore: payouts?.has_more ?? false,
     nextCursor: payouts?.has_more ? payouts.data.at(-1)?.id ?? null : null,
     processorAvailable: Boolean(balance || payouts),
     balanceAvailable: Boolean(balance),
     payoutsAvailable: Boolean(payouts),
+    availabilityAvailable: availabilityResult.status === "fulfilled",
     balanceIssue: balanceResult.status === "rejected" ? stripeFinancialIssue(balanceResult.reason) : null,
     payoutsIssue: payoutsResult.status === "rejected" ? stripeFinancialIssue(payoutsResult.reason) : null,
+    availabilityIssue: availabilityResult.status === "rejected" ? stripeFinancialIssue(availabilityResult.reason) : null,
     payoutSchedule: settingsResult.status === "fulfilled" ? settingsResult.value.payments.payouts?.schedule?.interval ?? null : null,
     destination: selectPayoutDestination(externalAccounts, primaryCurrency) ?? (payoutFallback ? payoutDestinationSummary(payoutFallback) : null),
     available: balance ? balanceForCurrency(balance.available, primaryCurrency) : emptyBalance(),
