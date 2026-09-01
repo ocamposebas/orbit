@@ -442,12 +442,13 @@ model StripePaymentEvent {
 }
 
 model MerchantAccess {
-  id         String   @id @default(cuid())
-  userId     String
-  merchantId String
-  createdAt  DateTime @default(now())
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  id                 String   @id @default(cuid())
+  userId             String
+  merchantId         String
+  canInitiatePayouts Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  merchant           Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   @@unique([userId, merchantId])
   @@index([merchantId])

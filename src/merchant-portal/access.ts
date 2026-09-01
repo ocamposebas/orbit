@@ -19,6 +19,7 @@ export async function getPortalContext() {
       status: true,
       portalEnabled: true,
       portalEnabledAt: true,
+      accessGrants: { where: { userId: session.user.id }, select: { canInitiatePayouts: true } },
       agreement: { select: { status: true } },
       stripeConnect: {
         select: {
@@ -33,12 +34,16 @@ export async function getPortalContext() {
     },
   });
   const internalAccess = ["OWNER", "ADMIN", "ANALYST"].includes(session.role);
-  const availableMerchants = internalAccess ? merchants : merchants.filter((merchant) => merchant.portalEnabled && portalActivationEligibility({
+  const visibleMerchants = internalAccess ? merchants : merchants.filter((merchant) => merchant.portalEnabled && portalActivationEligibility({
     agreementStatus: merchant.agreement?.status,
     stripeDisplayStatus: merchant.stripeConnect?.displayStatus,
     cardPaymentsStatus: merchant.stripeConnect?.cardPaymentsStatus,
     payoutsStatus: merchant.stripeConnect?.payoutsStatus,
   }).eligible);
+  const availableMerchants = visibleMerchants.map((item) => ({
+    ...item,
+    canInitiatePayouts: ["OWNER", "ADMIN"].includes(session.role) || Boolean(item.accessGrants[0]?.canInitiatePayouts),
+  }));
   if (availableMerchants.length === 0 && session.role !== "OWNER" && !session.portalAllMerchants) redirect("/portal-access");
   const selectedMerchantId = (await cookies()).get("orbit_portal_merchant")?.value;
   const merchant = availableMerchants.find((item) => item.id === selectedMerchantId) ?? availableMerchants[0] ?? null;

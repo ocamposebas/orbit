@@ -15,7 +15,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
   const merchantNavigation = [
     { href: adminPortfolio ? "/dashboard?view=brand" : "/dashboard", label: "Overview", icon: LayoutDashboard },
     { href: adminPortfolio ? `/dashboard/payments?merchant=${encodeURIComponent(merchantId)}` : "/dashboard/payments", label: "Payments", icon: CreditCard },
-    { href: "/dashboard/payouts", label: "Payouts", icon: WalletCards },
+    { href: "/dashboard/payouts", label: "Transfers", icon: WalletCards },
     { href: "/dashboard/scans", label: "Scans", icon: ScanSearch },
   ];
 
@@ -37,7 +37,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
   return <div className="merchant-portal min-h-dvh bg-[#07080d] text-[#f0f1f4]">
     <aside className={cn("fixed inset-y-0 left-0 z-[70] flex w-[248px] flex-col border-r border-white/[.07] bg-[#090a10] transition-transform lg:translate-x-0", mobileOpen ? "translate-x-0" : "-translate-x-full")}>
       <div className="flex h-20 items-center border-b border-white/[.07] px-6">
-        <Link href="/dashboard" className="flex items-center gap-2.5" onClick={() => setMobileOpen(false)}><span className="grid size-8 place-items-center rounded-[10px] bg-[#111318] text-white shadow-sm"><span className="size-2.5 rounded-full border-[3px] border-[#8e7dff]" /></span><span className="text-[15px] font-semibold tracking-[-.035em]">ORBIT</span></Link>
+        <Link href="/dashboard" className="flex items-center gap-2.5" onClick={() => setMobileOpen(false)}><span className="grid size-9 place-items-center rounded-xl border border-[#8e7dff]/20 bg-[#8e7dff]/10 text-white shadow-[0_0_24px_rgba(124,92,255,.12)]"><span className="size-2.5 rounded-full border-[3px] border-[#9a8aff]" /></span><span><span className="block text-[14px] font-semibold">ORBIT</span><span className="block text-[7px] font-medium uppercase text-[#686e7a]">Payment</span></span></Link>
         <button onClick={() => setMobileOpen(false)} className="ml-auto grid size-8 place-items-center rounded-lg text-[#747982] lg:hidden" aria-label="Close navigation"><X className="size-4" /></button>
       </div>
       <div className="px-4 py-5">
@@ -58,7 +58,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
     <div className="lg:pl-[248px]">
       <header className="sticky top-0 z-50 flex h-16 items-center border-b border-white/[.07] bg-[#08090e]/90 px-4 backdrop-blur-xl sm:px-7 lg:px-10">
         <button onClick={() => setMobileOpen(true)} className="mr-3 grid size-9 place-items-center rounded-[10px] border border-white/[.08] bg-white/[.025] text-[#8b909b] lg:hidden" aria-label="Open navigation"><Menu className="size-4" /></button>
-        <div className="flex items-center gap-2 text-[11px] text-[#6c717d]"><ArrowLeftRight className="size-3.5 text-[#9182f0]" /><span>Live ORBIT data</span></div>
+        <div className="flex items-center gap-2 text-[11px] text-[#6c717d]"><ArrowLeftRight className="size-3.5 text-[#9182f0]" /><span>ORBIT Payment · Live</span><span className="size-1.5 rounded-full bg-[#65d1aa] shadow-[0_0_10px_rgba(101,209,170,.7)]" /></div>
         <button onClick={refresh} disabled={refreshing} className="ml-auto inline-flex h-9 items-center gap-2 rounded-[10px] border border-white/[.08] bg-white/[.025] px-3.5 text-[11px] font-medium text-[#a6aab3] transition hover:border-[#7868e8]/30 hover:bg-[#7868e8]/[.06] disabled:opacity-60"><RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />{refreshing ? "Refreshing" : "Refresh"}</button>
       </header>
       <main>{children}</main>

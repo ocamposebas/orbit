@@ -17,7 +17,7 @@ describe("Merchant Portal Stripe financial status", () => {
       balanceIssue: null,
       payoutsIssue: "permission",
       administrator: true,
-    })).toContain("Live balance is available, but payout history is unavailable");
+    })).toContain("Live balance is available, but transfer history is unavailable");
   });
 
   it("gives administrators a concrete restricted-key correction", () => {
@@ -27,7 +27,7 @@ describe("Merchant Portal Stripe financial status", () => {
       balanceIssue: "permission",
       payoutsIssue: "permission",
       administrator: true,
-    })).toContain("enable read permission for both resources");
+    })).toContain("Payouts write access");
   });
 
   it("keeps infrastructure details out of the customer message", () => {
@@ -38,7 +38,7 @@ describe("Merchant Portal Stripe financial status", () => {
       payoutsIssue: "authentication",
       administrator: false,
     });
-    expect(message).toContain("Verified ORBIT payments remain visible");
+    expect(message).toContain("Verified payments remain visible");
     expect(message).not.toContain("STRIPE_SECRET_KEY");
   });
 });

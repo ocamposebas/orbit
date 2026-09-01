@@ -729,10 +729,11 @@ export type PayoutListInput = { cursor?: string };
 export async function getMerchantPayouts(merchantId: string, input: PayoutListInput = {}) {
   const connection = await stripeMerchantConnection(merchantId);
   const processor = connection.processor;
-  if (!processor) return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, balanceAvailable: false, payoutsAvailable: false, balanceIssue: connection.issue, payoutsIssue: connection.issue, available: emptyBalance(), pending: emptyBalance() };
-  const [balanceResult, payoutsResult] = await Promise.allSettled([
+  if (!processor) return { payouts: [] as PortalPayoutSummary[], hasMore: false, nextCursor: null, processorAvailable: false, balanceAvailable: false, payoutsAvailable: false, balanceIssue: connection.issue, payoutsIssue: connection.issue, payoutSchedule: null, available: emptyBalance(), pending: emptyBalance() };
+  const [balanceResult, payoutsResult, settingsResult] = await Promise.allSettled([
     processor.stripe.balance.retrieve({}, { stripeContext: processor.accountId }),
     processor.stripe.payouts.list({ limit: 20, ...(input.cursor ? { starting_after: input.cursor } : {}), expand: ["data.destination"] }, { stripeContext: processor.accountId }),
+    processor.stripe.balanceSettings.retrieve({}, { stripeContext: processor.accountId }),
   ]);
   if (balanceResult.status === "rejected") logStripeFinancialFailure(merchantId, "balance", balanceResult.reason);
   if (payoutsResult.status === "rejected") logStripeFinancialFailure(merchantId, "payouts", payoutsResult.reason);
@@ -748,6 +749,7 @@ export async function getMerchantPayouts(merchantId: string, input: PayoutListIn
     payoutsAvailable: Boolean(payouts),
     balanceIssue: balanceResult.status === "rejected" ? stripeFinancialIssue(balanceResult.reason) : null,
     payoutsIssue: payoutsResult.status === "rejected" ? stripeFinancialIssue(payoutsResult.reason) : null,
+    payoutSchedule: settingsResult.status === "fulfilled" ? settingsResult.value.payments.payouts?.schedule?.interval ?? null : null,
     available: balance ? balanceForCurrency(balance.available, primaryCurrency) : emptyBalance(),
     pending: balance ? balanceForCurrency(balance.pending, primaryCurrency) : emptyBalance(),
   };
