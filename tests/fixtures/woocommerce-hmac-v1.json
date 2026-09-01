@@ -1,0 +1,12 @@
+{
+  "merchant_id": "mrc_fixture123456",
+  "installation_id": "ins_fixture123456",
+  "timestamp": 1788282000,
+  "nonce": "nonce_fixture_123456",
+  "method": "POST",
+  "path": "/wp-json/orbit-payments/v1/events",
+  "raw_body": "{\"id\":\"evt_fixture123456\",\"type\":\"payment.succeeded\",\"merchant_id\":\"mrc_fixture123456\",\"installation_id\":\"ins_fixture123456\",\"order_id\":5829,\"orbit_session_id\":\"ops_fixture123456\",\"orbit_payment_id\":\"pay_fixture123456\",\"amount_minor\":11902,\"currency\":\"USD\",\"occurred_at\":\"2026-09-01T17:00:00.000Z\"}",
+  "secret": "fixture-installation-secret",
+  "body_sha256": "ccc192e431061bc740b5269eb33cd37d96b7f19830083382695433bbbbe702c8",
+  "signature": "09b25f0fe331199e6268db0740cb808ea2d09eb4ecfee901924d1276df654cec"
+}

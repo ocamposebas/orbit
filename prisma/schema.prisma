@@ -77,37 +77,42 @@ model Membership {
 }
 
 model Merchant {
-  id                    String                       @id @default(cuid())
-  organizationId        String
-  businessName          String
-  slug                  String
-  industry              String
-  country               String
-  legalCountry          String?
-  platformFeeBps        Int?                         @default(300)
-  businessDescription   String
-  expectedMonthlyVolume String?
-  status                MerchantStatus               @default(ONBOARDING)
-  isDemo                Boolean                      @default(false)
-  createdAt             DateTime                     @default(now())
-  updatedAt             DateTime                     @updatedAt
-  alerts                Alert[]
-  auditLogs             AuditLog[]
-  findings              Finding[]
-  healthScores          HealthScore[]
-  aiFindings            AiFinding[]
-  aiScans               AiScan[]
-  accessGrants          MerchantAccess[]
-  agreement             MerchantAgreement?
-  organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sites                 MerchantSite[]
-  policies              Policy[]
-  paymentTransactions   PaymentTransaction[]
-  ecwidPaymentSessions  EcwidPaymentSession[]
-  products              Product[]
-  scans                 Scan[]
-  stripeConnect         StripeConnectIntegration?
-  wooCommerceRelay      WooCommerceRelayIntegration?
+  id                         String                       @id @default(cuid())
+  publicId                   String?                      @unique
+  organizationId             String
+  businessName               String
+  slug                       String
+  industry                   String
+  country                    String
+  legalCountry               String?
+  platformFeeBps             Int?                         @default(300)
+  businessDescription        String
+  expectedMonthlyVolume      String?
+  status                     MerchantStatus               @default(ONBOARDING)
+  isDemo                     Boolean                      @default(false)
+  createdAt                  DateTime                     @default(now())
+  updatedAt                  DateTime                     @updatedAt
+  alerts                     Alert[]
+  auditLogs                  AuditLog[]
+  findings                   Finding[]
+  healthScores               HealthScore[]
+  aiFindings                 AiFinding[]
+  aiScans                    AiScan[]
+  accessGrants               MerchantAccess[]
+  agreement                  MerchantAgreement?
+  organization               Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sites                      MerchantSite[]
+  policies                   Policy[]
+  paymentTransactions        PaymentTransaction[]
+  paymentSessions            PaymentSession[]
+  paymentEventDeliveries     PaymentEventDelivery[]
+  ecwidPaymentSessions       EcwidPaymentSession[]
+  products                   Product[]
+  scans                      Scan[]
+  stripeConnect              StripeConnectIntegration?
+  wooCommerceRelay           WooCommerceRelayIntegration?
+  wooCommerceInstallations   WooCommerceInstallation[]
+  wooCommerceConnectionCodes WooCommerceConnectionCode[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
@@ -248,6 +253,7 @@ model WooCommerceRelayIntegration {
 
 model PaymentTransaction {
   id                    String                   @id
+  publicPaymentId       String?                  @unique
   merchantId            String
   wooOrderId            String
   stripeAccountId       String
@@ -265,10 +271,121 @@ model PaymentTransaction {
   merchant              Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   paymentEvents         StripePaymentEvent[]
   ecwidSession          EcwidPaymentSession?
+  paymentSession        PaymentSession?
 
   @@unique([merchantId, wooOrderId])
   @@index([stripeAccountId, status])
   @@index([source, status])
+}
+
+model WooCommerceInstallation {
+  id                     String                             @id
+  merchantId             String
+  origin                 String
+  environment            WooCommerceInstallationEnvironment
+  encryptedSigningSecret String
+  enabled                Boolean                            @default(true)
+  hostedPaymentsEnabled  Boolean                            @default(true)
+  pluginVersion          String?
+  wooCommerceVersion     String?
+  wordPressVersion       String?
+  lastSeenAt             DateTime?
+  lastPaymentAt          DateTime?
+  revokedAt              DateTime?
+  createdAt              DateTime                           @default(now())
+  updatedAt              DateTime                           @updatedAt
+  merchant               Merchant                           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  connectionCodes        WooCommerceConnectionCode[]
+  nonces                 WooCommerceRequestNonce[]
+  paymentSessions        PaymentSession[]
+  eventDeliveries        PaymentEventDelivery[]
+
+  @@unique([origin, environment])
+  @@index([merchantId, enabled, revokedAt])
+  @@index([lastSeenAt])
+}
+
+model WooCommerceConnectionCode {
+  id             String                             @id
+  merchantId     String
+  codeHash       String                             @unique
+  environment    WooCommerceInstallationEnvironment
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  installationId String?
+  createdById    String
+  createdAt      DateTime                           @default(now())
+  merchant       Merchant                           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  installation   WooCommerceInstallation?           @relation(fields: [installationId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, expiresAt])
+  @@index([expiresAt, consumedAt])
+}
+
+model WooCommerceRequestNonce {
+  id             String                  @id @default(cuid())
+  installationId String
+  nonceHash      String
+  expiresAt      DateTime
+  createdAt      DateTime                @default(now())
+  installation   WooCommerceInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, nonceHash])
+  @@index([expiresAt])
+}
+
+model PaymentSession {
+  id                        String                             @id
+  merchantId                String
+  installationId            String
+  paymentTransactionId      String                             @unique
+  platform                  PaymentSessionPlatform             @default(WOOCOMMERCE)
+  environment               WooCommerceInstallationEnvironment
+  platformOrderId           String
+  idempotencyKey            String                             @unique
+  amountMinor               Int
+  currency                  String
+  status                    PaymentSessionStatus               @default(PENDING)
+  encryptedSuccessReturnUrl String
+  encryptedCancelReturnUrl  String
+  expiresAt                 DateTime
+  completedAt               DateTime?
+  metadata                  Json                               @default("{}")
+  createdAt                 DateTime                           @default(now())
+  updatedAt                 DateTime                           @updatedAt
+  merchant                  Merchant                           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  installation              WooCommerceInstallation            @relation(fields: [installationId], references: [id], onDelete: Restrict)
+  paymentTransaction        PaymentTransaction                 @relation(fields: [paymentTransactionId], references: [id], onDelete: Cascade)
+  eventDeliveries           PaymentEventDelivery[]
+
+  @@unique([platform, installationId, platformOrderId, environment])
+  @@index([merchantId, status, createdAt])
+  @@index([installationId, status, expiresAt])
+}
+
+model PaymentEventDelivery {
+  id               String                     @id
+  merchantId       String
+  installationId   String
+  paymentSessionId String
+  type             String
+  payload          Json
+  status           PaymentEventDeliveryStatus @default(PENDING)
+  attempts         Int                        @default(0)
+  nextAttemptAt    DateTime?
+  lastAttemptAt    DateTime?
+  lastHttpStatus   Int?
+  lastErrorCode    String?
+  deliveredAt      DateTime?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  merchant         Merchant                   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  installation     WooCommerceInstallation    @relation(fields: [installationId], references: [id], onDelete: Restrict)
+  paymentSession   PaymentSession             @relation(fields: [paymentSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentSessionId, type])
+  @@index([status, nextAttemptAt])
+  @@index([installationId, createdAt])
 }
 
 model EcwidPaymentSession {
@@ -1429,6 +1546,31 @@ enum WooCommerceRelayStatus {
   RELAY_UNAVAILABLE
   AUTH_NOT_TESTED
   ERROR
+}
+
+enum WooCommerceInstallationEnvironment {
+  LIVE
+  TEST
+}
+
+enum PaymentSessionPlatform {
+  WOOCOMMERCE
+  ECWID
+}
+
+enum PaymentSessionStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELED
+  EXPIRED
+}
+
+enum PaymentEventDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
 }
 
 enum WorkerType {

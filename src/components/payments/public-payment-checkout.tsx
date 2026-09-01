@@ -7,9 +7,11 @@ import { loadStripe, type StripeElementsOptions } from "@stripe/stripe-js";
 import { Check, LockKeyhole, ShieldCheck } from "lucide-react";
 import styles from "./public-payment-checkout.module.css";
 
-type PublicSession = {
+export type PublicSession = {
   id: string;
+  platform?: "ECWID" | "WOOCOMMERCE";
   merchantName: string;
+  orderReference?: string;
   amountMinor: number;
   currency: string;
   email: string | null;
@@ -17,6 +19,8 @@ type PublicSession = {
   syncStatus: string;
   checkoutMode: "STRIPE_CHECKOUT" | "ORBIT_HOSTED";
   expired: boolean;
+  disabled?: boolean;
+  returnReady?: boolean;
 };
 
 type CheckoutConfiguration = {
@@ -31,20 +35,21 @@ function money(amountMinor: number, currency: string) {
   return formatter.format(amountMinor / 10 ** exponent);
 }
 
-function Completion({ sessionId, message }: { sessionId: string; message: string }) {
+function Completion({ session }: { session: PublicSession }) {
   const router = useRouter();
   useEffect(() => {
     const poll = window.setInterval(async () => {
-      const response = await fetch(`/api/integrations/ecwid/sessions/${encodeURIComponent(sessionId)}/status`, { cache: "no-store" });
+      const response = await fetch(`/api/payment-sessions/${encodeURIComponent(session.id)}/status`, { cache: "no-store" });
       if (!response.ok) return;
-      const status = await response.json() as { paymentStatus?: string; syncStatus?: string };
-      if (status.syncStatus === "PAID_SYNCED" || status.syncStatus === "INCOMPLETE_SYNCED") {
-        router.push(`/api/integrations/ecwid/return/${encodeURIComponent(sessionId)}`);
+      const status = await response.json() as { paymentStatus?: string; syncStatus?: string; returnReady?: boolean };
+      if (status.returnReady || status.syncStatus === "PAID_SYNCED" || status.syncStatus === "INCOMPLETE_SYNCED") {
+        router.push(`/api/payment-sessions/${encodeURIComponent(session.id)}/return`);
       }
     }, 2_500);
     return () => window.clearInterval(poll);
-  }, [router, sessionId]);
-  return <div className={styles.completion}><span className={styles.spinner} /><h2>{message}</h2><p>Please keep this page open while we confirm the order.</p></div>;
+  }, [router, session.id]);
+  const paymentReceived = session.platform === "WOOCOMMERCE" && session.paymentStatus === "SUCCEEDED";
+  return <div className={styles.completion}><span className={styles.spinner} /><h2>{paymentReceived ? "Payment received" : "Confirming your order"}</h2><p>{paymentReceived ? "Your store confirmation is still processing. ORBIT will keep retrying securely; you will not be charged again." : "Please keep this page open while we confirm the order."}</p>{paymentReceived ? <a className={styles.cancelLink} href={`/api/payment-sessions/${encodeURIComponent(session.id)}/return?continue=1`}>Return to store while confirmation continues</a> : null}</div>;
 }
 
 function PaymentForm({ session }: { session: PublicSession }) {
@@ -60,7 +65,7 @@ function PaymentForm({ session }: { session: PublicSession }) {
     setMessage(null);
     const result = await stripe.confirmPayment({
       elements,
-      confirmParams: { return_url: `${window.location.origin}/api/integrations/ecwid/return/${encodeURIComponent(session.id)}` },
+      confirmParams: { return_url: `${window.location.origin}/api/payment-sessions/${encodeURIComponent(session.id)}/return` },
       redirect: "if_required",
     });
     if (result.error) {
@@ -68,7 +73,7 @@ function PaymentForm({ session }: { session: PublicSession }) {
       setBusy(false);
       return;
     }
-    router.push(`/api/integrations/ecwid/return/${encodeURIComponent(session.id)}`);
+    router.push(`/api/payment-sessions/${encodeURIComponent(session.id)}/return`);
   }, [busy, elements, router, session.id, stripe]);
 
   return <>
@@ -90,13 +95,13 @@ function PaymentForm({ session }: { session: PublicSession }) {
 export function PublicPaymentCheckout({ session }: { session: PublicSession }) {
   const completed = session.checkoutMode === "STRIPE_CHECKOUT" || session.paymentStatus === "SUCCEEDED" || session.syncStatus.endsWith("SYNC_PENDING") || session.syncStatus === "PAID_SYNCED";
   const [configuration, setConfiguration] = useState<CheckoutConfiguration | null>(null);
-  const [loading, setLoading] = useState(!session.expired && !completed);
+  const [loading, setLoading] = useState(!session.expired && !session.disabled && !completed);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (session.expired || completed) return;
+    if (session.expired || session.disabled || completed) return;
     let active = true;
-    void fetch(`/api/integrations/ecwid/sessions/${encodeURIComponent(session.id)}/checkout`, {
+    void fetch(`/api/payment-sessions/${encodeURIComponent(session.id)}/checkout`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", cache: "no-store",
     }).then(async (response) => {
       const body = await response.json().catch(() => ({})) as CheckoutConfiguration & { error?: string };
@@ -106,7 +111,7 @@ export function PublicPaymentCheckout({ session }: { session: PublicSession }) {
       if (active) setError(reason instanceof Error ? reason.message : "The secure payment service is temporarily unavailable.");
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [completed, session.expired, session.id]);
+  }, [completed, session.disabled, session.expired, session.id]);
 
   const stripePromise = useMemo(() => configuration
     ? loadStripe(configuration.publishableKey, { stripeAccount: configuration.connectedAccountId })
@@ -127,7 +132,7 @@ export function PublicPaymentCheckout({ session }: { session: PublicSession }) {
         <div className={styles.brand}><span className={styles.brandMark}>{session.merchantName.slice(0, 1).toUpperCase()}</span><span>{session.merchantName}</span></div>
         <div className={styles.orderLabel}>Secure checkout</div>
         <h1>{money(session.amountMinor, session.currency)}</h1>
-        <p className={styles.orderReference}>Complete your order with {session.merchantName}.</p>
+        <p className={styles.orderReference}>{session.orderReference ? `Order ${session.orderReference} · ` : ""}Complete your order with {session.merchantName}.</p>
         <div className={styles.total}><span>Total</span><strong>{money(session.amountMinor, session.currency)}</strong></div>
         <div className={styles.trustList}>
           <span><ShieldCheck size={17} /> Protected payment</span>
@@ -138,10 +143,12 @@ export function PublicPaymentCheckout({ session }: { session: PublicSession }) {
       <div className={styles.payment}>
         <header><div className={styles.secure}><LockKeyhole size={15} /> Secure payment</div><h2>Choose how to pay</h2><p>Eligible wallets appear automatically for your device.</p></header>
         {session.expired ? <div className={styles.error} role="alert">This payment session has expired. Return to the store and start checkout again.</div> : null}
-        {completed ? <Completion sessionId={session.id} message="Confirming your order" /> : null}
+        {session.disabled ? <div className={styles.error} role="alert">This store connection is no longer able to accept new payments.</div> : null}
+        {completed ? <Completion session={session} /> : null}
         {!completed && loading ? <div className={styles.loading}><span className={styles.spinner} />Preparing secure payment…</div> : null}
         {!completed && error ? <div className={styles.error} role="alert">{error}</div> : null}
         {!completed && stripePromise && elementsOptions ? <Elements stripe={stripePromise} options={elementsOptions}><PaymentForm session={session} /></Elements> : null}
+        {!completed && session.platform === "WOOCOMMERCE" ? <a className={styles.cancelLink} href={`/api/payment-sessions/${encodeURIComponent(session.id)}/cancel`}>Cancel and return to store</a> : null}
         <footer>Powered by <strong>ORBIT</strong> · Payments secured by Stripe</footer>
       </div>
     </section>

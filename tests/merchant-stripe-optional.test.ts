@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ merchantFind: vi.fn(), stripeFind: vi.fn(), relayFind: vi.fn(), warn: vi.fn() }));
+const mocks = vi.hoisted(() => ({ merchantFind: vi.fn(), stripeFind: vi.fn(), relayFind: vi.fn(), installationFindMany: vi.fn(), warn: vi.fn() }));
 
-vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({ merchant: { findFirst: mocks.merchantFind }, stripeConnectIntegration: { findUnique: mocks.stripeFind }, wooCommerceRelayIntegration: { findUnique: mocks.relayFind } }) }));
+vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({ merchant: { findFirst: mocks.merchantFind }, stripeConnectIntegration: { findUnique: mocks.stripeFind }, wooCommerceRelayIntegration: { findUnique: mocks.relayFind }, wooCommerceInstallation: { findMany: mocks.installationFindMany } }) }));
 vi.mock("@/sentinel/logger", () => ({ childLogger: () => ({ warn: mocks.warn }) }));
 vi.mock("@/sentinel/http", () => {
   class HttpError extends Error { constructor(readonly status: number, message: string) { super(message); } }
@@ -19,6 +19,7 @@ describe("optional Stripe schema on the merchant dashboard", () => {
     mocks.merchantFind.mockResolvedValue({ id: "merchant_1", organizationId: "org_1", businessName: "Merchant" });
     mocks.stripeFind.mockResolvedValue(null);
     mocks.relayFind.mockResolvedValue(null);
+    mocks.installationFindMany.mockResolvedValue([]);
   });
 
   it.each(["P2021", "P2022"])("keeps Sentinel available when Prisma reports %s for the Relay table", async (code) => {

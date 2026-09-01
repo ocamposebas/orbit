@@ -95,6 +95,8 @@ Shared ORBIT configuration also includes `DATABASE_URL`, `REDIS_URL`, `APP_URL`,
 
 The optional, disabled-by-default private Ecwid payment adapter and custom payment-domain routing are documented in [`docs/ecwid-private-payments.md`](docs/ecwid-private-payments.md).
 
+The installation-based hosted WooCommerce payment flow is documented in [`docs/woocommerce-hosted-payments.md`](docs/woocommerce-hosted-payments.md).
+
 ## API and scheduling
 
 - `POST /api/ai-scanner/scans` — start or return the active merchant audit;

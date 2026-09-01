@@ -1,4 +1,5 @@
 import { completeWooCommerceOrderPayment } from "@/commerce/woocommerce/service";
+import { reconcileWooCommercePaymentEvents } from "@/commerce/woocommerce/events";
 import { getDatabase } from "@/sentinel/db";
 import { childLogger } from "@/sentinel/logger";
 
@@ -12,6 +13,7 @@ export async function reconcileSucceededWooPayments(limit = 50) {
       status: "SUCCEEDED",
       wooCompletedAt: null,
       stripePaymentIntentId: { not: null },
+      paymentSession: { is: null },
     },
     orderBy: { updatedAt: "asc" },
     take: Math.min(Math.max(limit, 1), 100),
@@ -44,3 +46,5 @@ export async function reconcileSucceededWooPayments(limit = 50) {
 
   return { inspected: transactions.length, completed, failed };
 }
+
+export { reconcileWooCommercePaymentEvents };

@@ -5,6 +5,7 @@ import { childLogger } from "@/sentinel/logger";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { updateMerchantLegalCountrySchema } from "@/sentinel/services/merchants";
 import { safeRelayIntegration } from "@/commerce/woocommerce/service";
+import { safeWooCommerceInstallation } from "@/commerce/woocommerce/installations";
 import { agreementAdminState } from "@/contracts/service";
 import { deriveAiPolicyCoverage } from "@/ai-scanner/policy-coverage";
 
@@ -56,6 +57,24 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       wooCommerceRelayAvailable = false;
       log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "WooCommerce Relay schema is not deployed; serving merchant without the optional integration");
     }
+    let wooCommerceInstallations: Array<ReturnType<typeof safeWooCommerceInstallation> & { lastEventStatus: string | null; lastEventAt: Date | null }> = [];
+    let wooCommercePaymentsAvailable = true;
+    try {
+      const installations = await db.wooCommerceInstallation.findMany({
+        where: { merchantId },
+        orderBy: { createdAt: "desc" },
+        include: { eventDeliveries: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, createdAt: true } } },
+      });
+      wooCommerceInstallations = installations.map((installation) => ({
+        ...safeWooCommerceInstallation(installation),
+        lastEventStatus: installation.eventDeliveries[0]?.status ?? null,
+        lastEventAt: installation.eventDeliveries[0]?.createdAt ?? null,
+      }));
+    } catch (error) {
+      if (!isMissingOptionalIntegrationSchema(error)) throw error;
+      wooCommercePaymentsAvailable = false;
+      log.warn({ merchantId, errorCode: String((error as { code: unknown }).code) }, "WooCommerce hosted payments schema is not deployed; serving merchant without the optional integration");
+    }
     const { aiScans: returnedAiScans, aiFindings: returnedAiFindings, ...merchantBase } = merchant;
     const aiScans = returnedAiScans ?? [];
     const aiFindings = returnedAiFindings ?? [];
@@ -72,7 +91,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const scoreBreakdown = latest?.scoreBreakdown as { deductions?: unknown[] } | null;
     const healthScores = latest?.score === null || latest?.score === undefined ? [] : [{ total: latest.score, createdAt: latest.createdAt, components: [{ key: "AI_SCANNER_RISK", label: "Validated Luna findings", score: latest.score, deductions: scoreBreakdown?.deductions ?? [] }] }];
     const products = (latest?.products ?? []).map((product) => ({ ...product, currentPrice: product.price, claims: [], lastSeenAt: product.createdAt, snapshots: [] }));
-    return NextResponse.json({ merchant: { ...merchantBase, scans, healthScores, findings, products, policies, stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable } });
+    return NextResponse.json({ merchant: { ...merchantBase, scans, healthScores, findings, products, policies, stripeConnect, stripeConnectAvailable, wooCommerceRelay, wooCommerceRelayAvailable, wooCommerceInstallations, wooCommercePaymentsAvailable } });
   } catch (error) { return apiError(error); }
 }
 

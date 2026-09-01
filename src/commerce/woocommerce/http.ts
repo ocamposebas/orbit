@@ -17,3 +17,8 @@ export function relayApiError(error: unknown) {
   log.error({ errorName: String(value?.name ?? "Error").slice(0, 80), errorCode: String(value?.code ?? "UNKNOWN").slice(0, 80) }, "WooCommerce Relay request failed");
   return NextResponse.json({ error: "Unexpected server error", code: "UNKNOWN" }, { status: 500, headers: { "Cache-Control": "no-store, private" } });
 }
+
+export function parseWooCommerceJson(rawBody: string) {
+  try { return JSON.parse(rawBody || "{}"); }
+  catch { throw new HttpError(400, "Invalid JSON request body"); }
+}

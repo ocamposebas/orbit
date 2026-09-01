@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { reconcileSucceededWooPayments } from "@/payments/reconcile";
+import { reconcileSucceededWooPayments, reconcileWooCommercePaymentEvents } from "@/payments/reconcile";
 import { getServerEnv } from "@/sentinel/config";
 import { apiError } from "@/sentinel/http";
 
@@ -11,8 +11,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
   }
   try {
-    const result = await reconcileSucceededWooPayments();
-    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+    const [legacyWooCommerce, wooCommerceEvents] = await Promise.all([reconcileSucceededWooPayments(), reconcileWooCommercePaymentEvents()]);
+    return NextResponse.json({ legacyWooCommerce, wooCommerceEvents }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return apiError(error);
   }

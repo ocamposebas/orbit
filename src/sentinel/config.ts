@@ -5,6 +5,7 @@ const int = (fallback: number) => z.coerce.number().int().positive().default(fal
 const nonNegativeInt = (fallback: number) => z.coerce.number().int().min(0).default(fallback);
 const nonNegative = (fallback: number) => z.coerce.number().min(0).default(fallback);
 const optionalNonEmpty = z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().trim().min(1).optional());
+const optionalUrl = z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().url().optional());
 const appUrl = z.string().trim().min(1).default("http://localhost:3000").superRefine((value, context) => {
   try {
     parseAppUrlConfiguration(value);
@@ -43,6 +44,7 @@ const serverEnvSchema = z.object({
   SCREENSHOT_STORAGE: z.string().default("./storage/evidence"),
   INTERNAL_JOB_SECRET: z.string().default("development-only"),
   ORBIT_SECRET_ENCRYPTION_KEY: optionalNonEmpty,
+  ORBIT_PAYMENTS_PUBLIC_ORIGIN: optionalUrl,
   ORBIT_DEMO_MODE: z.enum(["true", "false"]).default(process.env.NODE_ENV === "production" ? "false" : "true").transform((value) => value === "true"),
   SESSION_TTL_DAYS: int(14),
   SEED_ADMIN_EMAIL: z.string().email().default("admin@orbit.local"),

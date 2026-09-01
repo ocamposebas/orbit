@@ -23,6 +23,8 @@
 .payButton { width: 100%; min-height: 54px; margin-top: 26px; border: 0; border-radius: 11px; background: linear-gradient(105deg, #ba2434, #ea4354); color: #fff; font-size: 14px; font-weight: 750; cursor: pointer; box-shadow: 0 12px 32px rgba(207,38,55,.24); transition: transform .15s, filter .15s; }
 .payButton:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
 .payButton:disabled { cursor: wait; opacity: .62; }
+.cancelLink { display: block; margin-top: 18px; text-align: center; color: #898c94; font-size: 11px; text-decoration: none; }
+.cancelLink:hover { color: #c9cbd0; }
 .error { margin: 20px 0; padding: 14px 15px; border: 1px solid rgba(240,72,89,.34); border-radius: 10px; background: rgba(213,42,59,.1); color: #ff9aa4; font-size: 13px; line-height: 1.45; }
 .loading, .completion { min-height: 250px; display: flex; align-items: center; justify-content: center; gap: 12px; color: #a6a8af; font-size: 13px; }
 .completion { flex-direction: column; text-align: center; }

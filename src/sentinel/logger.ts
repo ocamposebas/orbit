@@ -10,15 +10,16 @@ function truncate(value: string, maximumLength: number) {
 }
 
 export function sanitizeLogText(value: string, maximumLength = MAX_ERROR_MESSAGE_LENGTH) {
-  const configuredSecrets = [process.env.OPENAI_API_KEY, process.env.ECWID_CLIENT_SECRET, process.env.ECWID_SECRET_TOKEN]
+  const configuredSecrets = [process.env.OPENAI_API_KEY, process.env.ECWID_CLIENT_SECRET, process.env.ECWID_SECRET_TOKEN, process.env.ORBIT_SECRET_ENCRYPTION_KEY]
     .filter((secret): secret is string => Boolean(secret));
   const withoutConfiguredSecrets = configuredSecrets.reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
   return truncate(withoutConfiguredSecrets, maximumLength)
     .replace(/\bBearer\s+[^\s"'`,;]+/gi, "Bearer [REDACTED]")
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
+    .replace(/\borb_(?:test|live)_[A-Za-z0-9_-]{16,}\b/g, "[REDACTED]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
     .replace(
-      /\b(authorization|cookies?|tokens?|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?keys?|client[_-]?secret|secrets?|passwords?)\b\s*[:=]\s*([^\s,;]+)/gi,
+      /\b(authorization|cookies?|tokens?|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?keys?|client[_-]?secret|installation[_-]?secret|signing[_-]?secret|secrets?|passwords?)\b\s*[:=]\s*([^\s,;]+)/gi,
       "$1=[REDACTED]",
     );
 }
@@ -46,7 +47,7 @@ export const logger = pino({
     error: serializeErrorForLog,
     err: serializeErrorForLog,
   },
-  redact: ["req.headers.authorization", "OPENAI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "ECWID_CLIENT_SECRET", "ECWID_SECRET_TOKEN", "enc_data", "returnUrl", "clientSecret", "password", "encryptedConfig", "secret", "signature"],
+  redact: ["req.headers.authorization", "OPENAI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "ECWID_CLIENT_SECRET", "ECWID_SECRET_TOKEN", "ORBIT_SECRET_ENCRYPTION_KEY", "enc_data", "returnUrl", "clientSecret", "installationSecret", "installation_secret", "password", "encryptedConfig", "secret", "signature"],
 });
 
 export function childLogger(context: Record<string, string | number | undefined>) {

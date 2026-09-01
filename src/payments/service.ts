@@ -143,7 +143,10 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
   const db = getDatabase();
   const transaction = await db.paymentTransaction.findFirst({
     where: { id: orbitTransactionId, merchantId },
-    include: { merchant: { select: { stripeConnect: { select: { stripeAccountId: true, stripeEnvironment: true, displayStatus: true, cardPaymentsStatus: true } } } } },
+    include: {
+      merchant: { select: { stripeConnect: { select: { stripeAccountId: true, stripeEnvironment: true, displayStatus: true, cardPaymentsStatus: true } } } },
+      paymentSession: { select: { id: true, installationId: true, platformOrderId: true } },
+    },
   });
   if (!transaction) throw new HttpError(404, "ORBIT transaction not found");
   if (expectedSource && transaction.source !== expectedSource) throw new HttpError(404, "ORBIT transaction not found");
@@ -171,9 +174,15 @@ async function ensureStripePaymentIntent(merchantId: string, orbitTransactionId:
           payment_method_configuration: configurationId,
           metadata: {
             orbitTransactionId: transaction.id,
-            wooOrderId: transaction.wooOrderId,
+            ...(transaction.publicPaymentId ? { orbitPaymentId: transaction.publicPaymentId } : {}),
+            wooOrderId: transaction.paymentSession?.platformOrderId ?? transaction.wooOrderId,
             merchantId: transaction.merchantId,
             paymentSource: transaction.source,
+            ...(transaction.paymentSession ? {
+              installationId: transaction.paymentSession.installationId,
+              orbitSessionId: transaction.paymentSession.id,
+              transactionReference: transaction.wooOrderId,
+            } : {}),
           },
         }, { ...requestOptions, idempotencyKey: stripePaymentIntentIdempotencyKey(transaction.id, configurationId) });
 

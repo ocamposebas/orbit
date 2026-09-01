@@ -1,5 +1,6 @@
 import type Stripe from "stripe";
 import { completeWooCommerceOrderPayment } from "@/commerce/woocommerce/service";
+import { deliverWooCommercePaymentEvent, recordWooCommercePaymentSucceeded } from "@/commerce/woocommerce/events";
 import { syncEcwidForTransaction } from "@/integrations/ecwid/service";
 import { verifyEcwidCheckoutPaymentIntent } from "@/integrations/ecwid/stripe-checkout";
 import { getDatabase } from "@/sentinel/db";
@@ -71,6 +72,7 @@ function assertIntentMatchesTransaction(
     currency: string;
     platformFeeMinor: number;
   },
+  session?: { id: string; installationId: string; platformOrderId: string } | null,
 ) {
   if (transaction.stripePaymentIntentId !== intent.id) throw new Error("payment_intent_id_mismatch");
   if (transaction.stripeAccountId !== accountId) throw new Error("connected_account_mismatch");
@@ -79,7 +81,12 @@ function assertIntentMatchesTransaction(
   if (intent.application_fee_amount !== transaction.platformFeeMinor) throw new Error("application_fee_mismatch");
   if (intent.metadata.orbitTransactionId !== transaction.id) throw new Error("transaction_metadata_mismatch");
   if (intent.metadata.merchantId !== transaction.merchantId) throw new Error("merchant_metadata_mismatch");
-  if (intent.metadata.wooOrderId !== transaction.wooOrderId) throw new Error("order_metadata_mismatch");
+  if (intent.metadata.wooOrderId !== (session?.platformOrderId ?? transaction.wooOrderId)) throw new Error("order_metadata_mismatch");
+  if (session && (
+    intent.metadata.orbitSessionId !== session.id ||
+    intent.metadata.installationId !== session.installationId ||
+    intent.metadata.transactionReference !== transaction.wooOrderId
+  )) throw new Error("payment_session_metadata_mismatch");
 }
 
 async function updateNonSucceededStatus(transactionId: string, eventType: string) {
@@ -144,7 +151,10 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
       return { ignored: true };
     }
 
-    assertIntentMatchesTransaction(intent, accountId, transaction);
+    const hostedWooSession = transaction.source === "WOOCOMMERCE"
+      ? await db.paymentSession.findUnique({ where: { paymentTransactionId: transaction.id }, select: { id: true, installationId: true, platformOrderId: true } })
+      : null;
+    assertIntentMatchesTransaction(intent, accountId, transaction, hostedWooSession);
     await db.stripePaymentEvent.update({
       where: { id: eventRecord.id },
       data: { transactionId: transaction.id, stripeAccountId: accountId, stripePaymentIntentId: intent.id },
@@ -155,6 +165,9 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
       await db.paymentTransaction.update({ where: { id: transaction.id }, data: { status: "SUCCEEDED" } });
       if (transaction.source === "ECWID") {
         await syncEcwidForTransaction(transaction.id, "SUCCEEDED");
+      } else if (hostedWooSession) {
+        const delivery = await recordWooCommercePaymentSucceeded({ transactionId: transaction.id, stripePaymentIntentId: intent.id });
+        if (delivery) await deliverWooCommercePaymentEvent(delivery.id);
       } else if (!transaction.wooCompletedAt) {
         const wooOrderId = Number(transaction.wooOrderId);
         if (!Number.isSafeInteger(wooOrderId) || wooOrderId <= 0) throw new Error("invalid_woo_order_id");
@@ -166,6 +179,10 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
       }
     } else {
       await updateNonSucceededStatus(transaction.id, event.type);
+      if (hostedWooSession) {
+        const sessionStatus = event.type === "payment_intent.processing" ? "PROCESSING" : event.type === "payment_intent.canceled" ? "CANCELED" : "FAILED";
+        await db.paymentSession.updateMany({ where: { id: hostedWooSession.id, status: { not: "SUCCEEDED" } }, data: { status: sessionStatus } });
+      }
       if (transaction.source === "ECWID" && event.type === "payment_intent.canceled") {
         await syncEcwidForTransaction(transaction.id, "CANCELED");
       }
