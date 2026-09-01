@@ -6,5 +6,5 @@ export const metadata: Metadata = { title: "Merchant Portal", description: "Paym
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { session, merchant, merchants } = await getPortalContext();
-  return <PortalShell merchantName={merchant?.businessName ?? "No merchant assigned"} merchantId={merchant?.id ?? ""} merchants={merchants.map((item) => ({ id: item.id, businessName: item.businessName }))} userName={session.user.name ?? session.user.email}>{children}</PortalShell>;
+  return <PortalShell merchantName={merchant?.businessName ?? "No merchant assigned"} merchantId={merchant?.id ?? ""} merchants={merchants.map((item) => ({ id: item.id, businessName: item.businessName }))} userName={session.user.name ?? session.user.email} adminPortfolio={["OWNER", "ADMIN"].includes(session.role)}>{children}</PortalShell>;
 }

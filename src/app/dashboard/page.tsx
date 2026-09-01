@@ -1,12 +1,17 @@
 import Link from "next/link";
 import { ArrowRight, Building2, CalendarClock, ChevronRight, CircleDollarSign, CreditCard, Landmark, ShieldCheck } from "lucide-react";
 import { VolumeChart } from "@/components/merchant-portal/volume-chart";
+import { AdminPortfolio } from "@/components/merchant-portal/admin-portfolio";
 import { getPortalContext } from "@/merchant-portal/access";
-import { getMerchantOverview } from "@/merchant-portal/data";
+import { getAdminPortfolioOverview, getMerchantOverview } from "@/merchant-portal/data";
 import { formatMoney, formatPortalDate, formatPortalDateTime, paymentStatusLabel, payoutStatusLabel, relativeUpdatedAt } from "@/merchant-portal/format";
 
-export default async function DashboardPage() {
-  const { merchant } = await getPortalContext();
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ view?: string | string[] }> }) {
+  const [{ merchant, merchants, session }, query] = await Promise.all([getPortalContext(), searchParams]);
+  if (["OWNER", "ADMIN"].includes(session.role) && query.view !== "brand") {
+    const portfolio = await getAdminPortfolioOverview(merchants.map((item) => ({ id: item.id, businessName: item.businessName, portalEnabled: item.portalEnabled })));
+    return <AdminPortfolio portfolio={portfolio} />;
+  }
   if (!merchant) return <NoMerchant />;
   const overview = await getMerchantOverview(merchant.id);
   const currency = overview.volumeCurrency || overview.statistics.find((item) => item.currency)?.currency || "USD";
@@ -19,7 +24,7 @@ export default async function DashboardPage() {
   return <div className="mx-auto w-full max-w-[1480px] px-4 py-7 sm:px-7 lg:px-10 lg:py-10">
     <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-[10px] font-semibold uppercase tracking-[.14em] text-[#8e929a]">Financial overview</p><h1 className="mt-2 text-[28px] font-semibold tracking-[-.055em] text-[#181a1e] sm:text-[34px]">Good to see you.</h1><p className="mt-2 text-[12px] text-[#7d8189]">Your balances, sales and upcoming deposits in one place.</p></div><p className="text-[10px] text-[#9a9ea5]">Last updated {relativeUpdatedAt(overview.updatedAt)}</p></header>
 
-    {overview.processorState !== "live" && <div className="mt-6 flex items-start gap-3 rounded-xl border border-[#e2e0f3] bg-[#f4f2ff] px-4 py-3 text-[11px] leading-5 text-[#645d80]"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-[#7567d8]" /><p>{overview.processorState === "not_connected" ? "Connect Stripe to show live balances and payout details. Payment totals below continue to come from verified ORBIT records." : "Live balance and payout details are temporarily unavailable. Verified ORBIT payment totals remain visible."}</p></div>}
+    {overview.processorState !== "live" && <div className="mt-6 flex items-start gap-3 rounded-xl border border-[#e2e0f3] bg-[#f4f2ff] px-4 py-3 text-[11px] leading-5 text-[#645d80]"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-[#7567d8]" /><p>{overview.processorState === "not_connected" ? "Stripe is not connected yet. ORBIT can show verified sales, but balances and payout dates appear only after the account is connected." : "Stripe did not return live balances or payouts on this refresh. Verified ORBIT sales remain visible; refresh again after the Stripe account is fully enabled."}</p></div>}
 
     <section className="mt-7 grid gap-4 xl:grid-cols-[1.35fr_.9fr_.72fr]">
       <div className="relative overflow-hidden rounded-[24px] bg-[#191b21] p-6 text-white shadow-[0_20px_50px_rgba(26,28,36,.16)] sm:p-7"><div className="absolute -right-14 -top-20 size-60 rounded-full border border-white/[.08]" /><div className="absolute -right-2 -top-8 size-36 rounded-full border border-[#8574f3]/30" /><div className="relative"><div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[.14em] text-[#aeb1ba]"><CircleDollarSign className="size-3.5 text-[#9b8eff]" />Available balance</div><p className="mt-7 text-[40px] font-semibold tracking-[-.055em] tabular-nums sm:text-[48px]">{availableLabel}</p><p className="mt-2 text-[11px] text-[#a6a9b2]">{overview.available.amountMinor === null ? "Live balance unavailable" : "Ready for your next payout"}</p><div className="mt-8 flex items-center gap-2 border-t border-white/[.09] pt-4 text-[10px] text-[#969aa3]"><Landmark className="size-3.5" /><span>{overview.processorState === "live" ? "Funds verified by Stripe" : "Awaiting Stripe balance"}</span></div></div></div>

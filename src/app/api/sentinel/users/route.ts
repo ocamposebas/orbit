@@ -93,7 +93,6 @@ export async function PATCH(request: NextRequest) {
     if (!session) throw new HttpError(401, "Authentication is required");
     const input = updateMerchantAccessSchema.parse(await request.json());
     const merchantIds = [...new Set(input.merchantIds)];
-    if (!merchantIds.length) throw new HttpError(400, "Assign at least one merchant to this client account");
     const db = getDatabase();
     const [membership, validMerchantCount] = await Promise.all([
       db.membership.findUnique({ where: { organizationId_userId: { organizationId: organization.id, userId: input.userId } }, select: { role: true, user: { select: { id: true, email: true } } } }),
@@ -104,7 +103,7 @@ export async function PATCH(request: NextRequest) {
     if (validMerchantCount !== merchantIds.length) throw new HttpError(400, "One or more selected merchants are invalid");
     await db.$transaction(async (tx) => {
       await tx.merchantAccess.deleteMany({ where: { userId: input.userId, merchant: { organizationId: organization.id } } });
-      await tx.merchantAccess.createMany({ data: merchantIds.map((merchantId) => ({ userId: input.userId, merchantId })) });
+      if (merchantIds.length) await tx.merchantAccess.createMany({ data: merchantIds.map((merchantId) => ({ userId: input.userId, merchantId })) });
       await tx.auditLog.create({ data: {
         organizationId: organization.id,
         actorId: session.user.id,

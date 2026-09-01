@@ -229,6 +229,95 @@ export async function getMerchantOverview(merchantId: string) {
   };
 }
 
+export type PortfolioMerchant = { id: string; businessName: string; portalEnabled: boolean };
+
+export async function getAdminPortfolioOverview(merchants: PortfolioMerchant[]) {
+  const merchantIds = merchants.map((merchant) => merchant.id);
+  const [transactions, overviews] = await Promise.all([
+    getDatabase().paymentTransaction.findMany({
+      where: { merchantId: { in: merchantIds }, status: "SUCCEEDED", createdAt: { gte: periodStart(90) } },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        publicPaymentId: true,
+        merchantId: true,
+        wooOrderId: true,
+        amountMinor: true,
+        currency: true,
+        platformFeeMinor: true,
+        status: true,
+        source: true,
+        createdAt: true,
+      },
+    }),
+    Promise.all(merchants.map(async (merchant) => ({ merchant, overview: await getMerchantOverview(merchant.id) }))),
+  ]);
+  const merchantNames = new Map(merchants.map((merchant) => [merchant.id, merchant.businessName]));
+  const primaryCurrency = transactions[0]?.currency ?? overviews.map((item) => item.overview.available.currency).find(Boolean) ?? "USD";
+  const currencyTransactions = transactions.filter((transaction) => transaction.currency === primaryCurrency);
+  const periods = [
+    { key: "today" as const, label: "Today", days: 1 },
+    { key: "7d" as const, label: "Last 7 days", days: 7 },
+    { key: "30d" as const, label: "Last 30 days", days: 30 },
+    { key: "90d" as const, label: "Last 90 days", days: 90 },
+  ].map((period) => {
+    const values = currencyTransactions.filter((transaction) => transaction.createdAt >= periodStart(period.days));
+    return {
+      ...period,
+      grossMinor: values.reduce((sum, transaction) => sum + transaction.amountMinor, 0),
+      orbitRevenueMinor: values.reduce((sum, transaction) => sum + transaction.platformFeeMinor, 0),
+      payments: values.length,
+    };
+  });
+  const liveBalances = overviews.filter((item) => item.overview.processorState === "live");
+  const available = liveBalances.filter((item) => item.overview.available.amountMinor !== null && item.overview.available.currency === primaryCurrency).reduce((sum, item) => sum + (item.overview.available.amountMinor ?? 0), 0);
+  const pending = liveBalances.filter((item) => item.overview.pending.amountMinor !== null && item.overview.pending.currency === primaryCurrency).reduce((sum, item) => sum + (item.overview.pending.amountMinor ?? 0), 0);
+  const nextPayouts = overviews.flatMap((item) => item.overview.nextPayout && item.overview.nextPayout.currency === primaryCurrency ? [{ ...item.overview.nextPayout, merchantId: item.merchant.id, merchantName: item.merchant.businessName }] : []);
+  return {
+    currency: primaryCurrency,
+    periods,
+    available: { amountMinor: liveBalances.length ? available : null, currency: primaryCurrency },
+    pending: { amountMinor: liveBalances.length ? pending : null, currency: primaryCurrency },
+    nextPayoutTotalMinor: nextPayouts.reduce((sum, payout) => sum + payout.amountMinor, 0),
+    nextPayouts: nextPayouts.sort((left, right) => left.arrivalDate - right.arrivalDate),
+    liveMerchantCount: liveBalances.length,
+    brands: overviews.map(({ merchant, overview }) => {
+      const today = overview.statistics.find((statistic) => statistic.key === "today");
+      const thirtyDays = overview.statistics.find((statistic) => statistic.key === "30d");
+      const todayTransactions = currencyTransactions.filter((transaction) => transaction.merchantId === merchant.id && transaction.createdAt >= periodStart(1));
+      return {
+        ...merchant,
+        processorState: overview.processorState,
+        todayGrossMinor: today?.currency === primaryCurrency ? today.amountMinor : 0,
+        todayPayments: today?.payments ?? 0,
+        todayOrbitRevenueMinor: todayTransactions.reduce((sum, transaction) => sum + transaction.platformFeeMinor, 0),
+        thirtyDayGrossMinor: thirtyDays?.currency === primaryCurrency ? thirtyDays.amountMinor : 0,
+        available: overview.available,
+        pending: overview.pending,
+        nextPayout: overview.nextPayout,
+      };
+    }).sort((left, right) => right.todayGrossMinor - left.todayGrossMinor),
+    volume: volumeSeries(currencyTransactions.map((transaction) => ({
+      id: transaction.id,
+      publicId: transaction.publicPaymentId ?? transaction.id,
+      orderId: transaction.wooOrderId,
+      amountMinor: transaction.amountMinor,
+      currency: transaction.currency,
+      platformFeeMinor: transaction.platformFeeMinor,
+      status: transaction.status,
+      source: transaction.source,
+      createdAt: transaction.createdAt,
+    }))),
+    recentPayments: transactions.slice(0, 10).map((transaction) => ({
+      ...transaction,
+      publicId: transaction.publicPaymentId ?? transaction.id,
+      orderId: transaction.wooOrderId,
+      merchantName: merchantNames.get(transaction.merchantId) ?? "Merchant",
+    })),
+    updatedAt: new Date(),
+  };
+}
+
 export type PortalPaymentRow = PortalPaymentSummary & {
   customerEmail: string | null;
   methodBrand: string | null;
@@ -447,6 +536,58 @@ export async function getMerchantPayments(merchantId: string, input: PaymentList
     nextCursor: page.length && (!previous ? hasMore : Boolean(cursor)) ? encodeCursor(page.at(-1)!) : null,
     previousCursor: page.length && (previous ? hasMore : Boolean(cursor)) ? encodeCursor(page[0]) : null,
     processorAvailable: Boolean(processor),
+  };
+}
+
+export async function getAdminPayments(merchantIds: string[], input: PaymentListInput) {
+  const cursor = cursorValue(input.cursor);
+  const previous = input.direction === "prev";
+  const query = input.query?.trim().slice(0, 120);
+  const statuses = databaseStatuses(input.status);
+  const cursorCondition = cursor ? previous
+    ? { OR: [{ createdAt: { gt: cursor.date } }, { createdAt: cursor.date, id: { gt: cursor.id } }] }
+    : { OR: [{ createdAt: { lt: cursor.date } }, { createdAt: cursor.date, id: { lt: cursor.id } }] }
+    : null;
+  const searchCondition = query ? { OR: [
+    { id: { contains: query, mode: "insensitive" as const } },
+    { publicPaymentId: { contains: query, mode: "insensitive" as const } },
+    { wooOrderId: { contains: query, mode: "insensitive" as const } },
+    { stripePaymentIntentId: { contains: query, mode: "insensitive" as const } },
+    { merchant: { businessName: { contains: query, mode: "insensitive" as const } } },
+    { ecwidSession: { customerEmail: { contains: query, mode: "insensitive" as const } } },
+  ] } : null;
+  const transactions = await getDatabase().paymentTransaction.findMany({
+    where: {
+      merchantId: { in: merchantIds },
+      ...(statuses ? { status: { in: [...statuses] } } : {}),
+      ...(dateBounds(input) ? { createdAt: dateBounds(input) } : {}),
+      ...((searchCondition || cursorCondition) ? { AND: [...(searchCondition ? [searchCondition] : []), ...(cursorCondition ? [cursorCondition] : [])] } : {}),
+    },
+    take: 31,
+    orderBy: [{ createdAt: previous ? "asc" : "desc" }, { id: previous ? "asc" : "desc" }],
+    include: { merchant: { select: { id: true, businessName: true } }, ecwidSession: { select: { customerEmail: true } } },
+  });
+  const hasMore = transactions.length > 30;
+  const page = transactions.slice(0, 30);
+  if (previous) page.reverse();
+  return {
+    payments: page.map((transaction) => ({
+      id: transaction.id,
+      publicId: transaction.publicPaymentId ?? transaction.id,
+      orderId: transaction.wooOrderId,
+      merchantId: transaction.merchant.id,
+      merchantName: transaction.merchant.businessName,
+      customerEmail: transaction.ecwidSession?.customerEmail ?? null,
+      amountMinor: transaction.amountMinor,
+      currency: transaction.currency,
+      platformFeeMinor: transaction.platformFeeMinor,
+      merchantAfterOrbitFeeMinor: transaction.amountMinor - transaction.platformFeeMinor,
+      status: displayPaymentStatus(transaction.status, null),
+      source: transaction.source,
+      createdAt: transaction.createdAt,
+    })),
+    nextCursor: page.length && (!previous ? hasMore : Boolean(cursor)) ? encodeCursor(page.at(-1)!) : null,
+    previousCursor: page.length && (previous ? hasMore : Boolean(cursor)) ? encodeCursor(page[0]) : null,
   };
 }
 

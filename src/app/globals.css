@@ -147,8 +147,31 @@ form, fieldset, label { min-width: 0; }
 }
 
 .merchant-portal {
-  --portal-accent: #7363e7;
-  color-scheme: light;
+  --portal-accent: #8f7dff;
+  color-scheme: dark;
   font-variant-numeric: tabular-nums;
+  background:
+    radial-gradient(circle at 78% -10%, rgba(120, 104, 232, .09), transparent 30rem),
+    #07080d;
 }
-.merchant-portal ::selection { background: rgba(115, 99, 231, .22); color: #1b1c22; }
+.merchant-portal ::selection { background: rgba(143, 125, 255, .34); color: #fff; }
+.merchant-portal .bg-white,
+.merchant-portal [class~="bg-[#fbfbfc]"],
+.merchant-portal [class~="bg-[#fafbfc]"],
+.merchant-portal [class~="bg-[#f4f5f7]"],
+.merchant-portal [class~="bg-[#f0f1f3]"],
+.merchant-portal [class~="bg-[#f1f2f4]"] { background-color: #0d0f15 !important; }
+.merchant-portal [class~="bg-[#f4f2ff]"],
+.merchant-portal [class~="bg-[#f0edff]"],
+.merchant-portal [class~="bg-[#eeecff]"],
+.merchant-portal [class~="bg-[#ebe8ff]"] { background-color: rgba(120, 104, 232, .10) !important; }
+.merchant-portal [class*="border-[#d"],
+.merchant-portal [class*="border-[#e"] { border-color: rgba(255, 255, 255, .075) !important; }
+.merchant-portal [class*="text-[#1"],
+.merchant-portal [class*="text-[#2"],
+.merchant-portal [class*="text-[#3"] { color: #f0f1f4 !important; }
+.merchant-portal [class*="text-[#4"],
+.merchant-portal [class*="text-[#5"] { color: #b2b6c0 !important; }
+.merchant-portal input,
+.merchant-portal select { color-scheme: dark; }
+.merchant-portal input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.75); }
