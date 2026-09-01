@@ -133,7 +133,11 @@ export const aiScanDetailInclude = {
   findings: { include: { evidence: { include: { evidence: true } }, criticReview: true }, orderBy: [{ severity: "asc" as const }, { createdAt: "desc" as const }] },
   products: { orderBy: { createdAt: "desc" as const } },
   toolEvents: { orderBy: { startedAt: "desc" as const }, take: 200 },
-  evidence: { orderBy: { capturedAt: "desc" as const }, take: 500 },
+  evidence: {
+    where: { toolName: "import_manual_report", storageKey: { not: null } },
+    orderBy: { capturedAt: "desc" as const },
+    select: { id: true, mimeType: true, metadata: true, capturedAt: true },
+  },
   merchant: { select: { id: true, businessName: true, industry: true, country: true } },
   site: { select: { id: true, normalizedUrl: true, hostname: true } },
 };

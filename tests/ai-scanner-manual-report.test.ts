@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOrbitReportMetrics, validateAiScanManualReport } from "@/ai-scanner/manual-report";
+import { extractManualImport, parseOrbitReportMetrics, splitImportedText, validateAiScanManualImport, validateAiScanManualReport } from "@/ai-scanner/manual-report";
 
 function pdfBytes() {
   return new TextEncoder().encode(`%PDF-1.7\n${"0".repeat(100)}\n%%EOF`);
@@ -22,6 +22,35 @@ describe("AI Scanner manual PDF report", () => {
   it("rejects a truncated PDF without an EOF marker", async () => {
     const file = new File([`%PDF-1.7\n${"0".repeat(100)}`], "truncated.pdf", { type: "application/pdf" });
     await expect(validateAiScanManualReport(file)).rejects.toMatchObject({ status: 415 });
+  });
+
+  it("accepts pasted text and preserves every character across indexed chunks", async () => {
+    const original = `Beginning\n${"complete-information-".repeat(6_000)}\nEnd`;
+    const upload = await validateAiScanManualImport({ text: original, format: "text" });
+    const extracted = await extractManualImport(upload);
+    expect(upload.kind).toBe("TEXT");
+    expect(extracted.fullText).toBe(original);
+    expect(extracted.pages.map((page) => page.text).join("")).toBe(original);
+    expect(extracted.pages.length).toBeGreaterThan(1);
+    expect(extracted.metrics.characterCount).toBe(original.length);
+  });
+
+  it("accepts JSON, preserves the source, and reads structured assessment metrics", async () => {
+    const original = JSON.stringify({ healthScore: 91, coverage: { pagesOpened: ["a", "b", "c"], imagesInspected: 7 }, findings: [{ severity: "HIGH" }, { severity: "low" }], documentation: { untouched: true } });
+    const upload = await validateAiScanManualImport({ text: original, format: "json" });
+    const extracted = await extractManualImport(upload);
+    expect(upload.mimeType).toBe("application/json");
+    expect(extracted.fullText).toBe(original);
+    expect(extracted.metrics).toMatchObject({ source: "IMPORTED_JSON", healthScore: 91, coverage: { pagesOpened: 3, imagesInspected: 7 }, severity: { high: 1, low: 1 } });
+  });
+
+  it("rejects invalid pasted JSON without storing a partial interpretation", async () => {
+    await expect(validateAiScanManualImport({ text: "{ incomplete", format: "json" })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("splits content without trimming, normalizing, or dropping boundaries", () => {
+    const original = `${"a".repeat(50_000)}\n${"b".repeat(50_001)}`;
+    expect(splitImportedText(original).map((chunk) => chunk.text).join("")).toBe(original);
   });
 
   it("extracts ORBIT score, coverage, and severity metrics from report text", () => {

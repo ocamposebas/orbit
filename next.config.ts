@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   outputFileTracingRoot: process.cwd(),
   turbopack: { root: process.cwd() },
+  serverExternalPackages: ["@napi-rs/canvas", "@tesseract.js-data/eng", "@tesseract.js-data/spa", "tesseract.js"],
   poweredByHeader: false,
   async headers() {
     return [{ source: "/:path*", headers: [
