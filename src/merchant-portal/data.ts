@@ -279,11 +279,14 @@ export async function getMerchantOverview(merchantId: string) {
   let available = emptyBalance(primaryCurrency);
   let pending = emptyBalance(primaryCurrency);
   let nextPayout: PortalPayoutSummary | null = null;
+  let availability: PortalAvailabilityDay[] = [];
   let processorState: FinancialProcessorState = merchant?.stripeConnect ? "unavailable" : "not_connected";
   let balanceAvailable = false;
   let payoutsAvailable = false;
   let balanceIssue: StripeFinancialIssue | null = merchant?.stripeConnect ? null : "not_connected";
   let payoutsIssue: StripeFinancialIssue | null = merchant?.stripeConnect ? null : "not_connected";
+  let availabilityAvailable = false;
+  let availabilityIssue: StripeFinancialIssue | null = merchant?.stripeConnect ? null : "not_connected";
   let financials: Map<string, ChargeFinancial> | null = null;
 
   if (merchant?.stripeConnect) {
@@ -292,18 +295,21 @@ export async function getMerchantOverview(merchantId: string) {
       if (!configuration.configured) {
         balanceIssue = "not_configured";
         payoutsIssue = "not_configured";
+        availabilityIssue = "not_configured";
         throw new Error("stripe_not_configured");
       }
       if (merchant.stripeConnect.stripeEnvironment !== stripeEnvironment(configuration.mode)) {
         balanceIssue = "environment_mismatch";
         payoutsIssue = "environment_mismatch";
+        availabilityIssue = "environment_mismatch";
         throw new Error("stripe_environment_mismatch");
       }
       const stripe = getStripeClient();
       const options = { stripeContext: merchant.stripeConnect.stripeAccountId };
-      const [balanceResult, payoutsResult] = await Promise.allSettled([
+      const [balanceResult, payoutsResult, availabilityResult] = await Promise.allSettled([
         stripe.balance.retrieve({}, options),
         stripe.payouts.list({ limit: 25, expand: ["data.destination"] }, options),
+        stripe.balanceTransactions.list({ limit: 100 }, options),
       ]);
       if (balanceResult.status === "fulfilled") {
         available = balanceForCurrency(balanceResult.value.available, primaryCurrency);
@@ -325,11 +331,20 @@ export async function getMerchantOverview(merchantId: string) {
         payoutsIssue = stripeFinancialIssue(payoutsResult.reason);
         logStripeFinancialFailure(merchantId, "payouts", payoutsResult.reason);
       }
+      if (availabilityResult.status === "fulfilled") {
+        availability = pendingAvailabilityCalendar(availabilityResult.value.data, pending.currency);
+        availabilityAvailable = true;
+        availabilityIssue = null;
+      } else {
+        availabilityIssue = stripeFinancialIssue(availabilityResult.reason);
+        logStripeFinancialFailure(merchantId, "availability", availabilityResult.reason);
+      }
       processorState = balanceAvailable && payoutsAvailable ? "live" : balanceAvailable || payoutsAvailable ? "partial" : "unavailable";
       financials = await chargeFinancialsForPayments({ accountId: merchant.stripeConnect.stripeAccountId, stripe }, payments);
     } catch (error) {
       if (!balanceIssue) balanceIssue = stripeFinancialIssue(error);
       if (!payoutsIssue) payoutsIssue = stripeFinancialIssue(error);
+      if (!availabilityIssue) availabilityIssue = stripeFinancialIssue(error);
       processorState = "unavailable";
     }
   }
@@ -337,6 +352,9 @@ export async function getMerchantOverview(merchantId: string) {
   return {
     available,
     pending,
+    availability,
+    availabilityAvailable,
+    availabilityIssue,
     nextPayout,
     statistics: periodStatistics(payments, financials),
     volume: volumeSeries(primaryCurrency ? payments.filter((payment) => payment.currency === primaryCurrency) : payments),

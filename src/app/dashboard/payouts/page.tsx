@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { ArrowRight, Building2, CalendarClock, RefreshCw, ShieldCheck, Sparkles, WalletCards } from "lucide-react";
+import { ArrowRight, CalendarClock, RefreshCw, ShieldCheck, Sparkles, WalletCards } from "lucide-react";
 import { StatusPill } from "@/components/merchant-portal/status-pill";
 import { WithdrawalCard } from "@/components/merchant-portal/withdrawal-card";
 import { FundsAvailabilityCalendar } from "@/components/merchant-portal/funds-availability-calendar";
 import { getPortalContext } from "@/merchant-portal/access";
 import { getMerchantPayouts } from "@/merchant-portal/data";
 import { stripeFinancialStatusMessage } from "@/merchant-portal/financial-status";
-import { formatMoney, formatPortalDate, formatTransferDate, payoutStatusLabel, transferArrivalTiming } from "@/merchant-portal/format";
+import { formatMoney, formatPortalDate, payoutStatusLabel } from "@/merchant-portal/format";
 
 type Query = { cursor?: string | string[] };
 
@@ -17,7 +17,6 @@ export default async function PayoutsPage({ searchParams }: { searchParams: Prom
   const result = await getMerchantPayouts(merchant.id, { cursor });
   const administrator = ["OWNER", "ADMIN"].includes(session.role);
   const financialMessage = stripeFinancialStatusMessage({ ...result, administrator });
-  const nextPayout = result.payouts.filter((payout) => ["pending", "in_transit"].includes(payout.status)).sort((a, b) => a.arrivalDate - b.arrivalDate)[0] ?? null;
   const availableLabel = result.available.amountMinor === null ? "—" : formatMoney(result.available.amountMinor, result.available.currency);
   const pendingLabel = result.pending.amountMinor === null ? "—" : formatMoney(result.pending.amountMinor, result.pending.currency);
   const currency = result.available.currency || result.pending.currency || "USD";
@@ -38,8 +37,6 @@ export default async function PayoutsPage({ searchParams }: { searchParams: Prom
     </section>
 
     <FundsAvailabilityCalendar days={result.availability} available={result.availabilityAvailable} pendingMinor={result.pending.amountMinor} />
-
-    <section className="relative mt-4 overflow-hidden rounded-[24px] border border-[#8877ff]/20 bg-[radial-gradient(circle_at_85%_5%,rgba(127,102,242,.18),transparent_28%),#0d0f16] p-6 sm:p-7"><div className="pointer-events-none absolute -right-16 -top-24 size-64 rounded-full border border-[#8f7dff]/15" /><div className="relative"><div className="flex items-center justify-between gap-3"><p className="text-[9px] font-semibold uppercase tracking-[.14em] text-[#9588f3]">Future transfer</p>{nextPayout && <span className="rounded-full border border-[#7767e9]/20 bg-[#7564e8]/10 px-2.5 py-1 text-[8px] font-semibold uppercase tracking-[.08em] text-[#aa9fff]">{transferArrivalTiming(nextPayout.arrivalDate)}</span>}</div>{nextPayout ? <div className="mt-6 grid gap-6 sm:grid-cols-[1fr_auto] sm:items-end"><div><p className="text-[11px] text-[#9da2ad]">You will receive</p><p className="mt-1 text-[34px] font-semibold tracking-[-.05em] text-white">{formatMoney(nextPayout.amountMinor, nextPayout.currency)}</p><p className="mt-2 text-[15px] font-medium text-[#d8d9df]">on {formatTransferDate(nextPayout.arrivalDate)}</p><p className="mt-4 flex items-center gap-2 text-[9px] text-[#777d89]"><CalendarClock className="size-3.5 text-[#9487ef]" />Confirmed bank arrival date · {payoutStatusLabel(nextPayout.status)}</p></div><div className="border-t border-white/[.08] pt-4 sm:min-w-48 sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0"><p className="text-[8px] uppercase tracking-[.12em] text-[#5f6571]">Receiving account</p><p className="mt-2 flex items-center gap-2 text-[10px] text-[#b7bac3]"><Building2 className="size-3.5 text-[#9182f0]" />{nextPayout.destination}</p></div></div> : <div className="mt-6"><p className="text-[15px] font-semibold text-white">{result.payoutsAvailable ? "No confirmed future transfer" : "Transfer data unavailable"}</p><p className="mt-2 max-w-xl text-[9px] leading-5 text-[#6f7581]">{result.payoutsAvailable ? "When ORBIT Payment confirms your next transfer, its exact amount and bank arrival date will appear here. ORBIT never invents an estimate." : "ORBIT Payment has not returned transfer history for this account yet."}</p></div>}</div></section>
 
     <section className="mt-8 overflow-hidden rounded-[24px] border border-white/[.075] bg-[#0b0d13] shadow-[0_30px_90px_rgba(0,0,0,.18)]"><div className="flex items-end justify-between border-b border-white/[.07] px-5 py-5 sm:px-7"><div><p className="text-[9px] font-semibold uppercase text-[#777d89]">Complete history</p><h2 className="mt-2 text-[18px] font-semibold text-white">Transfer history</h2></div><WalletCards className="size-4 text-[#8f82ef]" /></div>{result.payouts.length ? <div className="overflow-x-auto"><table className="w-full min-w-[860px] text-left"><thead><tr className="border-b border-white/[.06] bg-white/[.018]">{["Date", "Transfer ID", "Amount", "Destination", "Arrival", "Status", ""].map((column) => <th key={column} className="px-5 py-3 text-[8px] font-semibold uppercase text-[#626874] first:pl-7 last:pr-7">{column}</th>)}</tr></thead><tbody>{result.payouts.map((payout) => <tr key={payout.id} className="group border-b border-white/[.055] last:border-0 transition hover:bg-[#8f7dff]/[.045]">{[
           formatPortalDate(payout.created), <span key="id" className="font-mono text-[9px] text-[#9e91f4]">{payout.id}</span>, <span key="amount" className="font-semibold text-[#e5e6ea]">{formatMoney(payout.amountMinor, payout.currency)}</span>, payout.destination, formatPortalDate(payout.arrivalDate), <StatusPill key="status" status={payoutStatusLabel(payout.status)} />, <ArrowRight key="arrow" className="size-3.5 text-[#656b77] transition group-hover:translate-x-0.5 group-hover:text-[#a99cff]" />,
