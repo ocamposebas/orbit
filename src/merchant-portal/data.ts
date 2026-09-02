@@ -502,6 +502,7 @@ export async function getOrbitEarningsOverview(merchants: PortfolioMerchant[]) {
 }
 
 export type PortalPaymentRow = PortalPaymentSummary & {
+  customerName: string | null;
   customerEmail: string | null;
   methodBrand: string | null;
   methodLast4: string | null;
@@ -510,6 +511,8 @@ export type PortalPaymentRow = PortalPaymentSummary & {
   netMinor: number | null;
   refundAmountMinor: number;
   displayStatus: string;
+  failureCode: string | null;
+  failureReason: string | null;
 };
 
 export type PaymentListInput = {
@@ -571,14 +574,30 @@ function databaseStatuses(status: string | undefined) {
   return undefined;
 }
 
-function cardDetails(charge: Stripe.Charge | null) {
+function cardDetails(charge: Stripe.Charge | null, intent: Stripe.PaymentIntent | null) {
   const details = charge?.payment_method_details;
-  const card = details?.card;
-  const bank = details?.us_bank_account;
-  const brand = card?.brand ?? (details?.type === "link" ? "Link" : details?.type?.replaceAll("_", " ") ?? null);
+  const paymentMethodValue = intent?.last_payment_error?.payment_method ?? intent?.payment_method;
+  const paymentMethod = paymentMethodValue && typeof paymentMethodValue === "object" ? paymentMethodValue : null;
+  const card = details?.card ?? paymentMethod?.card;
+  const bank = details?.us_bank_account ?? paymentMethod?.us_bank_account;
+  const methodType = details?.type ?? paymentMethod?.type;
+  const brand = card?.brand ?? bank?.bank_name ?? (methodType === "link" ? "Link" : methodType?.replaceAll("_", " ") ?? null);
   const last4 = card?.last4 ?? bank?.last4 ?? null;
   const wallet = card?.wallet?.type?.replaceAll("_", " ") ?? null;
-  return { brand, last4, type: wallet ?? details?.type?.replaceAll("_", " ") ?? null };
+  return { brand, last4, type: wallet ?? methodType?.replaceAll("_", " ") ?? null, billing: paymentMethod?.billing_details ?? charge?.billing_details ?? null };
+}
+
+export function paymentFailure(intent: Stripe.PaymentIntent | null, baseStatus: string) {
+  const error = intent?.last_payment_error;
+  const code = error?.decline_code ?? error?.code ?? (baseStatus === "CANCELED" ? "canceled" : baseStatus === "FAILED" ? "reason_unavailable" : null);
+  if (!code) return { failureCode: null, failureReason: null };
+  const reasons: Record<string, string> = {
+    insufficient_funds: "Insufficient funds", card_declined: "Card declined", expired_card: "Expired card", incorrect_cvc: "Incorrect security code",
+    incorrect_number: "Incorrect card number", invalid_number: "Invalid card number", invalid_expiry_month: "Invalid expiration month", invalid_expiry_year: "Invalid expiration year",
+    authentication_required: "Authentication required", processing_error: "Processing error", do_not_honor: "Declined by issuing bank", fraudulent: "Declined by issuing bank",
+    lost_card: "Declined by issuing bank", stolen_card: "Declined by issuing bank", canceled: "Payment canceled", reason_unavailable: "Payment was not approved; processor reason unavailable",
+  };
+  return { failureCode: code, failureReason: reasons[code] ?? error?.message ?? "Payment was not approved" };
 }
 
 function chargeBalance(charge: Stripe.Charge | null) {
@@ -596,7 +615,7 @@ async function retrievePaymentIntent(stripeMerchantValue: StripeMerchant | null,
   try {
     return await stripeMerchantValue.stripe.paymentIntents.retrieve(
       stripePaymentIntentId,
-      { expand: ["latest_charge.balance_transaction"] },
+      { expand: ["latest_charge.balance_transaction", "payment_method"] },
       { stripeContext: stripeMerchantValue.accountId },
     );
   } catch {
@@ -648,7 +667,8 @@ async function enrichPayment(
   const intent = await retrievePaymentIntent(processor, transaction.stripePaymentIntentId);
   const charge = intentCharge(intent);
   const balance = chargeBalance(charge);
-  const method = cardDetails(charge);
+  const method = cardDetails(charge, intent);
+  const failure = paymentFailure(intent, transaction.status);
   return {
     id: transaction.id,
     publicId: transaction.publicPaymentId ?? transaction.id,
@@ -659,7 +679,8 @@ async function enrichPayment(
     status: transaction.status,
     source: transaction.source,
     createdAt: transaction.createdAt,
-    customerEmail: charge?.billing_details.email ?? charge?.receipt_email ?? transaction.ecwidSession?.customerEmail ?? null,
+    customerName: charge?.billing_details.name ?? method.billing?.name ?? null,
+    customerEmail: charge?.billing_details.email ?? method.billing?.email ?? charge?.receipt_email ?? intent?.receipt_email ?? transaction.ecwidSession?.customerEmail ?? null,
     methodBrand: method.brand,
     methodLast4: method.last4,
     methodType: method.type,
@@ -667,6 +688,7 @@ async function enrichPayment(
     netMinor: balance?.net ?? null,
     refundAmountMinor: charge?.amount_refunded ?? 0,
     displayStatus: displayPaymentStatus(transaction.status, charge),
+    ...failure,
   };
 }
 
@@ -758,22 +780,15 @@ export async function getAdminPayments(merchantIds: string[], input: PaymentList
   const hasMore = transactions.length > 30;
   const page = transactions.slice(0, 30);
   if (previous) page.reverse();
+  const processors = new Map((await Promise.all([...new Set(page.map((transaction) => transaction.merchant.id))].map(async (merchantId) => [merchantId, await stripeMerchant(merchantId)] as const))));
+  const enriched = await Promise.all(page.map(async (transaction) => ({
+    ...(await enrichPayment(transaction, processors.get(transaction.merchant.id) ?? null)),
+    merchantId: transaction.merchant.id,
+    merchantName: transaction.merchant.businessName,
+    merchantAfterOrbitFeeMinor: transaction.amountMinor - transaction.platformFeeMinor,
+  })));
   return {
-    payments: page.map((transaction) => ({
-      id: transaction.id,
-      publicId: transaction.publicPaymentId ?? transaction.id,
-      orderId: transaction.wooOrderId,
-      merchantId: transaction.merchant.id,
-      merchantName: transaction.merchant.businessName,
-      customerEmail: transaction.ecwidSession?.customerEmail ?? null,
-      amountMinor: transaction.amountMinor,
-      currency: transaction.currency,
-      platformFeeMinor: transaction.platformFeeMinor,
-      merchantAfterOrbitFeeMinor: transaction.amountMinor - transaction.platformFeeMinor,
-      status: displayPaymentStatus(transaction.status, null),
-      source: transaction.source,
-      createdAt: transaction.createdAt,
-    })),
+    payments: enriched.filter((payment) => paymentMatchesStripeFilter(payment, input.status) && paymentMatchesEnrichedSearch(payment, query)),
     nextCursor: page.length && (!previous ? hasMore : Boolean(cursor)) ? encodeCursor(page.at(-1)!) : null,
     previousCursor: page.length && (previous ? hasMore : Boolean(cursor)) ? encodeCursor(page[0]) : null,
   };
