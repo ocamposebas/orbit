@@ -86,9 +86,11 @@ export function getServerEnv(): ServerEnv {
   return cached;
 }
 
-export function validateStatementEmailConfiguration(env = getServerEnv()) {
+export function validateSmtpConfiguration(env = getServerEnv()) {
   const configured = [env.SMTP_HOST, env.SMTP_USERNAME, env.SMTP_PASSWORD, env.SMTP_FROM_EMAIL].filter(Boolean).length;
   if (configured === 0) return { configured: false as const };
   if (configured !== 4) throw new Error("SMTP configuration is incomplete; host, username, password and from address are required together");
   return { configured: true as const };
 }
+
+export const validateStatementEmailConfiguration = validateSmtpConfiguration;
