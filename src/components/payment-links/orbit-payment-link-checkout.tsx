@@ -32,10 +32,20 @@ function PaymentForm({ link, paymentPublicId, onConfirming }: { link: PublicOrbi
   }, [busy, elements, link.publicId, onConfirming, paymentPublicId, stripe]);
 
   return <>
-    <div className={styles.express}><span>Fast checkout</span><ExpressCheckoutElement onConfirm={() => void confirm()} options={{ layout: { maxColumns: 2, maxRows: 2 } }} /></div>
-    <div className={styles.divider}><span>or pay with another method</span></div>
+    <div className={styles.express}><span>Apple Pay, Google Pay or Link</span><ExpressCheckoutElement onConfirm={() => void confirm()} options={{
+      business: { name: link.accountName },
+      buttonHeight: 48,
+      layout: { maxColumns: 3, maxRows: 1, overflow: "auto" },
+      paymentMethodOrder: ["apple_pay", "google_pay", "link"],
+      paymentMethods: { applePay: "always", googlePay: "always", link: "auto", amazonPay: "never", paypal: "never", klarna: "never" },
+    }} /></div>
+    <div className={styles.divider}><span>or pay by card</span></div>
     <form onSubmit={(event) => { event.preventDefault(); void confirm(); }}>
-      <PaymentElement options={{ layout: "tabs" }} />
+      <PaymentElement options={{
+        business: { name: link.accountName },
+        layout: { type: "tabs", defaultCollapsed: false },
+        paymentMethodOrder: ["card", "link", "cashapp", "us_bank_account", "klarna", "affirm"],
+      }} />
       {message && <div className={styles.error} role="alert">{message}</div>}
       <button className={styles.payButton} type="submit" disabled={!stripe || !elements || busy}>{busy ? <><RefreshCw size={16} className={styles.spin} />Processing securely</> : <>Pay {money(link.amountMinor, link.currency)} <span>→</span></>}</button>
     </form>
