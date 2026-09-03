@@ -18,6 +18,15 @@ function PaymentForm({ link, paymentPublicId, onConfirming }: { link: PublicOrbi
   const elements = useElements();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [expressMethods, setExpressMethods] = useState<string[] | null>(null);
+  const updateExpressMethods = useCallback((methods: { applePay: boolean; googlePay: boolean; link: boolean } | undefined) => {
+    if (!methods) { setExpressMethods([]); return; }
+    setExpressMethods([
+      ...(methods.applePay ? ["Apple Pay"] : []),
+      ...(methods.googlePay ? ["Google Pay"] : []),
+      ...(methods.link ? ["Link"] : []),
+    ]);
+  }, []);
   const confirm = useCallback(async () => {
     if (!stripe || !elements || busy) return;
     setBusy(true); setMessage(null);
@@ -32,18 +41,18 @@ function PaymentForm({ link, paymentPublicId, onConfirming }: { link: PublicOrbi
   }, [busy, elements, link.publicId, onConfirming, paymentPublicId, stripe]);
 
   return <>
-    <div className={styles.express}><span>Apple Pay, Google Pay or Link</span><ExpressCheckoutElement onConfirm={() => void confirm()} options={{
+    <div className={`${styles.express} ${expressMethods?.length === 0 ? styles.expressUnavailable : ""}`}><span>{expressMethods?.length ? `Fast checkout · ${expressMethods.join(" · ")}` : "Fast checkout"}</span><div className={expressMethods?.length === 1 ? styles.expressSingle : expressMethods?.length === 2 ? styles.expressDouble : styles.expressGrid}><ExpressCheckoutElement onConfirm={() => void confirm()} onReady={(event) => updateExpressMethods(event.availablePaymentMethods)} onAvailablePaymentMethodsChange={(event) => updateExpressMethods(event.paymentMethods ? { applePay: Boolean(event.paymentMethods.applePay?.available), googlePay: Boolean(event.paymentMethods.googlePay?.available), link: Boolean(event.paymentMethods.link?.available) } : undefined)} options={{
       business: { name: link.accountName },
       buttonHeight: 48,
       layout: { maxColumns: 3, maxRows: 1, overflow: "auto" },
       paymentMethodOrder: ["apple_pay", "google_pay", "link"],
       paymentMethods: { applePay: "always", googlePay: "always", link: "auto", amazonPay: "never", paypal: "never", klarna: "never" },
-    }} /></div>
-    <div className={styles.divider}><span>or pay by card</span></div>
+    }} /></div></div>
+    {expressMethods?.length !== 0 && <div className={styles.divider}><span>or pay by card</span></div>}
     <form onSubmit={(event) => { event.preventDefault(); void confirm(); }}>
       <PaymentElement options={{
         business: { name: link.accountName },
-        layout: { type: "tabs", defaultCollapsed: false },
+        layout: { type: "accordion", defaultCollapsed: false, radios: "always", spacedAccordionItems: false, visibleAccordionItemsCount: 4 },
         paymentMethodOrder: ["card", "link", "cashapp", "us_bank_account", "klarna", "affirm"],
       }} />
       {message && <div className={styles.error} role="alert">{message}</div>}
