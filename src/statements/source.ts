@@ -47,7 +47,7 @@ function destinationSummary(destination: Stripe.Payout["destination"]) {
   if (!destination || typeof destination === "string") return null;
   const value = destination as unknown as { bank_name?: string; brand?: string; last4?: string };
   const name = value.bank_name ?? value.brand;
-  return [name, value.last4 ? `•••• ${value.last4}` : null].filter(Boolean).join(" · ") || null;
+  return [name, value.last4 ? `**** ${value.last4}` : null].filter(Boolean).join(" / ") || null;
 }
 
 export async function loadAuthoritativeLedger(merchantId: string, period: StatementPeriod): Promise<CurrencyLedger[]> {

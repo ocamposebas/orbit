@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { calculateStatementTotals, formatMinor, minorDecimal, reconciliationDelta, type StatementLedgerEntry } from "@/statements/calculation";
 import { calendarMonthPeriod, monthlyGenerationIsDue, previousCalendarMonth } from "@/statements/period";
 import { safeCsvCell, statementCsv } from "@/statements/csv";
@@ -70,6 +71,12 @@ describe("statement exports", () => {
     const totals = calculateStatementTotals(BigInt(0), [entry({ type: "PAYMENT", amountMinor: BigInt(10_000), netMinor: BigInt(10_000) })]);
     const pdf = await renderStatementPdf({ publicId: "ORB-STMT-2026-08-ABC12345", merchantName: "Test Merchant", periodStart: new Date("2026-08-01T00:00:00Z"), periodEnd: new Date("2026-09-01T00:00:00Z"), generatedAt: new Date("2026-09-01T13:00:00Z"), currency: "USD", timeZone: "UTC", totals, payouts: [] });
     expect(pdf.subarray(0, 4).toString()).toBe("%PDF"); expect(pdf.length).toBeGreaterThan(2_000);
+    expect((await getDocument({ data: new Uint8Array(pdf) }).promise).numPages).toBe(2);
+  });
+  it("keeps a zero-activity statement to one complete page", async () => {
+    const totals = calculateStatementTotals(BigInt(0), []);
+    const pdf = await renderStatementPdf({ publicId: "ORB-STMT-2026-08-ZERO0000", merchantName: "Validation Merchant", periodStart: new Date("2026-08-01T00:00:00Z"), periodEnd: new Date("2026-09-01T00:00:00Z"), generatedAt: new Date("2026-09-01T13:00:00Z"), currency: "USD", timeZone: "UTC", totals, payouts: [] });
+    expect((await getDocument({ data: new Uint8Array(pdf) }).promise).numPages).toBe(1);
   });
   it("escapes merchant input in the responsive email", () => {
     const html = statementEmailHtml({ merchantName: "<script>alert(1)</script>", period: "August 2026", gross: "$1.00", fees: "$0.00", net: "$1.00", payouts: "$0.00", viewUrl: "https://orbit.example/dashboard/statements/id", pdfUrl: "https://orbit.example/api/pdf" });
