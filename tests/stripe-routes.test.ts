@@ -34,8 +34,8 @@ const request = new Request(`http://localhost/api/sentinel/merchants/${merchantI
 const params = { params: Promise.resolve({ merchantId }) };
 const integration = { id: "integration_1", stripeAccountId: "acct_orbit", displayStatus: "ONBOARDING" };
 
-function session(role: "OWNER" | "ADMIN" | "REVIEWER" | "VIEWER") {
-  return { session: { role, user: { id: `user_${role.toLowerCase()}` }, organization: { id: "org_1" } }, merchant: { id: merchantId }, organization: { id: "org_1" } };
+function session(role: "OWNER" | "ADMIN" | "REVIEWER" | "VIEWER", stripeOnboardingEnabled = true) {
+  return { session: { role, user: { id: `user_${role.toLowerCase()}` }, organization: { id: "org_1" } }, merchant: { id: merchantId, stripeOnboardingEnabled }, organization: { id: "org_1" } };
 }
 
 describe("Stripe Connect mutation routes", () => {
@@ -74,6 +74,25 @@ describe("Stripe Connect mutation routes", () => {
     expect(mocks.onboarding).not.toHaveBeenCalled();
   });
 
+  it("blocks client account creation until an administrator enables Stripe verification", async () => {
+    mocks.requireAccess.mockResolvedValueOnce(session("VIEWER", false));
+    const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/connect/route");
+    const response = await POST(request as never, params);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Stripe verification has not been enabled by an ORBIT administrator" });
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("lets an owner prepare Stripe while client access remains locked", async () => {
+    mocks.requireAccess.mockResolvedValueOnce(session("OWNER", false));
+    mocks.connect.mockResolvedValueOnce(integration);
+    const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/connect/route");
+    const response = await POST(request as never, params);
+    expect(response.status).toBe(201);
+    expect(mocks.connect).toHaveBeenCalledOnce();
+  });
+
   it.each(["OWNER", "ADMIN", "REVIEWER", "VIEWER"] as const)("creates a scoped embedded onboarding session for %s", async (role) => {
     mocks.requireAccess.mockResolvedValueOnce(session(role));
     const embeddedRequest = new Request(`http://localhost/api/sentinel/merchants/${merchantId}/stripe/embedded-session`, { method: "POST", headers: { origin: "http://localhost:3000" } });
@@ -92,6 +111,15 @@ describe("Stripe Connect mutation routes", () => {
     const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/embedded-session/route");
     const response = await POST(embeddedRequest as never, params);
     expect(response.status).toBe(404);
+    expect(mocks.embeddedSession).not.toHaveBeenCalled();
+  });
+
+  it("blocks a direct client request for an embedded session while access is locked", async () => {
+    mocks.requireAccess.mockResolvedValueOnce(session("REVIEWER", false));
+    const embeddedRequest = new Request(`http://localhost/api/sentinel/merchants/${merchantId}/stripe/embedded-session`, { method: "POST", headers: { origin: "http://localhost:3000" } });
+    const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/embedded-session/route");
+    const response = await POST(embeddedRequest as never, params);
+    expect(response.status).toBe(403);
     expect(mocks.embeddedSession).not.toHaveBeenCalled();
   });
 
@@ -114,6 +142,19 @@ describe("Stripe Connect mutation routes", () => {
     expect(await response.json()).toEqual({ url: "https://connect.stripe.test/setup/one-time" });
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(mocks.requireAccess).toHaveBeenCalledWith(request, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"], mutation: true });
+  });
+
+  it("blocks direct hosted-onboarding and refresh requests while client access is locked", async () => {
+    mocks.requireAccess.mockResolvedValue(session("VIEWER", false));
+    const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/onboarding/route");
+    const hostedResponse = await POST(request as never, params);
+    expect(hostedResponse.status).toBe(403);
+
+    const { GET } = await import("@/app/merchants/[merchantId]/integrations/stripe/refresh/route");
+    const refreshResponse = await GET(new Request(`http://localhost/merchants/${merchantId}/integrations/stripe/refresh`) as never, params);
+    expect(refreshResponse.status).toBe(303);
+    expect(refreshResponse.headers.get("location")).toBe("https://orbit.example/sentinel?stripeReturn=unauthorized");
+    expect(mocks.onboarding).not.toHaveBeenCalled();
   });
 
   it("keeps a Stripe Account Link callback on the allowed alternate origin", async () => {

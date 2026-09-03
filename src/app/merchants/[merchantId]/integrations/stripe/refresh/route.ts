@@ -4,6 +4,7 @@ import { requireMerchantAccess } from "@/sentinel/http";
 import { enforceRateLimit } from "@/sentinel/rate-limit";
 import { auditStripeConnectError, createStripeOnboardingLink } from "@/stripe/service";
 import { merchantStripeDashboardPath, orbitLoginUrl, orbitRedirectUrl, orbitRequestOrigin, requireValidMerchantId, stripeRefreshPath } from "@/stripe/onboarding-navigation";
+import { requireStripeOnboardingAccess } from "@/stripe/onboarding-access";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     try {
       const access = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"] });
       actorId = access.session.user.id;
+      requireStripeOnboardingAccess(access.session.role, access.merchant.stripeOnboardingEnabled);
       await enforceRateLimit(request, `stripe-refresh:${merchantId}:${actorId}`, 10);
       const { url } = await createStripeOnboardingLink(merchantId, actorId, appOrigin);
       const stripeUrl = new URL(url);

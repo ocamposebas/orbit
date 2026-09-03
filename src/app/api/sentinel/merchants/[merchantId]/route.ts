@@ -115,6 +115,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const { session, organization, merchant } = await requireMerchantAccess(request, merchantId, { allowedRoles: ["OWNER", "ADMIN"], mutation: true });
     const body = await request.json();
     const db = getDatabase();
+    if (Object.hasOwn(body, "stripeOnboardingEnabled")) {
+      const input = z.object({ stripeOnboardingEnabled: z.boolean() }).strict().parse(body);
+      const updated = await db.merchant.update({
+        where: { id: merchantId },
+        data: {
+          stripeOnboardingEnabled: input.stripeOnboardingEnabled,
+          stripeOnboardingEnabledAt: input.stripeOnboardingEnabled ? new Date() : null,
+        },
+        select: { id: true, stripeOnboardingEnabled: true, stripeOnboardingEnabledAt: true },
+      });
+      await db.auditLog.create({ data: {
+        organizationId: organization.id,
+        merchantId,
+        actorId: session.user.id,
+        action: input.stripeOnboardingEnabled ? "STRIPE_ONBOARDING_ACCESS_ENABLED" : "STRIPE_ONBOARDING_ACCESS_DISABLED",
+        targetType: "Merchant",
+        targetId: merchantId,
+        metadata: {
+          previousStripeOnboardingEnabled: merchant.stripeOnboardingEnabled,
+          stripeOnboardingEnabled: input.stripeOnboardingEnabled,
+        },
+      } });
+      return NextResponse.json({ merchant: updated });
+    }
     if (Object.hasOwn(body, "portalEnabled")) {
       const input = z.object({ portalEnabled: z.boolean() }).strict().parse(body);
       const current = await db.merchant.findUnique({

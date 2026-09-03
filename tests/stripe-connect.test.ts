@@ -3,6 +3,7 @@ import { HttpError } from "@/sentinel/http";
 import { inspectStripeKey, inspectStripePublishableKey } from "@/stripe/client";
 import { normalizeV1Account, normalizeV2Account, stripeRequirementLabel } from "@/stripe/normalize";
 import { buildStripeEmbeddedOnboardingSessionParams, buildStripeV2AccountCreateParams, canManageStripeConnect, requireStripeLegalCountry, stripeConnectIdempotencyKey } from "@/stripe/service";
+import { canOpenStripeOnboarding, requireStripeOnboardingAccess } from "@/stripe/onboarding-access";
 
 function v2Account(overrides: Record<string, unknown> = {}) {
   return {
@@ -41,6 +42,16 @@ describe("Stripe Connect configuration and authorization", () => {
 
   it.each(["OWNER", "ADMIN"])("allows %s to manage Stripe", (role) => expect(canManageStripeConnect(role)).toBe(true));
   it.each(["ANALYST", "REVIEWER", "VIEWER", "UNKNOWN"])("forbids %s from managing Stripe", (role) => expect(canManageStripeConnect(role)).toBe(false));
+
+  it.each(["OWNER", "ADMIN"])("lets %s prepare onboarding before client access is enabled", (role) => {
+    expect(canOpenStripeOnboarding(role, false)).toBe(true);
+  });
+
+  it.each(["REVIEWER", "VIEWER"])("requires explicit merchant-level approval for %s", (role) => {
+    expect(canOpenStripeOnboarding(role, true)).toBe(true);
+    expect(canOpenStripeOnboarding(role, false)).toBe(false);
+    expect(() => requireStripeOnboardingAccess(role, false)).toThrow(/ORBIT administrator/);
+  });
 
   it("uses one stable account-creation idempotency key per merchant, API, and environment", () => {
     const first = stripeConnectIdempotencyKey("merchant_1", "v2", "test");
