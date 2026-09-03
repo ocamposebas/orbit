@@ -4,17 +4,18 @@ import { notFound } from "next/navigation";
 import { StatementActions } from "@/components/merchant-portal/statement-actions";
 import { getPortalContext } from "@/merchant-portal/access";
 import { formatMinor } from "@/statements/calculation";
-import { getMerchantStatement } from "@/statements/data";
+import { getAccessibleMerchantStatement } from "@/statements/data";
 import { getServerEnv } from "@/sentinel/config";
 
 const day = (date: Date) => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: getServerEnv().STATEMENT_TIMEZONE }).format(date);
 const timestamp = (date: Date | null) => date ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: getServerEnv().STATEMENT_TIMEZONE }).format(date) : "—";
 
 export default async function StatementPage({ params }: { params: Promise<{ statementId: string }> }) {
-  const [{ merchant }, route] = await Promise.all([getPortalContext(), params]);
-  if (!merchant) return null;
-  const statement = await getMerchantStatement(merchant.id, route.statementId);
+  const [{ merchants }, route] = await Promise.all([getPortalContext(), params]);
+  const statement = await getAccessibleMerchantStatement(merchants.map((item) => item.id), route.statementId);
   if (!statement) notFound();
+  const merchant = merchants.find((item) => item.id === statement.merchantId);
+  if (!merchant) notFound();
   const money = (value: bigint) => formatMinor(value, statement.currency);
   const summary: Array<[string, bigint, "positive" | "negative" | "neutral"]> = [
     ["Gross payments", statement.grossPaymentsMinor, "positive"], ["Refunds", -statement.refundsMinor, "negative"], ["Disputes", -statement.disputesMinor, "negative"], ["ORBIT fees", -statement.orbitFeesMinor, "negative"], ["Processing fees", -statement.processingFeesMinor, "negative"], ["Adjustments", statement.adjustmentsMinor, "neutral"], ["Net activity", statement.netActivityMinor, "positive"], ["Payouts", -statement.payoutsMinor, "neutral"], ["Ending balance", statement.closingBalanceMinor, "positive"],

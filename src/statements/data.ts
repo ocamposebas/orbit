@@ -29,3 +29,8 @@ export async function listMerchantStatements(merchantId: string, year: number) {
 export async function getMerchantStatement(merchantId: string, publicId: string) {
   return getDatabase().merchantStatement.findFirst({ where: { merchantId, publicId }, include: { merchant: { include: { agreement: { select: { legalName: true, primaryContactEmail: true } } } }, lineItems: { orderBy: [{ occurredAt: "desc" }, { id: "desc" }], take: 100 }, payouts: { orderBy: { initiatedAt: "desc" } }, deliveryAttempts: { orderBy: { attempt: "desc" } } } });
 }
+
+export async function getAccessibleMerchantStatement(merchantIds: string[], publicId: string) {
+  if (merchantIds.length === 0) return null;
+  return getDatabase().merchantStatement.findFirst({ where: { merchantId: { in: merchantIds }, publicId }, include: { merchant: { include: { agreement: { select: { legalName: true, primaryContactEmail: true } } } }, lineItems: { orderBy: [{ occurredAt: "desc" }, { id: "desc" }], take: 100 }, payouts: { orderBy: { initiatedAt: "desc" } }, deliveryAttempts: { orderBy: { attempt: "desc" } } } });
+}

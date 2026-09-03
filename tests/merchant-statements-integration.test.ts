@@ -52,4 +52,10 @@ describe("merchant statement generation integration", () => {
     const schema = await readFile(path.join(root, "prisma/schema.prisma"), "utf8");
     expect(schema).toContain("@@unique([merchantId, periodStart, currency, version])");
   });
+
+  it("resolves direct statement links across every merchant available to the signed-in user", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/dashboard/statements/[statementId]/page.tsx"), "utf8");
+    expect(page).toContain("getAccessibleMerchantStatement(merchants.map((item) => item.id), route.statementId)");
+    expect(page).not.toContain("getMerchantStatement(merchant.id, route.statementId)");
+  });
 });
