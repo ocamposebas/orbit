@@ -34,6 +34,20 @@ describe("WooCommerce hosted payment webhook", () => {
     expect(mocks.deliver).toHaveBeenCalledWith("evt_stable123456789");
   });
 
+  it("stores a normalized payer identity from Stripe without changing payment amounts", async () => {
+    const customerEvent = event();
+    Object.assign(customerEvent.data.object, {
+      receipt_email: " Buyer@Example.com ",
+      payment_method: { billing_details: { name: "  Ada   Lovelace  ", email: null } },
+    });
+    const { handleStripePaymentEvent } = await import("@/payments/webhook");
+    await expect(handleStripePaymentEvent(customerEvent as never)).resolves.toEqual({ processed: true });
+    expect(mocks.transactionUpdate).toHaveBeenCalledWith({
+      where: { id: transaction.id },
+      data: { status: "SUCCEEDED", customerEmail: "buyer@example.com", customerName: "Ada Lovelace" },
+    });
+  });
+
   it("acknowledges an already-processed Stripe event without completing twice", async () => {
     mocks.eventCreate.mockRejectedValueOnce(new Error("unique"));
     mocks.eventFind.mockResolvedValueOnce({ id: "payment_event", status: "PROCESSED" });

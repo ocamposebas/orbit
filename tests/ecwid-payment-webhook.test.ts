@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   transactionFind: vi.fn(),
   transactionUpdate: vi.fn(),
   transactionUpdateMany: vi.fn(),
+  ecwidSessionFind: vi.fn(),
   verifyCheckoutIntent: vi.fn(),
   syncEcwid: vi.fn(),
 }));
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({
   stripePaymentEvent: { create: mocks.eventCreate, findUnique: mocks.eventFind, update: mocks.eventUpdate },
   paymentTransaction: { findUnique: mocks.transactionFind, update: mocks.transactionUpdate, updateMany: mocks.transactionUpdateMany },
+  ecwidPaymentSession: { findUnique: mocks.ecwidSessionFind },
 }) }));
 vi.mock("@/stripe/client", () => ({ expectedLivemode: () => false, getStripeConfiguration: () => ({ mode: "test" }) }));
 vi.mock("@/integrations/ecwid/stripe-checkout", () => ({ verifyEcwidCheckoutPaymentIntent: mocks.verifyCheckoutIntent }));
@@ -40,6 +42,7 @@ describe("Ecwid PaymentIntent webhook correlation", () => {
     mocks.eventUpdate.mockResolvedValue({});
     mocks.transactionUpdate.mockResolvedValue({});
     mocks.transactionUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.ecwidSessionFind.mockResolvedValue({ customerEmail: " Shopper@Example.com " });
     mocks.verifyCheckoutIntent.mockResolvedValue(undefined);
     mocks.syncEcwid.mockResolvedValue({ synced: true });
     mocks.transactionFind
@@ -76,7 +79,7 @@ describe("Ecwid PaymentIntent webhook correlation", () => {
       where: { id: transaction.id, source: "ECWID", stripePaymentIntentId: null },
       data: { stripePaymentIntentId: "pi_checkout_9001" },
     });
-    expect(mocks.transactionUpdate).toHaveBeenCalledWith({ where: { id: transaction.id }, data: { status: "SUCCEEDED" } });
+    expect(mocks.transactionUpdate).toHaveBeenCalledWith({ where: { id: transaction.id }, data: { status: "SUCCEEDED", customerEmail: "shopper@example.com" } });
     expect(mocks.syncEcwid).toHaveBeenCalledWith(transaction.id, "SUCCEEDED");
   });
 });

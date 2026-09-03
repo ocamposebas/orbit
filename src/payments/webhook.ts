@@ -5,7 +5,7 @@ import { syncEcwidForTransaction } from "@/integrations/ecwid/service";
 import { verifyEcwidCheckoutPaymentIntent } from "@/integrations/ecwid/stripe-checkout";
 import { getDatabase } from "@/sentinel/db";
 import { childLogger } from "@/sentinel/logger";
-import { expectedLivemode, getStripeConfiguration } from "@/stripe/client";
+import { expectedLivemode, getStripeClient, getStripeConfiguration } from "@/stripe/client";
 
 const log = childLogger({ component: "stripe-payment-events" });
 const supportedTypes = new Set([
@@ -24,6 +24,47 @@ function errorCode(error: unknown) {
   const value = error as { code?: string; name?: string; message?: string };
   const candidate = value.code ?? value.message ?? value.name ?? "payment_event_failed";
   return candidate.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
+}
+
+type PaymentCustomerIdentity = { customerName?: string; customerEmail?: string };
+
+function cleanCustomerName(value: string | null | undefined) {
+  const name = value?.trim().replace(/\s+/g, " ");
+  return name ? name.slice(0, 160) : undefined;
+}
+
+function cleanCustomerEmail(value: string | null | undefined) {
+  const email = value?.trim().toLowerCase();
+  if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return undefined;
+  return email;
+}
+
+export function paymentCustomerIdentity(intent: Stripe.PaymentIntent): PaymentCustomerIdentity {
+  const charge = typeof intent.latest_charge === "object" && intent.latest_charge ? intent.latest_charge : null;
+  const paymentMethod = typeof intent.payment_method === "object" && intent.payment_method ? intent.payment_method : null;
+  const customerEmail = cleanCustomerEmail(
+    charge?.billing_details.email ?? paymentMethod?.billing_details.email ?? intent.receipt_email,
+  );
+  const customerName = cleanCustomerName(charge?.billing_details.name ?? paymentMethod?.billing_details.name);
+  return { ...(customerName ? { customerName } : {}), ...(customerEmail ? { customerEmail } : {}) };
+}
+
+async function resolvePaymentCustomerIdentity(intent: Stripe.PaymentIntent, accountId: string, fallbackEmail?: string | null) {
+  const direct = paymentCustomerIdentity(intent);
+  const normalizedFallback = cleanCustomerEmail(fallbackEmail);
+  if (!direct.customerEmail && normalizedFallback) return { ...direct, customerEmail: normalizedFallback };
+  if (direct.customerEmail || (!intent.latest_charge && !intent.payment_method)) return direct;
+  try {
+    const expanded = await getStripeClient().paymentIntents.retrieve(
+      intent.id,
+      { expand: ["latest_charge", "payment_method"] },
+      { stripeContext: accountId },
+    );
+    return paymentCustomerIdentity(expanded);
+  } catch (error) {
+    log.warn({ stripePaymentIntentId: intent.id, stripeAccountId: accountId, errorCode: errorCode(error) }, "Could not resolve payment customer identity");
+    return direct;
+  }
 }
 
 async function finishEvent(id: string, status: "PROCESSED" | "IGNORED", code?: string) {
@@ -89,22 +130,22 @@ function assertIntentMatchesTransaction(
   )) throw new Error("payment_session_metadata_mismatch");
 }
 
-async function updateNonSucceededStatus(transactionId: string, eventType: string) {
+async function updateNonSucceededStatus(transactionId: string, eventType: string, customer: PaymentCustomerIdentity) {
   const db = getDatabase();
   if (eventType === "payment_intent.processing") {
     await db.paymentTransaction.updateMany({
       where: { id: transactionId, status: { notIn: ["SUCCEEDED", "CANCELED"] } },
-      data: { status: "PROCESSING" },
+      data: { status: "PROCESSING", ...customer },
     });
   } else if (eventType === "payment_intent.payment_failed") {
     await db.paymentTransaction.updateMany({
       where: { id: transactionId, status: { notIn: ["SUCCEEDED", "CANCELED"] } },
-      data: { status: "FAILED" },
+      data: { status: "FAILED", ...customer },
     });
   } else if (eventType === "payment_intent.canceled") {
     await db.paymentTransaction.updateMany({
       where: { id: transactionId, status: { not: "SUCCEEDED" } },
-      data: { status: "CANCELED" },
+      data: { status: "CANCELED", ...customer },
     });
   }
 }
@@ -159,10 +200,14 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
       where: { id: eventRecord.id },
       data: { transactionId: transaction.id, stripeAccountId: accountId, stripePaymentIntentId: intent.id },
     });
+    const ecwidCustomer = transaction.source === "ECWID"
+      ? await db.ecwidPaymentSession.findUnique({ where: { paymentTransactionId: transaction.id }, select: { customerEmail: true } })
+      : null;
+    const customer = await resolvePaymentCustomerIdentity(intent, accountId, ecwidCustomer?.customerEmail);
 
     if (event.type === "payment_intent.succeeded") {
       if (intent.status !== "succeeded") throw new Error("unexpected_payment_intent_status");
-      await db.paymentTransaction.update({ where: { id: transaction.id }, data: { status: "SUCCEEDED" } });
+      await db.paymentTransaction.update({ where: { id: transaction.id }, data: { status: "SUCCEEDED", ...customer } });
       if (transaction.source === "ECWID") {
         await syncEcwidForTransaction(transaction.id, "SUCCEEDED");
       } else if (hostedWooSession) {
@@ -178,7 +223,7 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
         });
       }
     } else {
-      await updateNonSucceededStatus(transaction.id, event.type);
+      await updateNonSucceededStatus(transaction.id, event.type, customer);
       if (hostedWooSession) {
         const sessionStatus = event.type === "payment_intent.processing" ? "PROCESSING" : event.type === "payment_intent.canceled" ? "CANCELED" : "FAILED";
         await db.paymentSession.updateMany({ where: { id: hostedWooSession.id, status: { not: "SUCCEEDED" } }, data: { status: sessionStatus } });

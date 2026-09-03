@@ -290,6 +290,8 @@ model PaymentTransaction {
   wooCompletedAt        DateTime?
   source                PaymentSource            @default(WOOCOMMERCE)
   externalReference     String?
+  customerName          String?
+  customerEmail         String?
   status                PaymentTransactionStatus @default(CREATED)
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
@@ -301,6 +303,7 @@ model PaymentTransaction {
   @@unique([merchantId, wooOrderId])
   @@index([stripeAccountId, status])
   @@index([source, status])
+  @@index([merchantId, customerEmail, createdAt])
 }
 
 model WooCommerceInstallation {

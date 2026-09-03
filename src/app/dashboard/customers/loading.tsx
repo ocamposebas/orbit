@@ -1,0 +1,3 @@
+export default function CustomersLoading() {
+  return <div className="mx-auto w-full max-w-[1540px] animate-pulse px-4 py-7 sm:px-7 lg:px-10 lg:py-10"><div className="h-3 w-44 rounded bg-white/[.06]" /><div className="mt-5 h-10 w-60 rounded-xl bg-white/[.07]" /><div className="mt-3 h-3 w-[420px] max-w-full rounded bg-white/[.05]" /><div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-36 rounded-[20px] border border-white/[.05] bg-white/[.025]" />)}</div><div className="mt-6 h-[460px] rounded-[24px] border border-white/[.05] bg-white/[.025]" /></div>;
+}

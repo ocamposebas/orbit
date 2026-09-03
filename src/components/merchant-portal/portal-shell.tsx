@@ -1,24 +1,43 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { ArrowLeftRight, BadgeDollarSign, ChevronDown, CircleHelp, CreditCard, FileText, LayoutDashboard, Layers3, LogOut, Menu, RefreshCw, ScanSearch, Settings, WalletCards, X } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeftRight, BadgeDollarSign, ChevronDown, CircleHelp, CreditCard, FileText, LayoutDashboard, Layers3, LogOut, Menu, RefreshCw, ScanSearch, Settings, UsersRound, WalletCards, X } from "lucide-react";
 import { useState, useTransition } from "react";
 import { cn } from "@/lib/utils";
 
 export function PortalShell({ children, merchantName, merchantId, merchants, userName, adminPortfolio, ownerEarnings, statementsEnabled }: { children: React.ReactNode; merchantName: string; merchantId: string; merchants: Array<{ id: string; businessName: string }>; userName: string; adminPortfolio: boolean; ownerEarnings: boolean; statementsEnabled: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [refreshing, startRefresh] = useTransition();
   const [switching, setSwitching] = useState(false);
-  const merchantNavigation = [
-    { href: adminPortfolio ? "/dashboard?view=brand" : "/dashboard", label: "Overview", icon: LayoutDashboard },
-    { href: adminPortfolio ? `/dashboard/payments?merchant=${encodeURIComponent(merchantId)}` : "/dashboard/payments", label: "Payments", icon: CreditCard },
+  const workspaceNavigation = adminPortfolio ? [
+    { href: "/dashboard", label: "Portfolio", icon: Layers3, active: pathname === "/dashboard" && searchParams.get("view") !== "brand" },
+    { href: "/dashboard/customers", label: "Customers", icon: UsersRound, active: pathname.startsWith("/dashboard/customers") },
+    { href: "/dashboard/payments", label: "All payments", icon: CreditCard, active: pathname.startsWith("/dashboard/payments") },
+    ...(ownerEarnings ? [{ href: "/dashboard/earnings", label: "ORBIT Earnings", icon: BadgeDollarSign, active: pathname.startsWith("/dashboard/earnings") }] : []),
+  ] : [];
+  const accountNavigation = [
+    { href: adminPortfolio ? "/dashboard?view=brand" : "/dashboard", label: "Overview", icon: LayoutDashboard, active: pathname === "/dashboard" && (!adminPortfolio || searchParams.get("view") === "brand") },
+    ...(!adminPortfolio ? [
+      { href: "/dashboard/payments", label: "Payments", icon: CreditCard, active: pathname.startsWith("/dashboard/payments") },
+      { href: "/dashboard/customers", label: "Customers", icon: UsersRound, active: pathname.startsWith("/dashboard/customers") },
+    ] : []),
     { href: "/dashboard/payouts", label: "Transfers", icon: WalletCards },
     ...(statementsEnabled ? [{ href: "/dashboard/statements", label: "Statements", icon: FileText }] : []),
-    { href: "/dashboard/scans", label: "Scans", icon: ScanSearch },
   ];
+  const operationsNavigation = [{ href: "/dashboard/scans", label: "Scans", icon: ScanSearch }];
+
+  function navigationItems(items: Array<{ href: string; label: string; icon: typeof LayoutDashboard; active?: boolean }>) {
+    return items.map((item) => {
+      const Icon = item.icon;
+      const baseHref = item.href.split("?")[0];
+      const active = item.active ?? (baseHref === "/dashboard" ? pathname === "/dashboard" : pathname.startsWith(baseHref));
+      return <Link key={item.label} href={item.href} onClick={() => setMobileOpen(false)} className={cn("mb-1 flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-medium transition", active ? "bg-[#7868e8]/12 text-[#b3a9ff]" : "text-[#777c88] hover:bg-white/[.04] hover:text-white")}><Icon className={cn("size-4", active ? "text-[#9788f3]" : "text-[#676c78]")} />{item.label}</Link>;
+    });
+  }
 
   function refresh() {
     startRefresh(() => router.refresh());
@@ -48,7 +67,11 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
           {merchants.length > 1 && <><ChevronDown className="size-3.5 text-[#a0a4ac]" /><select value={merchantId} disabled={switching} onChange={(event) => void switchMerchant(event.target.value)} className="absolute inset-0 cursor-pointer opacity-0" aria-label="Switch merchant account">{merchants.map((merchant) => <option key={merchant.id} value={merchant.id}>{merchant.businessName}</option>)}</select></>}
         </div>
       </div>
-      <nav className="px-3" aria-label="Merchant portal navigation">{adminPortfolio && <><Link href="/dashboard" onClick={() => setMobileOpen(false)} className={cn("mb-1 flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-medium transition", pathname === "/dashboard" ? "bg-[#7868e8]/12 text-[#b3a9ff]" : "text-[#777c88] hover:bg-white/[.04] hover:text-white")}><Layers3 className="size-4 text-[#9182f0]" />Portfolio</Link><Link href="/dashboard/payments" onClick={() => setMobileOpen(false)} className={cn("mb-1 flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-medium transition", pathname.startsWith("/dashboard/payments") ? "bg-[#7868e8]/12 text-[#b3a9ff]" : "text-[#777c88] hover:bg-white/[.04] hover:text-white")}><CreditCard className="size-4 text-[#9182f0]" />All payments</Link>{ownerEarnings && <Link href="/dashboard/earnings" onClick={() => setMobileOpen(false)} className={cn("mb-4 flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-medium transition", pathname.startsWith("/dashboard/earnings") ? "bg-[#7868e8]/12 text-[#b3a9ff]" : "text-[#777c88] hover:bg-white/[.04] hover:text-white")}><BadgeDollarSign className="size-4 text-[#9182f0]" />ORBIT Earnings</Link>}<p className="mb-2 px-3 text-[8px] font-semibold uppercase tracking-[.14em] text-[#4f5460]">Selected brand</p></>}{merchantNavigation.map((item) => { const Icon = item.icon; const baseHref = item.href.split("?")[0]; const active = baseHref === "/dashboard" ? pathname === "/dashboard" : pathname.startsWith(baseHref); return <Link key={item.label} href={item.href} onClick={() => setMobileOpen(false)} className={cn("mb-1 flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] font-medium transition", active ? "bg-[#7868e8]/12 text-[#b3a9ff]" : "text-[#777c88] hover:bg-white/[.04] hover:text-white")}><Icon className={cn("size-4", active ? "text-[#9788f3]" : "text-[#676c78]")} />{item.label}</Link>; })}</nav>
+      <nav className="flex-1 overflow-y-auto px-3 pb-3" aria-label="Merchant portal navigation">
+        {adminPortfolio && <section className="mb-5" aria-label="Workspace navigation"><p className="mb-2 px-3 text-[8px] font-semibold uppercase tracking-[.14em] text-[#4f5460]">Workspace</p>{navigationItems(workspaceNavigation)}</section>}
+        <section className="mb-5" aria-label="Account navigation"><p className="mb-2 px-3 text-[8px] font-semibold uppercase tracking-[.14em] text-[#4f5460]">{adminPortfolio ? "Selected brand" : "Account"}</p>{navigationItems(accountNavigation)}</section>
+        <section aria-label="Operations navigation"><p className="mb-2 px-3 text-[8px] font-semibold uppercase tracking-[.14em] text-[#4f5460]">Operations</p>{navigationItems(operationsNavigation)}</section>
+      </nav>
       <div className="mt-auto px-3 pb-4">
         <Link href="/dashboard/settings" className="flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] text-[#707581] hover:bg-white/[.04] hover:text-white"><Settings className="size-4" />Settings</Link>
         <Link href="/contact" className="flex h-10 items-center gap-3 rounded-[10px] px-3 text-[12px] text-[#707581] hover:bg-white/[.04] hover:text-white"><CircleHelp className="size-4" />Support</Link>
