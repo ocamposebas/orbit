@@ -57,6 +57,18 @@ const serverEnvSchema = z.object({
   STRIPE_CONNECT_WEBHOOK_SECRET: optionalNonEmpty,
   STRIPE_PAYMENTS_WEBHOOK_SECRET: optionalNonEmpty,
   STRIPE_API_VERSION: optionalNonEmpty,
+  STATEMENTS_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  STATEMENT_TIMEZONE: z.string().default("America/Chicago").refine((value) => { try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; } catch { return false; } }, "Invalid IANA timezone"),
+  STATEMENT_GENERATION_DAY: z.coerce.number().int().min(1).max(28).default(1),
+  STATEMENT_GENERATION_HOUR: z.coerce.number().int().min(0).max(23).default(8),
+  SMTP_HOST: optionalNonEmpty,
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+  SMTP_SECURITY: z.enum(["starttls", "tls"]).default("starttls"),
+  SMTP_USERNAME: optionalNonEmpty,
+  SMTP_PASSWORD: optionalNonEmpty,
+  SMTP_FROM_EMAIL: z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().email().optional()),
+  SMTP_FROM_NAME: z.string().trim().min(1).default("ORBIT"),
+  SMTP_REPLY_TO: z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.string().email().optional()),
   ECWID_ENABLED: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   ECWID_STORE_ID: optionalNonEmpty,
   ECWID_CLIENT_ID: optionalNonEmpty,
@@ -72,4 +84,11 @@ let cached: ServerEnv | undefined;
 export function getServerEnv(): ServerEnv {
   cached ??= serverEnvSchema.parse(process.env);
   return cached;
+}
+
+export function validateStatementEmailConfiguration(env = getServerEnv()) {
+  const configured = [env.SMTP_HOST, env.SMTP_USERNAME, env.SMTP_PASSWORD, env.SMTP_FROM_EMAIL].filter(Boolean).length;
+  if (configured === 0) return { configured: false as const };
+  if (configured !== 4) throw new Error("SMTP configuration is incomplete; host, username, password and from address are required together");
+  return { configured: true as const };
 }

@@ -104,6 +104,10 @@ The installation-based hosted WooCommerce payment flow is documented in [`docs/w
 - `GET /api/ai-scanner/scans/:id/report` — authenticated AI Scanner PDF;
 - `PATCH /api/ai-scanner/findings/:id` — authorized human finding decision;
 - `POST /api/internal/ai-scanner/schedule` — enqueue due monitored sites with `Authorization: Bearer <INTERNAL_JOB_SECRET>`.
+- `POST /api/internal/statements/schedule` — idempotently enqueue the prior calendar month's merchant statements when the configured local schedule is due.
+- `POST /api/internal/statements/generate` — owner/admin dry-run or manual generation through the production service.
+
+Statement recognition, reconciliation, SMTP delivery, retries, and safe testing are documented in [`docs/merchant-statements.md`](docs/merchant-statements.md).
 
 Merchant and payment endpoints under `/api/sentinel/merchants/...` are retained for compatibility and continue to serve non-scanner ORBIT functionality. They read AI Scanner v1 results when assembling merchant dashboard data.
 

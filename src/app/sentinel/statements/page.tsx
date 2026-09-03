@@ -1,0 +1,11 @@
+import { redirect } from "next/navigation";
+import { StatementAdminActions } from "@/components/sentinel/statement-admin-actions";
+import { currentSession } from "@/sentinel/auth/session";
+import { getDatabase } from "@/sentinel/db";
+
+export default async function InternalStatementsPage() {
+  const session = await currentSession(); if (!session) redirect("/login?next=/sentinel/statements");
+  if (!["OWNER", "ADMIN", "ANALYST"].includes(session.role)) redirect("/sentinel");
+  const statements = await getDatabase().merchantStatement.findMany({ where: { merchant: { organizationId: session.organization.id } }, include: { merchant: { select: { businessName: true } } }, orderBy: { createdAt: "desc" }, take: 200 });
+  return <div className="p-5 sm:p-8"><header><p className="text-[9px] uppercase tracking-[.14em] text-[#9294ff]">Financial operations</p><h1 className="mt-2 text-3xl font-semibold">Statement operations</h1><p className="mt-2 text-[11px] text-[#777c86]">Generation, reconciliation and delivery visibility. Financial snapshot values are read-only.</p></header><section className="mt-7 overflow-x-auto rounded-xl border border-white/[.08] bg-[#0c0e12]"><table className="w-full min-w-[950px] text-left"><thead><tr className="border-b border-white/[.07]">{["Merchant", "Period", "Statement", "Generation", "Email", "Attempts", "Actions"].map((item) => <th key={item} className="px-4 py-3 text-[8px] uppercase text-[#626770]">{item}</th>)}</tr></thead><tbody>{statements.map((statement) => <tr key={statement.id} className="border-b border-white/[.05] last:border-0"><td className="px-4 py-4 text-[10px]">{statement.merchant.businessName}</td><td className="px-4 text-[9px] text-[#8a8f98]">{statement.periodStart.toISOString().slice(0, 7)} · {statement.currency}</td><td className="px-4 font-mono text-[8px] text-[#9b9df2]">{statement.publicId}</td><td className="px-4 text-[8px]">{statement.status}</td><td className="px-4 text-[8px]">{statement.emailStatus}</td><td className="px-4 text-[9px]">{statement.emailAttemptCount}</td><td className="px-4"><StatementAdminActions statementId={statement.id} canAct={["OWNER", "ADMIN"].includes(session.role)} /></td></tr>)}</tbody></table>{!statements.length && <p className="p-12 text-center text-[10px] text-[#6d727b]">No statements have been generated.</p>}</section></div>;
+}

@@ -136,6 +136,8 @@ model Merchant {
   wooCommerceRelay           WooCommerceRelayIntegration?
   wooCommerceInstallations   WooCommerceInstallation[]
   wooCommerceConnectionCodes WooCommerceConnectionCode[]
+  statements                 MerchantStatement[]
+  monthlyStatementEmailEnabled Boolean                    @default(true)
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
@@ -466,12 +468,112 @@ model MerchantAccess {
   userId             String
   merchantId         String
   canInitiatePayouts Boolean  @default(false)
+  canManageStatements Boolean @default(false)
   createdAt          DateTime @default(now())
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   merchant           Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   @@unique([userId, merchantId])
   @@index([merchantId])
+}
+
+model MerchantStatement {
+  id                    String               @id @default(cuid())
+  publicId              String               @unique
+  merchantId            String
+  periodStart           DateTime
+  periodEnd             DateTime
+  currency              String
+  status                StatementStatus      @default(GENERATING)
+  openingBalanceMinor   BigInt
+  grossPaymentsMinor    BigInt
+  refundsMinor          BigInt
+  disputesMinor         BigInt
+  processingFeesMinor   BigInt
+  orbitFeesMinor        BigInt
+  adjustmentsMinor      BigInt
+  netActivityMinor      BigInt
+  payoutsMinor          BigInt
+  closingBalanceMinor   BigInt
+  paymentCount          Int
+  refundCount           Int
+  disputeCount          Int
+  generatedAt           DateTime             @default(now())
+  finalizedAt           DateTime?
+  emailStatus           StatementEmailStatus @default(PENDING)
+  emailAttemptCount     Int                  @default(0)
+  lastEmailAttemptAt    DateTime?
+  emailSentAt           DateTime?
+  emailMessageId        String?
+  lastEmailErrorCode    String?
+  pdfData               Bytes?
+  pdfStorageReference   String?
+  pdfSha256             String?
+  checksum              String?
+  version               Int                  @default(1)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  merchant              Merchant             @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  lineItems             StatementLineItem[]
+  payouts               StatementPayout[]
+  deliveryAttempts      StatementDeliveryAttempt[]
+
+  @@unique([merchantId, periodStart, currency, version])
+  @@index([merchantId, periodStart])
+  @@index([merchantId, createdAt])
+  @@index([status])
+  @@index([emailStatus])
+}
+
+model StatementLineItem {
+  id                       String            @id @default(cuid())
+  statementId              String
+  externalId               String
+  type                     StatementLineType
+  processorType            String
+  reportingCategory        String
+  reference                String?
+  description              String?
+  amountMinor              BigInt
+  processingFeeMinor       BigInt
+  orbitFeeMinor            BigInt
+  netMinor                 BigInt
+  occurredAt               DateTime
+  statement                MerchantStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+
+  @@unique([statementId, externalId])
+  @@index([statementId, occurredAt])
+  @@index([statementId, type])
+}
+
+model StatementPayout {
+  id                 String            @id @default(cuid())
+  statementId        String
+  externalId         String
+  initiatedAt        DateTime
+  arrivalAt          DateTime?
+  status             String
+  amountMinor        BigInt
+  currency           String
+  destinationSummary String?
+  statement          MerchantStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+
+  @@unique([statementId, externalId])
+  @@index([statementId, initiatedAt])
+}
+
+model StatementDeliveryAttempt {
+  id          String            @id @default(cuid())
+  statementId String
+  attempt     Int
+  status      StatementEmailStatus
+  errorCode   String?
+  messageId   String?
+  attemptedAt DateTime          @default(now())
+  statement   MerchantStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+
+  @@unique([statementId, attempt])
+  @@index([status, attemptedAt])
 }
 
 model MerchantSite {
@@ -1602,6 +1704,29 @@ enum WorkerType {
   ANALYSIS
   EVIDENCE
   AI_SCANNER
+  STATEMENTS
+}
+
+enum StatementStatus {
+  GENERATING
+  FINALIZED
+  RECONCILIATION_FAILED
+  PDF_FAILED
+}
+
+enum StatementEmailStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+enum StatementLineType {
+  PAYMENT
+  REFUND
+  DISPUTE
+  PAYOUT
+  ADJUSTMENT
 }
 
 enum AiScanStatus {

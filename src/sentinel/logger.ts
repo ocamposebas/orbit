@@ -10,7 +10,7 @@ function truncate(value: string, maximumLength: number) {
 }
 
 export function sanitizeLogText(value: string, maximumLength = MAX_ERROR_MESSAGE_LENGTH) {
-  const configuredSecrets = [process.env.OPENAI_API_KEY, process.env.ECWID_CLIENT_SECRET, process.env.ECWID_SECRET_TOKEN, process.env.ORBIT_SECRET_ENCRYPTION_KEY]
+  const configuredSecrets = [process.env.OPENAI_API_KEY, process.env.ECWID_CLIENT_SECRET, process.env.ECWID_SECRET_TOKEN, process.env.ORBIT_SECRET_ENCRYPTION_KEY, process.env.SMTP_PASSWORD]
     .filter((secret): secret is string => Boolean(secret));
   const withoutConfiguredSecrets = configuredSecrets.reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
   return truncate(withoutConfiguredSecrets, maximumLength)
@@ -47,7 +47,7 @@ export const logger = pino({
     error: serializeErrorForLog,
     err: serializeErrorForLog,
   },
-  redact: ["req.headers.authorization", "OPENAI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "ECWID_CLIENT_SECRET", "ECWID_SECRET_TOKEN", "ORBIT_SECRET_ENCRYPTION_KEY", "enc_data", "returnUrl", "clientSecret", "installationSecret", "installation_secret", "password", "encryptedConfig", "secret", "signature"],
+  redact: ["req.headers.authorization", "OPENAI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "ECWID_CLIENT_SECRET", "ECWID_SECRET_TOKEN", "ORBIT_SECRET_ENCRYPTION_KEY", "SMTP_PASSWORD", "smtpPassword", "enc_data", "returnUrl", "clientSecret", "installationSecret", "installation_secret", "password", "encryptedConfig", "secret", "signature"],
 });
 
 export function childLogger(context: Record<string, string | number | undefined>) {

@@ -26,6 +26,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
 COPY src ./src
+COPY public ./public
 COPY prisma ./prisma
 COPY prisma.config.ts tsconfig.json ./
 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, Bell, Boxes, FileClock, LogOut, Menu, Radar, Search, Settings, ShieldCheck, WalletCards, X } from "lucide-react";
+import { Activity, Bell, Boxes, FileClock, FileText, LogOut, Menu, Radar, Search, Settings, ShieldCheck, WalletCards, X } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { SentinelRoleProvider } from "./auth-context";
@@ -10,6 +10,7 @@ import { SentinelRoleProvider } from "./auth-context";
 const links = [
   { href: "/sentinel", label: "Watchtower", icon: Radar },
   { href: "/dashboard", label: "Financial portfolio", icon: WalletCards },
+  { href: "/sentinel/statements", label: "Statements", icon: FileText },
   { href: "/sentinel#merchants", label: "Merchants", icon: Boxes },
   { href: "/sentinel#review", label: "Review queue", icon: ShieldCheck },
   { href: "/sentinel#activity", label: "Activity", icon: Activity },

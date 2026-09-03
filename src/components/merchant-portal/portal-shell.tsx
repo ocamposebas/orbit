@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowLeftRight, BadgeDollarSign, ChevronDown, CircleHelp, CreditCard, LayoutDashboard, Layers3, LogOut, Menu, RefreshCw, ScanSearch, Settings, WalletCards, X } from "lucide-react";
+import { ArrowLeftRight, BadgeDollarSign, ChevronDown, CircleHelp, CreditCard, FileText, LayoutDashboard, Layers3, LogOut, Menu, RefreshCw, ScanSearch, Settings, WalletCards, X } from "lucide-react";
 import { useState, useTransition } from "react";
 import { cn } from "@/lib/utils";
 
-export function PortalShell({ children, merchantName, merchantId, merchants, userName, adminPortfolio, ownerEarnings }: { children: React.ReactNode; merchantName: string; merchantId: string; merchants: Array<{ id: string; businessName: string }>; userName: string; adminPortfolio: boolean; ownerEarnings: boolean }) {
+export function PortalShell({ children, merchantName, merchantId, merchants, userName, adminPortfolio, ownerEarnings, statementsEnabled }: { children: React.ReactNode; merchantName: string; merchantId: string; merchants: Array<{ id: string; businessName: string }>; userName: string; adminPortfolio: boolean; ownerEarnings: boolean; statementsEnabled: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -16,6 +16,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
     { href: adminPortfolio ? "/dashboard?view=brand" : "/dashboard", label: "Overview", icon: LayoutDashboard },
     { href: adminPortfolio ? `/dashboard/payments?merchant=${encodeURIComponent(merchantId)}` : "/dashboard/payments", label: "Payments", icon: CreditCard },
     { href: "/dashboard/payouts", label: "Transfers", icon: WalletCards },
+    ...(statementsEnabled ? [{ href: "/dashboard/statements", label: "Statements", icon: FileText }] : []),
     { href: "/dashboard/scans", label: "Scans", icon: ScanSearch },
   ];
 
