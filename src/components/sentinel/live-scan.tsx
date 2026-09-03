@@ -224,7 +224,7 @@ export function LiveScan({ scanId }: { scanId: string }) {
       setManualText("");
       setShowPasteImport(false);
       setNotice(
-        "Saved — the complete source and its indexed content are now documented. Previous imports remain available in history.",
+        "Saved - this document is now the current assessment. Only its active findings remain open; previous imports stay available in history.",
       );
     } catch (cause) {
       setError(

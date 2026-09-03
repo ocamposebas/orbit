@@ -39,7 +39,7 @@ export function MerchantDashboard({ merchantId, stripeReturn = "", openStripe = 
     <nav className="-mx-4 flex overflow-x-auto border-b border-white/[.07] px-4 sm:-mx-7 sm:px-7 lg:-mx-10 lg:px-10" aria-label="Merchant sections">{tabs.map((item) => <button key={item} onClick={() => setTab(item)} className={cn("relative h-12 shrink-0 px-3 text-[10px] transition-colors", tab === item ? "text-[#e4e5e1] after:absolute after:inset-x-3 after:bottom-0 after:h-px after:bg-[#8588f2]" : "text-[#676b73] hover:text-[#aaa] ")}>{item}</button>)}</nav>
     {tab === "Overview" && <><PortalActivationPanel merchant={merchant} reload={load} canManage={canManageIntegrations} /><Overview merchant={merchant} score={score} counts={counts} activeFindings={activeFindings} setTab={setTab} /></>}
     {tab === "Contract" && <ContractPanel merchant={merchant} canManage={canEdit} canAdminister={canManageIntegrations} reload={load} />}
-    {tab === "Findings" && <Findings findings={merchant.findings} reload={load} canReview={canReview} />}
+    {tab === "Findings" && <Findings findings={activeFindings} reload={load} canReview={canReview} />}
     {tab === "Products" && <Products merchant={merchant} />}
     {tab === "Policies" && <Policies merchant={merchant} />}
     {tab === "Scans" && <Scans merchant={merchant} />}

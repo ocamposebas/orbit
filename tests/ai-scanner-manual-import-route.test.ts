@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   evidenceFindMany: vi.fn(),
   evidenceDeleteMany: vi.fn(),
   findingDeleteMany: vi.fn(),
+  findingUpdateMany: vi.fn(),
   findingCreate: vi.fn(),
   findingEvidenceCreate: vi.fn(),
   productDeleteMany: vi.fn(),
@@ -58,7 +59,7 @@ describe("AI Scanner document import route", () => {
     vi.clearAllMocks();
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<void>) => callback({
       aiEvidence: { upsert: mocks.upsert, createMany: mocks.createMany, findMany: mocks.evidenceFindMany, deleteMany: mocks.evidenceDeleteMany },
-      aiFinding: { deleteMany: mocks.findingDeleteMany, create: mocks.findingCreate },
+      aiFinding: { deleteMany: mocks.findingDeleteMany, updateMany: mocks.findingUpdateMany, create: mocks.findingCreate },
       aiFindingEvidence: { create: mocks.findingEvidenceCreate },
       aiProduct: { deleteMany: mocks.productDeleteMany, createMany: mocks.productCreateMany },
       aiScan: { update: mocks.update, deleteMany: mocks.scanDeleteMany },
@@ -84,6 +85,7 @@ describe("AI Scanner document import route", () => {
     mocks.createMany.mockResolvedValue({ count: 1 });
     mocks.evidenceFindMany.mockResolvedValue([{ id: "evidence-page-1", sha256: expect.anything() }]);
     mocks.findingDeleteMany.mockResolvedValue({ count: 0 });
+    mocks.findingUpdateMany.mockResolvedValue({ count: 12 });
     mocks.findingCreate.mockResolvedValue({ id: "finding-1" });
     mocks.findingEvidenceCreate.mockResolvedValue({});
     mocks.productDeleteMany.mockResolvedValue({ count: 0 });
@@ -108,6 +110,10 @@ describe("AI Scanner document import route", () => {
     expect(mocks.scanDeleteMany).not.toHaveBeenCalled();
     expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ importedReportMimeType: "text/plain", summary: "Imported document fully indexed.", observations: expect.any(Array) }) }));
     expect(mocks.findingDeleteMany).toHaveBeenCalledWith({ where: { scanId: "scan-1" } });
+    expect(mocks.findingUpdateMany).toHaveBeenCalledWith({
+      where: { merchantId: "merchant-1", status: { in: ["OPEN", "NEEDS_REVIEW", "CONFIRMED", "ACCEPTED_RISK"] } },
+      data: { status: "RESOLVED" },
+    });
     expect(mocks.productDeleteMany).toHaveBeenCalledWith({ where: { scanId: "scan-1" } });
     expect(mocks.findingCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ title: "Policy contradiction", severity: "HIGH", remediation: "Consolidate the policies." }) }));
     expect(mocks.findingEvidenceCreate).toHaveBeenCalledOnce();

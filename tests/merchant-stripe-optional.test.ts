@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ merchantFind: vi.fn(), stripeFind: vi.fn(), relayFind: vi.fn(), installationFindMany: vi.fn(), warn: vi.fn() }));
+const mocks = vi.hoisted(() => ({ merchantFind: vi.fn(), stripeFind: vi.fn(), relayFind: vi.fn(), installationFindMany: vi.fn(), evidenceFindMany: vi.fn(), warn: vi.fn() }));
 
-vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({ merchant: { findFirst: mocks.merchantFind }, stripeConnectIntegration: { findUnique: mocks.stripeFind }, wooCommerceRelayIntegration: { findUnique: mocks.relayFind }, wooCommerceInstallation: { findMany: mocks.installationFindMany } }) }));
+vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({ merchant: { findFirst: mocks.merchantFind }, aiEvidence: { findMany: mocks.evidenceFindMany }, stripeConnectIntegration: { findUnique: mocks.stripeFind }, wooCommerceRelayIntegration: { findUnique: mocks.relayFind }, wooCommerceInstallation: { findMany: mocks.installationFindMany } }) }));
 vi.mock("@/sentinel/logger", () => ({ childLogger: () => ({ warn: mocks.warn }) }));
 vi.mock("@/sentinel/http", () => {
   class HttpError extends Error { constructor(readonly status: number, message: string) { super(message); } }
@@ -20,6 +20,7 @@ describe("optional Stripe schema on the merchant dashboard", () => {
     mocks.stripeFind.mockResolvedValue(null);
     mocks.relayFind.mockResolvedValue(null);
     mocks.installationFindMany.mockResolvedValue([]);
+    mocks.evidenceFindMany.mockResolvedValue([]);
   });
 
   it.each(["P2021", "P2022"])("keeps Sentinel available when Prisma reports %s for the Relay table", async (code) => {
@@ -45,5 +46,37 @@ describe("optional Stripe schema on the merchant dashboard", () => {
     const { GET } = await import("@/app/api/sentinel/merchants/[merchantId]/route");
     const response = await GET(new Request("http://localhost/api/sentinel/merchants/merchant_1") as never, { params: Promise.resolve({ merchantId: "merchant_1" }) });
     expect(response.status).toBe(500);
+  });
+
+  it("returns findings only from the latest assessment", async () => {
+    const finding = (id: string, scanId: string) => ({
+      id,
+      scanId,
+      title: id,
+      explanation: `${id} explanation`,
+      remediation: `${id} remediation`,
+      affectedUrl: "https://merchant.example/",
+      createdAt: new Date("2026-09-03T12:00:00Z"),
+      evidence: [],
+    });
+    mocks.merchantFind.mockResolvedValueOnce({
+      id: "merchant_1",
+      organizationId: "org_1",
+      businessName: "Merchant",
+      aiScans: [
+        { id: "scan-new", status: "COMPLETED", score: 91, scoreBreakdown: {}, coverage: {}, createdAt: new Date("2026-09-03T12:00:00Z"), products: [], _count: { findings: 1 } },
+        { id: "scan-old", status: "COMPLETED", score: 34, scoreBreakdown: {}, coverage: {}, createdAt: new Date("2026-09-01T12:00:00Z"), products: [], _count: { findings: 1 } },
+      ],
+      aiFindings: [finding("Current issue", "scan-new"), finding("Already fixed issue", "scan-old")],
+      auditLogs: [],
+    });
+
+    const { GET } = await import("@/app/api/sentinel/merchants/[merchantId]/route");
+    const response = await GET(new Request("http://localhost/api/sentinel/merchants/merchant_1") as never, { params: Promise.resolve({ merchantId: "merchant_1" }) });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.merchant.findings).toHaveLength(1);
+    expect(body.merchant.findings[0]).toMatchObject({ id: "Current issue", scanId: "scan-new" });
   });
 });

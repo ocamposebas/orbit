@@ -79,10 +79,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
     const { aiScans: returnedAiScans, aiFindings: returnedAiFindings, ...merchantBase } = merchant;
     const aiScans = returnedAiScans ?? [];
-    const aiFindings = returnedAiFindings ?? [];
+    const latest = aiScans[0];
+    // The merchant dashboard is a current-state view. Older scan findings stay
+    // in the database and evidence history, but must not remain mixed into the
+    // active red findings after a newer assessment replaces them.
+    const aiFindings = (returnedAiFindings ?? []).filter((finding) => finding.scanId === latest?.id);
     const scans = aiScans.map((scan) => ({ ...scan, mode: "LUNA_AI", progress: scan.coverage, pagesProcessed: scanCoverageNumber(scan.coverage, "pagesOpened"), productsDetected: scanCoverageValue(scan.coverage, "productsVerified"), policiesDetected: scanCoverageNumber(scan.coverage, "policyPagesInspected"), findingsCreated: scan._count.findings, findingsResolved: 0, scoreBefore: null, scoreAfter: scan.score }));
     const findings = aiFindings.map((finding) => ({ ...finding, description: finding.explanation, url: finding.affectedUrl, detectedText: null, reason: finding.explanation, recommendedAction: finding.remediation, lastDetectedAt: finding.createdAt, evidence: finding.evidence.map((link) => ({ ...link.evidence, pageUrl: link.evidence.sourceUrl, normalizedText: link.evidence.exactText, evidenceSnippet: link.evidence.exactText })) }));
-    const latest = aiScans[0];
     const latestEvidence = latest ? await db.aiEvidence.findMany({
       where: { scanId: latest.id, validated: true },
       select: { id: true, toolName: true, kind: true, sourceUrl: true, destinationUrl: true, exactText: true, metadata: true, surroundingDom: true },

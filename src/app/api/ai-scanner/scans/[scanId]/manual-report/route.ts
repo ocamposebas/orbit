@@ -86,6 +86,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }));
 
     let importEvidenceId = "";
+    let supersededFindings = 0;
     await db.$transaction(async (tx) => {
       const importedEvidence = await tx.aiEvidence.upsert({
         where: { scanId_sha256: { scanId, sha256: importEvidenceSha } },
@@ -138,8 +139,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         return evidence ? [[unit.page.pageNumber, evidence.id] as const] : [];
       }));
 
-      // The source/history evidence remains immutable. Only the active scan's
-      // derived dashboard entities are replaced by the newly selected import.
+      // A new imported document is the merchant's authoritative current
+      // assessment. Keep the old scans and evidence as history, but retire
+      // every finding that was still active before materializing this new
+      // snapshot so fixed issues no longer remain red on the merchant.
+      const superseded = await tx.aiFinding.updateMany({
+        where: {
+          merchantId: scan.merchantId,
+          status: { in: ["OPEN", "NEEDS_REVIEW", "CONFIRMED", "ACCEPTED_RISK"] },
+        },
+        data: { status: "RESOLVED" },
+      });
+      supersededFindings = superseded.count;
+
+      // Re-importing into the same scan replaces its derived rows. The source
+      // document and page evidence remain immutable in the import history.
       await tx.aiFinding.deleteMany({ where: { scanId } });
       await tx.aiProduct.deleteMany({ where: { scanId } });
 
@@ -240,6 +254,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             characterCount: fullText.length,
             metrics,
             structuredCounts: metadata.structuredCounts,
+            supersededFindings,
           },
         },
       });
@@ -253,6 +268,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         sha256: upload.sha256,
         uploadedAt,
         characterCount: fullText.length,
+        supersededFindings,
         metrics,
       },
     }, { status: 201 });
