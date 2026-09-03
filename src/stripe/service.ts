@@ -2,7 +2,7 @@ import type Stripe from "stripe";
 import { getDatabase } from "@/sentinel/db";
 import { HttpError } from "@/sentinel/http";
 import { childLogger } from "@/sentinel/logger";
-import { assertStripeEnvironment, getStripeClient, getStripeConfiguration, stripeApiUnavailable, stripeEnvironment, type StripeAccountApi } from "./client";
+import { assertStripeEnvironment, getStripeClient, getStripeConfiguration, getStripePublishableKey, stripeApiUnavailable, stripeEnvironment, type StripeAccountApi } from "./client";
 import { isStripeConnectCountry, type StripeConnectCountryCode } from "./countries";
 import { normalizeV1Account, normalizeV2Account, type NormalizedStripeState } from "./normalize";
 import { stripeOnboardingUrls } from "./onboarding-navigation";
@@ -12,6 +12,17 @@ const ownerAdminRoles = new Set(["OWNER", "ADMIN"]);
 
 export function canManageStripeConnect(role: string) { return ownerAdminRoles.has(role); }
 export function stripeConnectIdempotencyKey(merchantId: string, api: StripeAccountApi, mode: "test" | "live") { return `orbit-connect-${api}-${mode}-${merchantId}`; }
+export function buildStripeEmbeddedOnboardingSessionParams(stripeAccountId: string): Stripe.AccountSessionCreateParams {
+  return {
+    account: stripeAccountId,
+    components: {
+      account_onboarding: {
+        enabled: true,
+        features: { external_account_collection: true },
+      },
+    },
+  };
+}
 
 export function requireStripeLegalCountry(value: string | null | undefined): StripeConnectCountryCode {
   if (!value) throw new HttpError(422, "Set the merchant's legal business country before connecting Stripe.");
@@ -210,6 +221,30 @@ export async function createStripeOnboardingLink(merchantId: string, actorId?: s
     await audit({ organizationId: integration.merchant.organizationId, merchantId, actorId, action: "STRIPE_ONBOARDING_STARTED", targetId: integration.id, metadata: { accountApi: api } });
     return { url: link.url };
   } catch (error) { return mapStripeFailure(error, api); }
+}
+
+export async function createStripeEmbeddedOnboardingSession(merchantId: string, actorId?: string) {
+  const db = getDatabase();
+  const config = getStripeConfiguration();
+  if (!config.configured) throw new HttpError(503, "Stripe Connect is not configured");
+  const publishableKey = getStripePublishableKey();
+  const integration = await db.stripeConnectIntegration.findUnique({ where: { merchantId }, include: { merchant: { select: { organizationId: true } } } });
+  if (!integration) throw new HttpError(409, "Connect Stripe before starting verification");
+  if (integration.stripeEnvironment !== stripeEnvironment(config.mode)) throw new HttpError(409, "Stripe environment mismatch");
+  try {
+    const accountSession = await getStripeClient().accountSessions.create(buildStripeEmbeddedOnboardingSessionParams(integration.stripeAccountId));
+    assertStripeEnvironment(accountSession.livemode, config.mode);
+    if (accountSession.account !== integration.stripeAccountId) throw new HttpError(409, "Stripe returned an unexpected connected account session");
+    if (!accountSession.client_secret) throw new HttpError(502, "Stripe did not return an embedded onboarding session");
+    if (!integration.onboardingStartedAt) {
+      await db.stripeConnectIntegration.update({ where: { id: integration.id }, data: { onboardingStartedAt: new Date() } });
+    }
+    await audit({ organizationId: integration.merchant.organizationId, merchantId, actorId, action: "STRIPE_EMBEDDED_ONBOARDING_SESSION_CREATED", targetId: integration.id, metadata: { accountApi: integration.accountApiVersion === "V2" ? "v2" : "v1", expiresAt: accountSession.expires_at } });
+    return { clientSecret: accountSession.client_secret, publishableKey, expiresAt: accountSession.expires_at };
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    return mapStripeFailure(error, "v1");
+  }
 }
 
 export function safeStripeIntegration<T extends {

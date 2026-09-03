@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { HttpError } from "@/sentinel/http";
-import { inspectStripeKey } from "@/stripe/client";
+import { inspectStripeKey, inspectStripePublishableKey } from "@/stripe/client";
 import { normalizeV1Account, normalizeV2Account, stripeRequirementLabel } from "@/stripe/normalize";
-import { buildStripeV2AccountCreateParams, canManageStripeConnect, requireStripeLegalCountry, stripeConnectIdempotencyKey } from "@/stripe/service";
+import { buildStripeEmbeddedOnboardingSessionParams, buildStripeV2AccountCreateParams, canManageStripeConnect, requireStripeLegalCountry, stripeConnectIdempotencyKey } from "@/stripe/service";
 
 function v2Account(overrides: Record<string, unknown> = {}) {
   return {
@@ -29,6 +29,14 @@ describe("Stripe Connect configuration and authorization", () => {
   it("fails clearly when test and live environments are mixed", () => {
     expect(() => inspectStripeKey("sk_test_example", "live")).toThrow(HttpError);
     expect(() => inspectStripeKey("rk_live_example", "test")).toThrow(/does not match/);
+    expect(() => inspectStripePublishableKey("pk_live_example", "test")).toThrow(/does not match/);
+  });
+
+  it("limits embedded sessions to onboarding without payment-management permissions", () => {
+    expect(buildStripeEmbeddedOnboardingSessionParams("acct_orbit")).toEqual({
+      account: "acct_orbit",
+      components: { account_onboarding: { enabled: true, features: { external_account_collection: true } } },
+    });
   });
 
   it.each(["OWNER", "ADMIN"])("allows %s to manage Stripe", (role) => expect(canManageStripeConnect(role)).toBe(true));

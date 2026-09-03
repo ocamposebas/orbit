@@ -47,7 +47,7 @@ export const logger = pino({
     error: serializeErrorForLog,
     err: serializeErrorForLog,
   },
-  redact: ["req.headers.authorization", "OPENAI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "ECWID_CLIENT_SECRET", "ECWID_SECRET_TOKEN", "ORBIT_SECRET_ENCRYPTION_KEY", "SMTP_PASSWORD", "smtpPassword", "enc_data", "returnUrl", "clientSecret", "installationSecret", "installation_secret", "password", "encryptedConfig", "secret", "signature"],
+  redact: ["req.headers.authorization", "OPENAI_API_KEY", "STRIPE_SECRET_KEY", "STRIPE_CONNECT_WEBHOOK_SECRET", "STRIPE_PAYMENTS_WEBHOOK_SECRET", "ECWID_CLIENT_SECRET", "ECWID_SECRET_TOKEN", "ORBIT_SECRET_ENCRYPTION_KEY", "SMTP_PASSWORD", "smtpPassword", "enc_data", "returnUrl", "clientSecret", "client_secret", "installationSecret", "installation_secret", "password", "encryptedConfig", "secret", "signature"],
 });
 
 export function childLogger(context: Record<string, string | number | undefined>) {

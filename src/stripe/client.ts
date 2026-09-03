@@ -13,6 +13,19 @@ export function inspectStripeKey(secretKey: string | undefined, configuredMode: 
   return { configured: true as const, mode: configuredMode, keyMode };
 }
 
+export function inspectStripePublishableKey(publishableKey: string | undefined, configuredMode: StripeMode) {
+  if (!publishableKey) throw new HttpError(503, "Stripe's browser integration is not configured");
+  const keyMode = publishableKey.startsWith("pk_test_") ? "test" : publishableKey.startsWith("pk_live_") ? "live" : undefined;
+  if (!keyMode) throw new HttpError(503, "Stripe is configured with an unsupported publishable key format");
+  if (keyMode !== configuredMode) throw new HttpError(503, `Stripe publishable key environment does not match STRIPE_MODE=${configuredMode}`);
+  return publishableKey;
+}
+
+export function getStripePublishableKey() {
+  const env = getServerEnv();
+  return inspectStripePublishableKey(env.STRIPE_PUBLISHABLE_KEY, env.STRIPE_MODE);
+}
+
 export function getStripeConfiguration() {
   const env = getServerEnv();
   const state = inspectStripeKey(env.STRIPE_SECRET_KEY, env.STRIPE_MODE);

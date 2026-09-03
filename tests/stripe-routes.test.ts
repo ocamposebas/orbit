@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   rateLimit: vi.fn(),
   connect: vi.fn(),
   onboarding: vi.fn(),
+  embeddedSession: vi.fn(),
   sync: vi.fn(),
   auditError: vi.fn(),
   auditCreate: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({ auditLog: { create: mock
 vi.mock("@/stripe/service", () => ({
   connectStripeAccount: mocks.connect,
   createStripeOnboardingLink: mocks.onboarding,
+  createStripeEmbeddedOnboardingSession: mocks.embeddedSession,
   syncStripeConnectAccount: mocks.sync,
   auditStripeConnectError: mocks.auditError,
 }));
@@ -43,6 +45,7 @@ describe("Stripe Connect mutation routes", () => {
     mocks.auditError.mockResolvedValue(undefined);
     mocks.auditCreate.mockResolvedValue({});
     mocks.onboarding.mockResolvedValue({ url: "https://connect.stripe.test/setup/fresh" });
+    mocks.embeddedSession.mockResolvedValue({ clientSecret: "account_session_secret", publishableKey: "pk_test_example", expiresAt: 1234567890 });
     mocks.requestSession.mockResolvedValue(session("OWNER").session);
   });
 
@@ -68,7 +71,28 @@ describe("Stripe Connect mutation routes", () => {
     expect(response.status).toBe(201);
     expect(mocks.requireAccess).toHaveBeenCalledWith(request, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"], mutation: true });
     expect(mocks.connect).toHaveBeenCalledWith(merchantId, `user_${role.toLowerCase()}`);
-    expect(mocks.onboarding).toHaveBeenCalledWith(merchantId, `user_${role.toLowerCase()}`, "https://orbit.example");
+    expect(mocks.onboarding).not.toHaveBeenCalled();
+  });
+
+  it.each(["OWNER", "ADMIN", "REVIEWER", "VIEWER"] as const)("creates a scoped embedded onboarding session for %s", async (role) => {
+    mocks.requireAccess.mockResolvedValueOnce(session(role));
+    const embeddedRequest = new Request(`http://localhost/api/sentinel/merchants/${merchantId}/stripe/embedded-session`, { method: "POST", headers: { origin: "http://localhost:3000" } });
+    const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/embedded-session/route");
+    const response = await POST(embeddedRequest as never, params);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toEqual({ clientSecret: "account_session_secret", publishableKey: "pk_test_example", expiresAt: 1234567890 });
+    expect(mocks.requireAccess).toHaveBeenCalledWith(embeddedRequest, merchantId, { allowedRoles: ["OWNER", "ADMIN", "REVIEWER", "VIEWER"], mutation: true });
+    expect(mocks.embeddedSession).toHaveBeenCalledWith(merchantId, `user_${role.toLowerCase()}`);
+  });
+
+  it("does not create an embedded session for an unauthorized merchant", async () => {
+    mocks.requireAccess.mockRejectedValueOnce(Object.assign(new Error("Merchant not found"), { status: 404 }));
+    const embeddedRequest = new Request(`http://localhost/api/sentinel/merchants/${merchantId}/stripe/embedded-session`, { method: "POST", headers: { origin: "http://localhost:3000" } });
+    const { POST } = await import("@/app/api/sentinel/merchants/[merchantId]/stripe/embedded-session/route");
+    const response = await POST(embeddedRequest as never, params);
+    expect(response.status).toBe(404);
+    expect(mocks.embeddedSession).not.toHaveBeenCalled();
   });
 
   it("returns the same canonical acct_* when a duplicate connect click reaches the idempotent service", async () => {
