@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeftRight, BadgeDollarSign, ChevronDown, CircleHelp, CreditCard, FileText, LayoutDashboard, Layers3, LogOut, Menu, RefreshCw, ScanSearch, Settings, UsersRound, WalletCards, X } from "lucide-react";
+import { Activity, ArrowLeftRight, BadgeDollarSign, BarChart3, ChevronDown, CircleHelp, CreditCard, FileText, HeartPulse, LayoutDashboard, Layers3, LogOut, Menu, Radar, RefreshCw, ScanSearch, Settings, UsersRound, WalletCards, X } from "lucide-react";
 import { useState, useTransition } from "react";
 import { cn } from "@/lib/utils";
+import { GlobalSearch } from "@/components/merchant-portal/global-search";
 
 export function PortalShell({ children, merchantName, merchantId, merchants, userName, adminPortfolio, ownerEarnings, statementsEnabled }: { children: React.ReactNode; merchantName: string; merchantId: string; merchants: Array<{ id: string; businessName: string }>; userName: string; adminPortfolio: boolean; ownerEarnings: boolean; statementsEnabled: boolean }) {
   const pathname = usePathname();
@@ -17,6 +18,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
     { href: "/dashboard", label: "Portfolio", icon: Layers3, active: pathname === "/dashboard" && searchParams.get("view") !== "brand" },
     { href: "/dashboard/customers", label: "Customers", icon: UsersRound, active: pathname.startsWith("/dashboard/customers") },
     { href: "/dashboard/payments", label: "All payments", icon: CreditCard, active: pathname.startsWith("/dashboard/payments") },
+    { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3, active: pathname.startsWith("/dashboard/analytics") },
     ...(ownerEarnings ? [{ href: "/dashboard/earnings", label: "ORBIT Earnings", icon: BadgeDollarSign, active: pathname.startsWith("/dashboard/earnings") }] : []),
   ] : [];
   const accountNavigation = [
@@ -24,11 +26,17 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
     ...(!adminPortfolio ? [
       { href: "/dashboard/payments", label: "Payments", icon: CreditCard, active: pathname.startsWith("/dashboard/payments") },
       { href: "/dashboard/customers", label: "Customers", icon: UsersRound, active: pathname.startsWith("/dashboard/customers") },
+      { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3, active: pathname.startsWith("/dashboard/analytics") },
     ] : []),
     { href: "/dashboard/payouts", label: "Transfers", icon: WalletCards },
     ...(statementsEnabled ? [{ href: "/dashboard/statements", label: "Statements", icon: FileText }] : []),
   ];
-  const operationsNavigation = [{ href: "/dashboard/scans", label: "Scans", icon: ScanSearch }];
+  const operationsNavigation = [
+    { href: "/dashboard/risk", label: "Risk & disputes", icon: Radar },
+    { href: "/dashboard/activity", label: "Activity", icon: Activity },
+    { href: "/dashboard/health", label: "Merchant health", icon: HeartPulse },
+    { href: "/dashboard/scans", label: "AI Scanner", icon: ScanSearch },
+  ];
 
   function navigationItems(items: Array<{ href: string; label: string; icon: typeof LayoutDashboard; active?: boolean }>) {
     return items.map((item) => {
@@ -83,7 +91,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
       <header className="sticky top-0 z-50 flex h-16 items-center border-b border-white/[.07] bg-[#08090e]/90 px-4 backdrop-blur-xl sm:px-7 lg:px-10">
         <button onClick={() => setMobileOpen(true)} className="mr-3 grid size-9 place-items-center rounded-[10px] border border-white/[.08] bg-white/[.025] text-[#8b909b] lg:hidden" aria-label="Open navigation"><Menu className="size-4" /></button>
         <div className="flex items-center gap-2 text-[11px] text-[#6c717d]"><ArrowLeftRight className="size-3.5 text-[#9182f0]" /><span>ORBIT Payment · Live</span><span className="size-1.5 rounded-full bg-[#65d1aa] shadow-[0_0_10px_rgba(101,209,170,.7)]" /></div>
-        <button onClick={refresh} disabled={refreshing} className="ml-auto inline-flex h-9 items-center gap-2 rounded-[10px] border border-white/[.08] bg-white/[.025] px-3.5 text-[11px] font-medium text-[#a6aab3] transition hover:border-[#7868e8]/30 hover:bg-[#7868e8]/[.06] disabled:opacity-60"><RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />{refreshing ? "Refreshing" : "Refresh"}</button>
+        <div className="ml-auto flex items-center gap-2"><GlobalSearch /><button onClick={refresh} disabled={refreshing} className="inline-flex h-9 items-center gap-2 rounded-[10px] border border-white/[.08] bg-white/[.025] px-3.5 text-[11px] font-medium text-[#a6aab3] transition hover:border-[#7868e8]/30 hover:bg-[#7868e8]/[.06] disabled:opacity-60"><RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} /><span className="hidden sm:inline">{refreshing ? "Refreshing" : "Refresh"}</span></button></div>
       </header>
       <main>{children}</main>
     </div>

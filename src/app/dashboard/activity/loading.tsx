@@ -1,0 +1,1 @@
+export default function ActivityLoading() { return <div className="mx-auto max-w-[1200px] animate-pulse px-4 py-10 sm:px-7 lg:px-10"><div className="h-10 w-52 rounded-xl bg-white/[.05]" /><div className="mt-7 h-[620px] rounded-[24px] bg-white/[.025]" /></div>; }

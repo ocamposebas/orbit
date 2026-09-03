@@ -5,7 +5,7 @@ import { syncEcwidForTransaction } from "@/integrations/ecwid/service";
 import { verifyEcwidCheckoutPaymentIntent } from "@/integrations/ecwid/stripe-checkout";
 import { getDatabase } from "@/sentinel/db";
 import { childLogger } from "@/sentinel/logger";
-import { expectedLivemode, getStripeClient, getStripeConfiguration } from "@/stripe/client";
+import { expectedLivemode, getStripeConfiguration } from "@/stripe/client";
 
 const log = childLogger({ component: "stripe-payment-events" });
 const supportedTypes = new Set([
@@ -49,22 +49,10 @@ export function paymentCustomerIdentity(intent: Stripe.PaymentIntent): PaymentCu
   return { ...(customerName ? { customerName } : {}), ...(customerEmail ? { customerEmail } : {}) };
 }
 
-async function resolvePaymentCustomerIdentity(intent: Stripe.PaymentIntent, accountId: string, fallbackEmail?: string | null) {
+function resolvePaymentCustomerIdentity(intent: Stripe.PaymentIntent, fallbackEmail?: string | null) {
   const direct = paymentCustomerIdentity(intent);
   const normalizedFallback = cleanCustomerEmail(fallbackEmail);
-  if (!direct.customerEmail && normalizedFallback) return { ...direct, customerEmail: normalizedFallback };
-  if (direct.customerEmail || (!intent.latest_charge && !intent.payment_method)) return direct;
-  try {
-    const expanded = await getStripeClient().paymentIntents.retrieve(
-      intent.id,
-      { expand: ["latest_charge", "payment_method"] },
-      { stripeContext: accountId },
-    );
-    return paymentCustomerIdentity(expanded);
-  } catch (error) {
-    log.warn({ stripePaymentIntentId: intent.id, stripeAccountId: accountId, errorCode: errorCode(error) }, "Could not resolve payment customer identity");
-    return direct;
-  }
+  return !direct.customerEmail && normalizedFallback ? { ...direct, customerEmail: normalizedFallback } : direct;
 }
 
 async function finishEvent(id: string, status: "PROCESSED" | "IGNORED", code?: string) {
@@ -203,7 +191,7 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
     const ecwidCustomer = transaction.source === "ECWID"
       ? await db.ecwidPaymentSession.findUnique({ where: { paymentTransactionId: transaction.id }, select: { customerEmail: true } })
       : null;
-    const customer = await resolvePaymentCustomerIdentity(intent, accountId, ecwidCustomer?.customerEmail);
+    const customer = resolvePaymentCustomerIdentity(intent, ecwidCustomer?.customerEmail);
 
     if (event.type === "payment_intent.succeeded") {
       if (intent.status !== "succeeded") throw new Error("unexpected_payment_intent_status");

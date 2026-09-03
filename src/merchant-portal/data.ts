@@ -971,3 +971,62 @@ export async function getMerchantPayout(merchantId: string, payoutId: string, cu
     return null;
   }
 }
+
+export type PortalRiskItem = {
+  id: string;
+  merchantId: string;
+  kind: "dispute" | "review" | "warning";
+  status: string;
+  reason: string;
+  amountMinor: number | null;
+  currency: string | null;
+  createdAt: Date;
+  dueAt: Date | null;
+  paymentPublicId: string | null;
+};
+
+export async function getMerchantRiskSnapshot(merchantId: string) {
+  const processor = await stripeMerchant(merchantId);
+  if (!processor) return { available: false, issue: "not_connected" as StripeFinancialIssue, items: [] as PortalRiskItem[] };
+  const since = Math.floor((Date.now() - 120 * 86_400_000) / 1_000);
+  const options = { stripeContext: processor.accountId };
+  const [disputesResult, reviewsResult, warningsResult] = await Promise.allSettled([
+    processor.stripe.disputes.list({ limit: 100, created: { gte: since }, expand: ["data.charge", "data.payment_intent"] }, options),
+    processor.stripe.reviews.list({ limit: 50, created: { gte: since }, expand: ["data.payment_intent"] }, options),
+    processor.stripe.radar.earlyFraudWarnings.list({ limit: 50, created: { gte: since }, expand: ["data.charge"] }, options),
+  ]);
+  const intentIds = new Set<string>();
+  if (disputesResult.status === "fulfilled") for (const dispute of disputesResult.value.data) {
+    if (typeof dispute.payment_intent === "string") intentIds.add(dispute.payment_intent);
+    else if (dispute.payment_intent) intentIds.add(dispute.payment_intent.id);
+  }
+  if (reviewsResult.status === "fulfilled") for (const review of reviewsResult.value.data) {
+    if (typeof review.payment_intent === "string") intentIds.add(review.payment_intent);
+    else if (review.payment_intent) intentIds.add(review.payment_intent.id);
+  }
+  if (warningsResult.status === "fulfilled") for (const warning of warningsResult.value.data) {
+    const charge = typeof warning.charge === "object" ? warning.charge : null;
+    if (charge?.payment_intent) intentIds.add(typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent.id);
+  }
+  const transactions = intentIds.size ? await getDatabase().paymentTransaction.findMany({ where: { merchantId, stripePaymentIntentId: { in: [...intentIds] } }, select: { stripePaymentIntentId: true, publicPaymentId: true, id: true } }) : [];
+  const paymentIds = new Map(transactions.map((item) => [item.stripePaymentIntentId, item.publicPaymentId ?? item.id]));
+  const paymentPublicId = (intent: string | Stripe.PaymentIntent | null | undefined) => intent ? paymentIds.get(typeof intent === "string" ? intent : intent.id) ?? null : null;
+  const items: PortalRiskItem[] = [];
+  if (disputesResult.status === "fulfilled") items.push(...disputesResult.value.data.map((dispute) => ({
+    id: dispute.id, merchantId, kind: "dispute" as const, status: dispute.status, reason: dispute.reason,
+    amountMinor: dispute.amount, currency: dispute.currency.toUpperCase(), createdAt: new Date(dispute.created * 1_000),
+    dueAt: dispute.evidence_details.due_by ? new Date(dispute.evidence_details.due_by * 1_000) : null,
+    paymentPublicId: paymentPublicId(dispute.payment_intent),
+  })));
+  if (reviewsResult.status === "fulfilled") items.push(...reviewsResult.value.data.filter((review) => review.open).map((review) => ({
+    id: review.id, merchantId, kind: "review" as const, status: "open", reason: review.reason,
+    amountMinor: null, currency: null, createdAt: new Date(review.created * 1_000), dueAt: null,
+    paymentPublicId: paymentPublicId(review.payment_intent),
+  })));
+  if (warningsResult.status === "fulfilled") items.push(...warningsResult.value.data.map((warning) => {
+    const charge = typeof warning.charge === "object" ? warning.charge : null;
+    return { id: warning.id, merchantId, kind: "warning" as const, status: warning.actionable ? "actionable" : "observed", reason: "early_fraud_warning", amountMinor: charge?.amount ?? null, currency: charge?.currency.toUpperCase() ?? null, createdAt: new Date(warning.created * 1_000), dueAt: null, paymentPublicId: paymentPublicId(charge?.payment_intent ?? null) };
+  }));
+  const rejected = [disputesResult, reviewsResult, warningsResult].find((result) => result.status === "rejected");
+  return { available: items.length > 0 || !rejected, issue: rejected?.status === "rejected" ? stripeFinancialIssue(rejected.reason) : null, items: items.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()) };
+}

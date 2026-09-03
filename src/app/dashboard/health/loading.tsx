@@ -1,0 +1,1 @@
+export default function HealthLoading() { return <div className="mx-auto max-w-[1440px] animate-pulse px-4 py-10 sm:px-7 lg:px-10"><div className="h-10 w-72 rounded-xl bg-white/[.05]" /><div className="mt-7 grid gap-5 xl:grid-cols-2">{Array.from({ length: 4 }, (_, i) => <div key={i} className="h-[520px] rounded-[24px] bg-white/[.025]" />)}</div></div>; }
