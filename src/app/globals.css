@@ -148,11 +148,12 @@ form, fieldset, label { min-width: 0; }
 
 .merchant-portal {
   --portal-accent: #8f7dff;
+  --portal-bg: #08090e;
+  --portal-surface: #0d0f15;
+  --portal-border: rgba(255, 255, 255, .075);
   color-scheme: dark;
   font-variant-numeric: tabular-nums;
-  background:
-    radial-gradient(circle at 78% -10%, rgba(120, 104, 232, .09), transparent 30rem),
-    #07080d;
+  background: var(--portal-bg);
 }
 .merchant-portal ::selection { background: rgba(143, 125, 255, .34); color: #fff; }
 .merchant-portal .bg-white,
@@ -182,10 +183,27 @@ form, fieldset, label { min-width: 0; }
 .merchant-portal main {
   min-height: calc(100dvh - 4rem);
   background:
-    radial-gradient(circle at 85% 0%, rgba(124, 92, 255, .075), transparent 28rem),
-    linear-gradient(180deg, #08090f 0%, #07080d 100%);
+    radial-gradient(circle at 82% -8%, rgba(124, 92, 255, .045), transparent 25rem),
+    var(--portal-bg);
 }
-.merchant-portal table { border-collapse: separate; border-spacing: 0; }
+.merchant-portal table { border-collapse: separate; border-spacing: 0; line-height: 1.45; }
+.merchant-portal tbody tr { transition: background-color 160ms ease; }
+.merchant-portal tbody tr:hover { background-color: rgba(255, 255, 255, .018); }
+.merchant-portal :is(section, article)[class~="rounded-[24px]"],
+.merchant-portal :is(section, article)[class~="rounded-[22px]"],
+.merchant-portal :is(section, article)[class~="rounded-[20px]"] { border-radius: 16px !important; }
+.merchant-portal .text-\[7px\] { font-size: 9px !important; }
+.merchant-portal .text-\[8px\] { font-size: 10px !important; }
+.merchant-portal .text-\[9px\] { font-size: 11px !important; }
+.merchant-portal .text-\[10px\] { font-size: 12px !important; }
+.merchant-portal .text-\[11px\] { font-size: 13px !important; }
+.merchant-portal :is(a, button, input, select):focus-visible {
+  outline: 2px solid rgba(143, 125, 255, .72);
+  outline-offset: 2px;
+}
+.merchant-portal ::-webkit-scrollbar { width: 8px; height: 8px; }
+.merchant-portal ::-webkit-scrollbar-track { background: transparent; }
+.merchant-portal ::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgba(255, 255, 255, .12); background-clip: padding-box; }
 .merchant-portal button,
 .merchant-portal a { transition-property: color, background-color, border-color, opacity, transform, filter; transition-duration: 180ms; }
 .orbit-transfer-card {
