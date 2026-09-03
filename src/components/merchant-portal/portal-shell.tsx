@@ -13,6 +13,8 @@ import {
   FileText,
   HeartPulse,
   LayoutDashboard,
+  Link2,
+  LockKeyhole,
   LogOut,
   Menu,
   Radar,
@@ -32,9 +34,11 @@ type NavigationItem = {
   label: string;
   icon: typeof LayoutDashboard;
   active?: boolean;
+  locked?: boolean;
+  lockedMessage?: string;
 };
 
-export function PortalShell({ children, merchantName, merchantId, merchants, userName, adminPortfolio, ownerEarnings, statementsEnabled }: { children: React.ReactNode; merchantName: string; merchantId: string; merchants: Array<{ id: string; businessName: string }>; userName: string; adminPortfolio: boolean; ownerEarnings: boolean; statementsEnabled: boolean }) {
+export function PortalShell({ children, merchantName, merchantId, merchants, userName, adminPortfolio, ownerEarnings, statementsEnabled, paymentLinksEnabled }: { children: React.ReactNode; merchantName: string; merchantId: string; merchants: Array<{ id: string; businessName: string }>; userName: string; adminPortfolio: boolean; ownerEarnings: boolean; statementsEnabled: boolean; paymentLinksEnabled: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -45,6 +49,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
   const primaryNavigation: NavigationItem[] = [
     { href: "/dashboard", label: adminPortfolio ? "Portfolio" : "Overview", icon: LayoutDashboard, active: pathname === "/dashboard" && (!adminPortfolio || searchParams.get("view") !== "brand") },
     { href: "/dashboard/payments", label: "Payments", icon: CreditCard },
+    { href: "/dashboard/payment-links", label: "Payment links", icon: Link2, locked: !paymentLinksEnabled, lockedMessage: "Payment Links requires access from your ORBIT administrator." },
     { href: "/dashboard/customers", label: "Customers", icon: UsersRound },
     { href: "/dashboard/payouts", label: "Transfers", icon: WalletCards },
     ...(ownerEarnings ? [{ href: "/dashboard/earnings", label: "ORBIT earnings", icon: BadgeDollarSign }] : []),
@@ -61,7 +66,8 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
   ];
   const pageTitle = pathname === "/dashboard"
     ? adminPortfolio && searchParams.get("view") !== "brand" ? "Portfolio" : "Overview"
-    : pathname.startsWith("/dashboard/payments") ? "Payments"
+    : pathname.startsWith("/dashboard/payment-links") ? "Payment links"
+      : pathname.startsWith("/dashboard/payments") ? "Payments"
       : pathname.startsWith("/dashboard/customers") ? "Customers"
         : pathname.startsWith("/dashboard/payouts") ? "Transfers"
           : pathname.startsWith("/dashboard/statements") ? "Statements"
@@ -84,6 +90,7 @@ export function PortalShell({ children, merchantName, merchantId, merchants, use
     return items.map((item) => {
       const Icon = item.icon;
       const active = isActive(item);
+      if (item.locked) return <span key={item.label} title={item.lockedMessage} aria-disabled="true" className="group relative mb-1 flex h-10 cursor-not-allowed items-center gap-3 rounded-xl px-3 text-[12px] font-medium text-[#505560]"><Icon className="size-4 text-[#464b55]" /><span className="truncate">{item.label}</span><LockKeyhole className="ml-auto size-3 text-[#575c68]" /></span>;
       return <Link key={item.label} href={item.href} onClick={() => setMobileOpen(false)} aria-current={active ? "page" : undefined} className={cn("group relative mb-1 flex h-10 items-center gap-3 rounded-xl px-3 text-[12px] font-medium", active ? "bg-white/[.055] text-white" : "text-[#858a95] hover:bg-white/[.035] hover:text-[#e7e8ec]")}>
         <span className={cn("absolute inset-y-2 left-0 w-0.5 rounded-full bg-[#8f7dff] transition-opacity", active ? "opacity-100" : "opacity-0")} />
         <Icon className={cn("size-4", active ? "text-[#a89cff]" : "text-[#666c78] group-hover:text-[#9499a3]")} />

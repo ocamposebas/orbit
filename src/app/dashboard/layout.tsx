@@ -7,5 +7,5 @@ export const metadata: Metadata = { title: "ORBIT Payment", description: "Paymen
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { session, merchant, merchants } = await getPortalContext();
-  return <PortalShell statementsEnabled={getServerEnv().STATEMENTS_ENABLED} merchantName={merchant?.businessName ?? "No merchant assigned"} merchantId={merchant?.id ?? ""} merchants={merchants.map((item) => ({ id: item.id, businessName: item.businessName }))} userName={session.user.name ?? session.user.email} adminPortfolio={["OWNER", "ADMIN"].includes(session.role)} ownerEarnings={session.role === "OWNER"}>{children}</PortalShell>;
+  return <PortalShell paymentLinksEnabled={["OWNER", "ADMIN"].includes(session.role) || merchants.some((item) => item.canCreatePaymentLinks)} statementsEnabled={getServerEnv().STATEMENTS_ENABLED} merchantName={merchant?.businessName ?? "No merchant assigned"} merchantId={merchant?.id ?? ""} merchants={merchants.map((item) => ({ id: item.id, businessName: item.businessName }))} userName={session.user.name ?? session.user.email} adminPortfolio={["OWNER", "ADMIN"].includes(session.role)} ownerEarnings={session.role === "OWNER"}>{children}</PortalShell>;
 }

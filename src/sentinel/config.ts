@@ -56,6 +56,7 @@ const serverEnvSchema = z.object({
   STRIPE_CONNECT_ACCOUNT_API: z.enum(["v1", "v2"]).default("v2"),
   STRIPE_CONNECT_WEBHOOK_SECRET: optionalNonEmpty,
   STRIPE_PAYMENTS_WEBHOOK_SECRET: optionalNonEmpty,
+  STRIPE_PLATFORM_PAYMENTS_WEBHOOK_SECRET: optionalNonEmpty,
   STRIPE_API_VERSION: optionalNonEmpty,
   STATEMENTS_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   STATEMENT_TIMEZONE: z.string().default("America/Chicago").refine((value) => { try { new Intl.DateTimeFormat("en", { timeZone: value }); return true; } catch { return false; } }, "Invalid IANA timezone"),

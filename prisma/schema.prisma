@@ -10,15 +10,15 @@ datasource db {
 }
 
 model Organization {
-  id                      String        @id @default(cuid())
+  id                      String                @id @default(cuid())
   name                    String
-  slug                    String        @unique
-  isDemo                  Boolean       @default(false)
-  snapshotRetentionDays   Int           @default(365)
-  screenshotRetentionDays Int           @default(90)
-  scanRetentionDays       Int           @default(365)
-  createdAt               DateTime      @default(now())
-  updatedAt               DateTime      @updatedAt
+  slug                    String                @unique
+  isDemo                  Boolean               @default(false)
+  snapshotRetentionDays   Int                   @default(365)
+  screenshotRetentionDays Int                   @default(90)
+  scanRetentionDays       Int                   @default(365)
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
   alerts                  Alert[]
   auditLogs               AuditLog[]
   findings                Finding[]
@@ -29,41 +29,43 @@ model Organization {
   sessions                Session[]
   twoFactorChallenges     TwoFactorChallenge[]
   emailLoginChallenges    EmailLoginChallenge[]
+  orbitPaymentLinks       OrbitPaymentLink[]
 }
 
 model User {
-  id                String           @id @default(cuid())
-  email             String           @unique
-  name              String?
-  passwordHash      String?
-  active            Boolean          @default(true)
-  lastLoginAt       DateTime?
-  passwordUpdatedAt DateTime?
-  twoFactorSecretEncrypted String?
+  id                              String                @id @default(cuid())
+  email                           String                @unique
+  name                            String?
+  passwordHash                    String?
+  active                          Boolean               @default(true)
+  lastLoginAt                     DateTime?
+  passwordUpdatedAt               DateTime?
+  twoFactorSecretEncrypted        String?
   twoFactorPendingSecretEncrypted String?
-  twoFactorEnabledAt DateTime?
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
-  auditLogs         AuditLog[]
-  reviews           FindingReview[]
-  memberships       Membership[]
-  merchantAccess    MerchantAccess[]
-  sessions          Session[]
-  twoFactorChallenges TwoFactorChallenge[]
-  emailLoginChallenges EmailLoginChallenge[]
+  twoFactorEnabledAt              DateTime?
+  createdAt                       DateTime              @default(now())
+  updatedAt                       DateTime              @updatedAt
+  auditLogs                       AuditLog[]
+  reviews                         FindingReview[]
+  memberships                     Membership[]
+  merchantAccess                  MerchantAccess[]
+  sessions                        Session[]
+  twoFactorChallenges             TwoFactorChallenge[]
+  emailLoginChallenges            EmailLoginChallenge[]
+  createdOrbitPaymentLinks        OrbitPaymentLink[]    @relation("OrbitPaymentLinkCreator")
 }
 
 model TwoFactorChallenge {
-  id             String       @id @default(cuid())
-  tokenHash      String       @unique
-  userId         String
-  organizationId String
-  expiresAt      DateTime
-  attempts       Int          @default(0)
+  id              String       @id @default(cuid())
+  tokenHash       String       @unique
+  userId          String
+  organizationId  String
+  expiresAt       DateTime
+  attempts        Int          @default(0)
   emailVerifiedAt DateTime?
-  createdAt      DateTime     @default(now())
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt       DateTime     @default(now())
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
   @@index([organizationId, expiresAt])
@@ -108,62 +110,63 @@ model Session {
 }
 
 model Membership {
-  id             String         @id @default(cuid())
-  organizationId String
-  userId         String
-  role           MembershipRole @default(VIEWER)
-  portalAllMerchants Boolean     @default(false)
-  createdAt      DateTime       @default(now())
-  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String         @id @default(cuid())
+  organizationId     String
+  userId             String
+  role               MembershipRole @default(VIEWER)
+  portalAllMerchants Boolean        @default(false)
+  createdAt          DateTime       @default(now())
+  organization       Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, userId])
   @@index([userId])
 }
 
 model Merchant {
-  id                         String                       @id @default(cuid())
-  publicId                   String?                      @unique
-  organizationId             String
-  businessName               String
-  slug                       String
-  industry                   String
-  country                    String
-  legalCountry               String?
-  platformFeeBps             Int?                         @default(300)
-  businessDescription        String
-  expectedMonthlyVolume      String?
-  status                     MerchantStatus               @default(ONBOARDING)
-  isDemo                     Boolean                      @default(false)
-  portalEnabled              Boolean                      @default(false)
-  portalEnabledAt            DateTime?
-  stripeOnboardingEnabled    Boolean                      @default(false)
-  stripeOnboardingEnabledAt  DateTime?
-  createdAt                  DateTime                     @default(now())
-  updatedAt                  DateTime                     @updatedAt
-  alerts                     Alert[]
-  auditLogs                  AuditLog[]
-  findings                   Finding[]
-  healthScores               HealthScore[]
-  aiFindings                 AiFinding[]
-  aiScans                    AiScan[]
-  accessGrants               MerchantAccess[]
-  agreement                  MerchantAgreement?
-  organization               Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sites                      MerchantSite[]
-  policies                   Policy[]
-  paymentTransactions        PaymentTransaction[]
-  paymentSessions            PaymentSession[]
-  paymentEventDeliveries     PaymentEventDelivery[]
-  ecwidPaymentSessions       EcwidPaymentSession[]
-  products                   Product[]
-  scans                      Scan[]
-  stripeConnect              StripeConnectIntegration?
-  wooCommerceRelay           WooCommerceRelayIntegration?
-  wooCommerceInstallations   WooCommerceInstallation[]
-  wooCommerceConnectionCodes WooCommerceConnectionCode[]
-  statements                 MerchantStatement[]
-  monthlyStatementEmailEnabled Boolean                    @default(true)
+  id                           String                       @id @default(cuid())
+  publicId                     String?                      @unique
+  organizationId               String
+  businessName                 String
+  slug                         String
+  industry                     String
+  country                      String
+  legalCountry                 String?
+  platformFeeBps               Int?                         @default(300)
+  businessDescription          String
+  expectedMonthlyVolume        String?
+  status                       MerchantStatus               @default(ONBOARDING)
+  isDemo                       Boolean                      @default(false)
+  portalEnabled                Boolean                      @default(false)
+  portalEnabledAt              DateTime?
+  stripeOnboardingEnabled      Boolean                      @default(false)
+  stripeOnboardingEnabledAt    DateTime?
+  createdAt                    DateTime                     @default(now())
+  updatedAt                    DateTime                     @updatedAt
+  alerts                       Alert[]
+  auditLogs                    AuditLog[]
+  findings                     Finding[]
+  healthScores                 HealthScore[]
+  aiFindings                   AiFinding[]
+  aiScans                      AiScan[]
+  accessGrants                 MerchantAccess[]
+  agreement                    MerchantAgreement?
+  organization                 Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sites                        MerchantSite[]
+  policies                     Policy[]
+  paymentTransactions          PaymentTransaction[]
+  paymentSessions              PaymentSession[]
+  paymentEventDeliveries       PaymentEventDelivery[]
+  ecwidPaymentSessions         EcwidPaymentSession[]
+  products                     Product[]
+  scans                        Scan[]
+  stripeConnect                StripeConnectIntegration?
+  wooCommerceRelay             WooCommerceRelayIntegration?
+  wooCommerceInstallations     WooCommerceInstallation[]
+  wooCommerceConnectionCodes   WooCommerceConnectionCode[]
+  statements                   MerchantStatement[]
+  orbitPaymentLinks            OrbitPaymentLink[]
+  monthlyStatementEmailEnabled Boolean                      @default(true)
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
@@ -474,78 +477,132 @@ model EcwidPaymentSession {
 }
 
 model StripePaymentEvent {
-  id                    String                   @id @default(cuid())
-  stripeEventId         String                   @unique
-  transactionId         String?
-  stripePaymentIntentId String?
-  stripeAccountId       String?
-  type                  String
-  livemode              Boolean
-  status                StripePaymentEventStatus @default(PROCESSING)
-  errorCode             String?
-  processedAt           DateTime?
-  createdAt             DateTime                 @default(now())
-  updatedAt             DateTime                 @updatedAt
-  transaction           PaymentTransaction?      @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  id                        String                   @id @default(cuid())
+  stripeEventId             String                   @unique
+  transactionId             String?
+  orbitPaymentLinkPaymentId String?
+  stripePaymentIntentId     String?
+  stripeAccountId           String?
+  type                      String
+  livemode                  Boolean
+  status                    StripePaymentEventStatus @default(PROCESSING)
+  errorCode                 String?
+  processedAt               DateTime?
+  createdAt                 DateTime                 @default(now())
+  updatedAt                 DateTime                 @updatedAt
+  transaction               PaymentTransaction?      @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  orbitPaymentLinkPayment   OrbitPaymentLinkPayment? @relation(fields: [orbitPaymentLinkPaymentId], references: [id], onDelete: SetNull)
 
   @@index([transactionId, createdAt])
+  @@index([orbitPaymentLinkPaymentId, createdAt])
+  @@index([stripeAccountId, status])
+}
+
+model OrbitPaymentLink {
+  id                String                    @id @default(cuid())
+  publicId          String                    @unique
+  organizationId    String
+  merchantId        String?
+  createdById       String
+  title             String
+  description       String?
+  amountMinor       Int
+  currency          String
+  platformFeeBps    Int?
+  stripeEnvironment StripeEnvironment
+  status            OrbitPaymentLinkStatus    @default(ACTIVE)
+  expiresAt         DateTime?
+  deactivatedAt     DateTime?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  organization      Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  merchant          Merchant?                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  createdBy         User                      @relation("OrbitPaymentLinkCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  payments          OrbitPaymentLinkPayment[]
+
+  @@index([organizationId, status, createdAt])
+  @@index([merchantId, status, createdAt])
+}
+
+model OrbitPaymentLinkPayment {
+  id                    String                   @id
+  publicId              String                   @unique
+  paymentLinkId         String
+  checkoutKey           String
+  stripePaymentIntentId String?                  @unique
+  stripeAccountId       String?
+  amountMinor           Int
+  currency              String
+  platformFeeMinor      Int
+  customerName          String?
+  customerEmail         String?
+  failureCode           String?
+  status                PaymentTransactionStatus @default(CREATED)
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  paymentLink           OrbitPaymentLink         @relation(fields: [paymentLinkId], references: [id], onDelete: Cascade)
+  paymentEvents         StripePaymentEvent[]
+
+  @@unique([paymentLinkId, checkoutKey])
+  @@index([paymentLinkId, status, createdAt])
   @@index([stripeAccountId, status])
 }
 
 model MerchantAccess {
-  id                 String   @id @default(cuid())
-  userId             String
-  merchantId         String
-  canInitiatePayouts Boolean  @default(false)
-  canManageStatements Boolean @default(false)
-  createdAt          DateTime @default(now())
-  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  merchant           Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  id                    String   @id @default(cuid())
+  userId                String
+  merchantId            String
+  canInitiatePayouts    Boolean  @default(false)
+  canManageStatements   Boolean  @default(false)
+  canCreatePaymentLinks Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  merchant              Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   @@unique([userId, merchantId])
   @@index([merchantId])
 }
 
 model MerchantStatement {
-  id                    String               @id @default(cuid())
-  publicId              String               @unique
-  merchantId            String
-  periodStart           DateTime
-  periodEnd             DateTime
-  currency              String
-  status                StatementStatus      @default(GENERATING)
-  openingBalanceMinor   BigInt
-  grossPaymentsMinor    BigInt
-  refundsMinor          BigInt
-  disputesMinor         BigInt
-  processingFeesMinor   BigInt
-  orbitFeesMinor        BigInt
-  adjustmentsMinor      BigInt
-  netActivityMinor      BigInt
-  payoutsMinor          BigInt
-  closingBalanceMinor   BigInt
-  paymentCount          Int
-  refundCount           Int
-  disputeCount          Int
-  generatedAt           DateTime             @default(now())
-  finalizedAt           DateTime?
-  emailStatus           StatementEmailStatus @default(PENDING)
-  emailAttemptCount     Int                  @default(0)
-  lastEmailAttemptAt    DateTime?
-  emailSentAt           DateTime?
-  emailMessageId        String?
-  lastEmailErrorCode    String?
-  pdfData               Bytes?
-  pdfStorageReference   String?
-  pdfSha256             String?
-  checksum              String?
-  version               Int                  @default(1)
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
-  merchant              Merchant             @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  lineItems             StatementLineItem[]
-  payouts               StatementPayout[]
-  deliveryAttempts      StatementDeliveryAttempt[]
+  id                  String                     @id @default(cuid())
+  publicId            String                     @unique
+  merchantId          String
+  periodStart         DateTime
+  periodEnd           DateTime
+  currency            String
+  status              StatementStatus            @default(GENERATING)
+  openingBalanceMinor BigInt
+  grossPaymentsMinor  BigInt
+  refundsMinor        BigInt
+  disputesMinor       BigInt
+  processingFeesMinor BigInt
+  orbitFeesMinor      BigInt
+  adjustmentsMinor    BigInt
+  netActivityMinor    BigInt
+  payoutsMinor        BigInt
+  closingBalanceMinor BigInt
+  paymentCount        Int
+  refundCount         Int
+  disputeCount        Int
+  generatedAt         DateTime                   @default(now())
+  finalizedAt         DateTime?
+  emailStatus         StatementEmailStatus       @default(PENDING)
+  emailAttemptCount   Int                        @default(0)
+  lastEmailAttemptAt  DateTime?
+  emailSentAt         DateTime?
+  emailMessageId      String?
+  lastEmailErrorCode  String?
+  pdfData             Bytes?
+  pdfStorageReference String?
+  pdfSha256           String?
+  checksum            String?
+  version             Int                        @default(1)
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+  merchant            Merchant                   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  lineItems           StatementLineItem[]
+  payouts             StatementPayout[]
+  deliveryAttempts    StatementDeliveryAttempt[]
 
   @@unique([merchantId, periodStart, currency, version])
   @@index([merchantId, periodStart])
@@ -555,20 +612,20 @@ model MerchantStatement {
 }
 
 model StatementLineItem {
-  id                       String            @id @default(cuid())
-  statementId              String
-  externalId               String
-  type                     StatementLineType
-  processorType            String
-  reportingCategory        String
-  reference                String?
-  description              String?
-  amountMinor              BigInt
-  processingFeeMinor       BigInt
-  orbitFeeMinor            BigInt
-  netMinor                 BigInt
-  occurredAt               DateTime
-  statement                MerchantStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  id                 String            @id @default(cuid())
+  statementId        String
+  externalId         String
+  type               StatementLineType
+  processorType      String
+  reportingCategory  String
+  reference          String?
+  description        String?
+  amountMinor        BigInt
+  processingFeeMinor BigInt
+  orbitFeeMinor      BigInt
+  netMinor           BigInt
+  occurredAt         DateTime
+  statement          MerchantStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
 
   @@unique([statementId, externalId])
   @@index([statementId, occurredAt])
@@ -592,14 +649,14 @@ model StatementPayout {
 }
 
 model StatementDeliveryAttempt {
-  id          String            @id @default(cuid())
+  id          String               @id @default(cuid())
   statementId String
   attempt     Int
   status      StatementEmailStatus
   errorCode   String?
   messageId   String?
-  attemptedAt DateTime          @default(now())
-  statement   MerchantStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  attemptedAt DateTime             @default(now())
+  statement   MerchantStatement    @relation(fields: [statementId], references: [id], onDelete: Cascade)
 
   @@unique([statementId, attempt])
   @@index([status, attemptedAt])
@@ -1660,6 +1717,11 @@ enum PaymentTransactionStatus {
   SUCCEEDED
   FAILED
   CANCELED
+}
+
+enum OrbitPaymentLinkStatus {
+  ACTIVE
+  INACTIVE
 }
 
 enum PaymentSource {

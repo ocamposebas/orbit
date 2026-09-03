@@ -138,6 +138,47 @@ async function updateNonSucceededStatus(transactionId: string, eventType: string
   }
 }
 
+async function handleOrbitPaymentLinkEvent(event: Stripe.Event, eventRecordId: string, accountId: string | undefined, intent: Stripe.PaymentIntent) {
+  const db = getDatabase();
+  const metadataPaymentId = intent.metadata.orbitPaymentLinkPaymentId ?? "";
+  if (!/^orb_plpay_[A-Za-z0-9_-]{16,64}$/.test(metadataPaymentId)) throw new Error("payment_link_payment_metadata_invalid");
+  let payment = await db.orbitPaymentLinkPayment.findUnique({ where: { stripePaymentIntentId: intent.id }, include: { paymentLink: true } });
+  if (!payment) {
+    const candidate = await db.orbitPaymentLinkPayment.findUnique({ where: { id: metadataPaymentId }, include: { paymentLink: true } });
+    if (candidate?.stripePaymentIntentId === null) {
+      await db.orbitPaymentLinkPayment.updateMany({ where: { id: candidate.id, stripePaymentIntentId: null }, data: { stripePaymentIntentId: intent.id } });
+      payment = await db.orbitPaymentLinkPayment.findUnique({ where: { id: candidate.id }, include: { paymentLink: true } });
+    }
+  }
+  if (!payment) {
+    await finishEvent(eventRecordId, "IGNORED", "unknown_payment_link_payment");
+    return { ignored: true };
+  }
+  const expectedAccountId = payment.stripeAccountId ?? undefined;
+  if (payment.id !== metadataPaymentId || payment.stripePaymentIntentId !== intent.id) throw new Error("payment_link_payment_id_mismatch");
+  if (accountId !== expectedAccountId) throw new Error("payment_link_destination_mismatch");
+  if (intent.amount !== payment.amountMinor || intent.currency.toUpperCase() !== payment.currency) throw new Error("payment_link_amount_mismatch");
+  if ((intent.application_fee_amount ?? 0) !== payment.platformFeeMinor) throw new Error("payment_link_fee_mismatch");
+  if (intent.metadata.paymentSource !== "ORBIT_PAYMENT_LINK" || intent.metadata.orbitPaymentLinkId !== payment.paymentLinkId || intent.metadata.organizationId !== payment.paymentLink.organizationId) throw new Error("payment_link_metadata_mismatch");
+  if ((intent.metadata.merchantId || null) !== payment.paymentLink.merchantId) throw new Error("payment_link_merchant_mismatch");
+  await db.stripePaymentEvent.update({ where: { id: eventRecordId }, data: { orbitPaymentLinkPaymentId: payment.id, stripePaymentIntentId: intent.id, stripeAccountId: accountId ?? null } });
+  const customer = paymentCustomerIdentity(intent);
+  if (event.type === "payment_intent.succeeded") {
+    if (intent.status !== "succeeded") throw new Error("unexpected_payment_intent_status");
+    await db.orbitPaymentLinkPayment.update({ where: { id: payment.id }, data: { status: "SUCCEEDED", failureCode: null, ...customer } });
+  } else if (event.type === "payment_intent.processing") {
+    await db.orbitPaymentLinkPayment.updateMany({ where: { id: payment.id, status: { notIn: ["SUCCEEDED", "CANCELED"] } }, data: { status: "PROCESSING", ...customer } });
+  } else if (event.type === "payment_intent.payment_failed") {
+    const failureCode = intent.last_payment_error?.code?.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80) ?? "payment_failed";
+    await db.orbitPaymentLinkPayment.updateMany({ where: { id: payment.id, status: { notIn: ["SUCCEEDED", "CANCELED"] } }, data: { status: "FAILED", failureCode, ...customer } });
+  } else if (event.type === "payment_intent.canceled") {
+    await db.orbitPaymentLinkPayment.updateMany({ where: { id: payment.id, status: { not: "SUCCEEDED" } }, data: { status: "CANCELED", ...customer } });
+  }
+  await finishEvent(eventRecordId, "PROCESSED");
+  log.info({ stripeEventId: event.id, type: event.type, paymentLinkId: payment.paymentLinkId, paymentId: payment.id, destination: accountId ? "connected_account" : "platform" }, "Processed ORBIT Payment Link event");
+  return { processed: true };
+}
+
 export async function handleStripePaymentEvent(event: Stripe.Event) {
   const object = event.data.object as { object?: string; id?: string };
   const accountId = connectedAccountId(event);
@@ -153,13 +194,15 @@ export async function handleStripePaymentEvent(event: Stripe.Event) {
       await finishEvent(eventRecord.id, "IGNORED", "event_type_not_monitored");
       return { ignored: true };
     }
+    if (object.object !== "payment_intent") throw new Error("invalid_payment_intent_object");
+    const intent = event.data.object as Stripe.PaymentIntent;
+    if (intent.metadata.paymentSource === "ORBIT_PAYMENT_LINK") {
+      return await handleOrbitPaymentLinkEvent(event, eventRecord.id, accountId, intent);
+    }
     if (!accountId?.startsWith("acct_")) {
       await finishEvent(eventRecord.id, "IGNORED", "missing_connected_account");
       return { ignored: true };
     }
-    if (object.object !== "payment_intent") throw new Error("invalid_payment_intent_object");
-
-    const intent = event.data.object as Stripe.PaymentIntent;
     const db = getDatabase();
     let transaction = await db.paymentTransaction.findUnique({
       where: { stripePaymentIntentId: intent.id },

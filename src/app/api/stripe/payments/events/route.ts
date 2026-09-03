@@ -11,20 +11,20 @@ const log = childLogger({ component: "stripe-payment-webhook" });
 
 export async function POST(request: NextRequest) {
   const env = getServerEnv();
-  if (!env.STRIPE_PAYMENTS_WEBHOOK_SECRET || !env.STRIPE_SECRET_KEY) {
+  const signingSecrets = [...new Set([env.STRIPE_PAYMENTS_WEBHOOK_SECRET, env.STRIPE_PLATFORM_PAYMENTS_WEBHOOK_SECRET].filter((value): value is string => Boolean(value)))];
+  if (signingSecrets.length === 0 || !env.STRIPE_SECRET_KEY) {
     return NextResponse.json({ error: "Stripe payment webhook is not configured" }, { status: 503 });
   }
   const signature = request.headers.get("stripe-signature");
   if (!signature) return NextResponse.json({ error: "Missing Stripe signature" }, { status: 400 });
 
-  let event;
-  try {
-    event = await getStripeClient().webhooks.constructEventAsync(
-      await request.text(),
-      signature,
-      env.STRIPE_PAYMENTS_WEBHOOK_SECRET,
-    );
-  } catch {
+  const payload = await request.text();
+  let event = null;
+  for (const secret of signingSecrets) {
+    try { event = await getStripeClient().webhooks.constructEventAsync(payload, signature, secret); break; }
+    catch { /* Try the independently signed platform/Connect destination. */ }
+  }
+  if (!event) {
     log.warn({ reason: "invalid_signature" }, "Rejected Stripe payment webhook");
     return NextResponse.json({ error: "Invalid Stripe signature" }, { status: 400 });
   }

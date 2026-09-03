@@ -29,7 +29,7 @@ export function getStripePublishableKey() {
 export function getStripeConfiguration() {
   const env = getServerEnv();
   const state = inspectStripeKey(env.STRIPE_SECRET_KEY, env.STRIPE_MODE);
-  return { ...state, accountApi: env.STRIPE_CONNECT_ACCOUNT_API, webhookConfigured: Boolean(env.STRIPE_CONNECT_WEBHOOK_SECRET), apiVersion: env.STRIPE_API_VERSION };
+  return { ...state, accountApi: env.STRIPE_CONNECT_ACCOUNT_API, webhookConfigured: Boolean(env.STRIPE_CONNECT_WEBHOOK_SECRET), platformPaymentsWebhookConfigured: Boolean(env.STRIPE_PLATFORM_PAYMENTS_WEBHOOK_SECRET), apiVersion: env.STRIPE_API_VERSION };
 }
 
 export function getStripeClient() {

@@ -21,7 +21,7 @@ export async function getPortalContext() {
       portalEnabled: true,
       portalEnabledAt: true,
       monthlyStatementEmailEnabled: true,
-      accessGrants: { where: { userId: session.user.id }, select: { canInitiatePayouts: true, canManageStatements: true } },
+      accessGrants: { where: { userId: session.user.id }, select: { canInitiatePayouts: true, canManageStatements: true, canCreatePaymentLinks: true } },
       agreement: { select: { status: true } },
       stripeConnect: {
         select: {
@@ -46,6 +46,7 @@ export async function getPortalContext() {
     ...item,
     canInitiatePayouts: ["OWNER", "ADMIN"].includes(session.role) || Boolean(item.accessGrants[0]?.canInitiatePayouts),
     canManageStatements: ["OWNER", "ADMIN"].includes(session.role) || Boolean(item.accessGrants[0]?.canManageStatements),
+    canCreatePaymentLinks: ["OWNER", "ADMIN"].includes(session.role) || Boolean(item.accessGrants[0]?.canCreatePaymentLinks),
   }));
   if (availableMerchants.length === 0 && session.role !== "OWNER" && !session.portalAllMerchants) redirect("/portal-access");
   const selectedMerchantId = (await cookies()).get("orbit_portal_merchant")?.value;
