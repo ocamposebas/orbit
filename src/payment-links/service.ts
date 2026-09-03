@@ -9,6 +9,7 @@ import { getStripeClient, getStripeConfiguration, getStripePublishableKey, strip
 const log = childLogger({ component: "orbit-payment-links" });
 const publicIdPattern = /^plink_[A-Za-z0-9_-]{16,64}$/;
 const paymentIdPattern = /^plpay_[A-Za-z0-9_-]{16,64}$/;
+const paymentLinkMethodTypes = ["card", "link"] as const;
 
 function paymentId() { return `orb_plpay_${randomBytes(18).toString("base64url")}`; }
 function paymentPublicId() { return `plpay_${randomBytes(18).toString("base64url")}`; }
@@ -70,6 +71,7 @@ function assertPaymentIntent(
   if (intent.metadata.paymentSource !== "ORBIT_PAYMENT_LINK" || intent.metadata.orbitPaymentLinkId !== link.id || intent.metadata.orbitPaymentLinkPaymentId !== payment.id) throw new Error("payment_link_metadata_mismatch");
   if ((intent.metadata.merchantId || null) !== link.merchantId) throw new Error("merchant_metadata_mismatch");
   if (Boolean(expectedAccountId) !== Boolean(link.merchantId)) throw new Error("payment_destination_mismatch");
+  if (!intent.payment_method_types.includes("card") || intent.payment_method_types.some((method) => !paymentLinkMethodTypes.includes(method as typeof paymentLinkMethodTypes[number]))) throw new Error("payment_method_configuration_mismatch");
 }
 
 export async function createOrbitPaymentLinkCheckout(publicId: string, checkoutKey: string) {
@@ -117,13 +119,13 @@ export async function createOrbitPaymentLinkCheckout(publicId: string, checkoutK
   const stripe = getStripeClient();
   const options: Stripe.RequestOptions = accountId ? { stripeContext: accountId } : {};
   try {
-    const intent = payment.stripePaymentIntentId
+    let intent = payment.stripePaymentIntentId
       ? await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId, {}, options)
       : await stripe.paymentIntents.create({
         amount: payment.amountMinor,
         currency: payment.currency.toLowerCase(),
         ...(accountId ? { application_fee_amount: payment.platformFeeMinor, payment_method_configuration: paymentMethodConfigurationId() } : {}),
-        automatic_payment_methods: { enabled: true },
+        payment_method_types: [...paymentLinkMethodTypes],
         description: link.title.slice(0, 255),
         ...(!accountId ? { statement_descriptor_suffix: "ORBIT" } : {}),
         metadata: {
@@ -135,6 +137,10 @@ export async function createOrbitPaymentLinkCheckout(publicId: string, checkoutK
           ...(link.merchantId ? { merchantId: link.merchantId } : {}),
         },
       }, { ...options, idempotencyKey: `orbit-payment-link-${payment.id}` });
+    const hasUnexpectedMethod = intent.payment_method_types.some((method) => !paymentLinkMethodTypes.includes(method as typeof paymentLinkMethodTypes[number]));
+    if (payment.stripePaymentIntentId && ["requires_payment_method", "requires_confirmation"].includes(intent.status) && (!intent.payment_method_types.includes("card") || hasUnexpectedMethod)) {
+      intent = await stripe.paymentIntents.update(intent.id, { payment_method_types: [...paymentLinkMethodTypes] }, options);
+    }
     assertPaymentIntent(intent, payment, link, accountId);
     if (intent.livemode !== (config.mode === "live")) throw new Error("payment_environment_mismatch");
     if (!intent.client_secret) throw new Error("missing_client_secret");

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   linkFind: vi.fn(), paymentFind: vi.fn(), paymentCreate: vi.fn(), paymentUpdate: vi.fn(), paymentUpdateMany: vi.fn(),
-  intentCreate: vi.fn(), intentRetrieve: vi.fn(),
+  intentCreate: vi.fn(), intentRetrieve: vi.fn(), intentUpdate: vi.fn(),
 }));
 
 vi.mock("@/sentinel/db", () => ({ getDatabase: () => ({
@@ -13,7 +13,7 @@ vi.mock("@/stripe/client", () => ({
   getStripeConfiguration: () => ({ configured: true, mode: "test", platformPaymentsWebhookConfigured: true }),
   stripeEnvironment: () => "TEST",
   getStripePublishableKey: () => "pk_test_orbit",
-  getStripeClient: () => ({ paymentIntents: { create: mocks.intentCreate, retrieve: mocks.intentRetrieve } }),
+  getStripeClient: () => ({ paymentIntents: { create: mocks.intentCreate, retrieve: mocks.intentRetrieve, update: mocks.intentUpdate } }),
 }));
 vi.mock("@/payments/service", () => ({
   calculatePlatformFeeMinor: (amount: number, bps: number) => Math.round(amount * bps / 10_000),
@@ -42,6 +42,7 @@ describe("ORBIT Payment Links", () => {
     mocks.paymentUpdateMany.mockResolvedValue({ count: 1 });
     mocks.intentCreate.mockResolvedValue({
       id: "pi_platform", amount: 10_000, currency: "usd", application_fee_amount: null, livemode: false,
+      payment_method_types: ["card", "link"], status: "requires_payment_method",
       client_secret: "pi_platform_secret", metadata: { paymentSource: "ORBIT_PAYMENT_LINK", orbitPaymentLinkId: platformLink.id, orbitPaymentLinkPaymentId: platformPayment.id, organizationId: "org_1" },
     });
   });
@@ -52,6 +53,8 @@ describe("ORBIT Payment Links", () => {
     const [params, options] = mocks.intentCreate.mock.calls[0];
     expect(params).not.toHaveProperty("application_fee_amount");
     expect(params).not.toHaveProperty("payment_method_configuration");
+    expect(params).not.toHaveProperty("automatic_payment_methods");
+    expect(params.payment_method_types).toEqual(["card", "link"]);
     expect(params.metadata).not.toHaveProperty("merchantId");
     expect(params.statement_descriptor_suffix).toBe("ORBIT");
     expect(options).not.toHaveProperty("stripeContext");
@@ -62,14 +65,31 @@ describe("ORBIT Payment Links", () => {
     const payment = { ...platformPayment, id: "orb_plpay_merchantabcdefgh", paymentLinkId: link.id, stripeAccountId: "acct_client_one", platformFeeMinor: 300 };
     mocks.linkFind.mockResolvedValue(link); mocks.paymentCreate.mockResolvedValue(payment);
     mocks.paymentUpdate.mockImplementation(async ({ data }: { data: object }) => ({ ...payment, ...data }));
-    mocks.intentCreate.mockResolvedValue({ id: "pi_merchant", amount: 10_000, currency: "usd", application_fee_amount: 300, livemode: false, client_secret: "pi_merchant_secret", metadata: { paymentSource: "ORBIT_PAYMENT_LINK", orbitPaymentLinkId: link.id, orbitPaymentLinkPaymentId: payment.id, organizationId: "org_1", merchantId: "merchant_1" } });
+    mocks.intentCreate.mockResolvedValue({ id: "pi_merchant", amount: 10_000, currency: "usd", application_fee_amount: 300, livemode: false, payment_method_types: ["card", "link"], status: "requires_payment_method", client_secret: "pi_merchant_secret", metadata: { paymentSource: "ORBIT_PAYMENT_LINK", orbitPaymentLinkId: link.id, orbitPaymentLinkPaymentId: payment.id, organizationId: "org_1", merchantId: "merchant_1" } });
     const { createOrbitPaymentLinkCheckout } = await import("@/payment-links/service");
     await createOrbitPaymentLinkCheckout(link.publicId, payment.checkoutKey);
     const [params, options] = mocks.intentCreate.mock.calls[0];
     expect(options.stripeContext).toBe("acct_client_one");
     expect(params.application_fee_amount).toBe(300);
     expect(params.payment_method_configuration).toBe("pmc_orbit");
+    expect(params.payment_method_types).toEqual(["card", "link"]);
     expect(params.metadata.merchantId).toBe("merchant_1");
+  });
+
+  it("removes secondary methods from an existing open checkout", async () => {
+    const payment = { ...platformPayment, stripePaymentIntentId: "pi_existing" };
+    const existingIntent = {
+      id: "pi_existing", amount: 10_000, currency: "usd", application_fee_amount: null, livemode: false,
+      payment_method_types: ["card", "link", "affirm", "amazon_pay"], status: "requires_payment_method",
+      client_secret: "pi_existing_secret", metadata: { paymentSource: "ORBIT_PAYMENT_LINK", orbitPaymentLinkId: platformLink.id, orbitPaymentLinkPaymentId: payment.id, organizationId: "org_1" },
+    };
+    mocks.paymentFind.mockResolvedValue(payment);
+    mocks.intentRetrieve.mockResolvedValue(existingIntent);
+    mocks.intentUpdate.mockResolvedValue({ ...existingIntent, payment_method_types: ["card", "link"] });
+    const { createOrbitPaymentLinkCheckout } = await import("@/payment-links/service");
+    await expect(createOrbitPaymentLinkCheckout(platformLink.publicId, payment.checkoutKey)).resolves.toMatchObject({ paymentPublicId: payment.publicId });
+    expect(mocks.intentUpdate).toHaveBeenCalledWith("pi_existing", { payment_method_types: ["card", "link"] }, {});
+    expect(mocks.intentCreate).not.toHaveBeenCalled();
   });
 
   it("never creates a PaymentIntent for an inactive link", async () => {

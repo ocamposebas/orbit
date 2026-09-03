@@ -52,8 +52,8 @@ function PaymentForm({ link, paymentPublicId, onConfirming }: { link: PublicOrbi
     <form onSubmit={(event) => { event.preventDefault(); void confirm(); }}>
       <PaymentElement options={{
         business: { name: link.accountName },
-        layout: { type: "accordion", defaultCollapsed: false, radios: "always", spacedAccordionItems: false, visibleAccordionItemsCount: 4 },
-        paymentMethodOrder: ["card", "link", "cashapp", "us_bank_account", "klarna", "affirm"],
+        layout: { type: "accordion", defaultCollapsed: false, radios: "always", spacedAccordionItems: false, visibleAccordionItemsCount: 2 },
+        paymentMethodOrder: ["card", "link"],
       }} />
       {message && <div className={styles.error} role="alert">{message}</div>}
       <button className={styles.payButton} type="submit" disabled={!stripe || !elements || busy}>{busy ? <><RefreshCw size={16} className={styles.spin} />Processing securely</> : <>Pay {money(link.amountMinor, link.currency)} <span>→</span></>}</button>
