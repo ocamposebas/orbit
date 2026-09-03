@@ -95,4 +95,43 @@ describe("AI Scanner manual PDF report", () => {
     expect(analysis.products).toMatchObject([{ sourceId: "2231", name: "Adamax-1032 10mg", sku: "PLR-AX-J101", price: "$65.00", category: "Peptides", slug: "adamax-1032-10mg" }]);
     expect(analysis.scoreBreakdown).toEqual({ "Catalog and intended-use controls": { score: 7, maximum: 25 } });
   });
+
+  it("recognizes tracked ORBIT headings and the current working score", () => {
+    const metrics = parseOrbitReportMetrics(`O R B I T   S E N T I N E L\nCURRENT WORKING SCORE\n91 / 100\nREMEDIATION STATUS REPORT`, 11);
+    expect(metrics).toMatchObject({ source: "ORBIT_REPORT_PDF", healthScore: 91, pageCount: 11 });
+  });
+
+  it("extracts every row from a priority/action table and infers severity from matching status rows", () => {
+    const metrics = parseOrbitReportMetrics(`O R B I T   S E N T I N E L\nCURRENT WORKING SCORE 91 / 100`, 2);
+    const analysis = analyzeImportedDocument([
+      {
+        pageNumber: 1,
+        extraction: "TEXT_LAYER",
+        text: "Sitemap / login architecture HIGH Protected URLs remain inside a public sitemap.\nAffiliate landing MEDIUM Landing still needs visible disclosure.",
+      },
+      {
+        pageNumber: 2,
+        extraction: "TEXT_LAYER",
+        text: "Remaining scored findings - priority order\nPRIORITY FINDING RECOMMENDED ACTION\nP0 Sitemap / account / noindex contradiction Remove protected routes from the public sitemap.\nP1 Affiliate landing disclosure Add visible 21+ and research-use-only language.",
+        layoutItems: [
+          { text: "PRIORITY", x: 55, y: 686 }, { text: "FINDING", x: 107, y: 686 }, { text: "RECOMMENDED ACTION", x: 261, y: 686 },
+          { text: "P0", x: 55, y: 651 }, { text: "Sitemap / account / noindex contradiction", x: 107, y: 651 }, { text: "Remove protected routes from the public", x: 261, y: 651 }, { text: "sitemap.", x: 261, y: 645 },
+          { text: "P1", x: 55, y: 617 }, { text: "Affiliate landing disclosure", x: 107, y: 617 }, { text: "Add visible 21+ and research-use-only", x: 261, y: 617 }, { text: "language.", x: 261, y: 611 },
+        ],
+      },
+    ], metrics);
+
+    expect(analysis.findings).toMatchObject([
+      { title: "Sitemap / account / noindex contradiction", severity: "HIGH", priority: "P0", remediation: "Remove protected routes from the public sitemap." },
+      { title: "Affiliate landing disclosure", severity: "MEDIUM", priority: "P1", remediation: "Add visible 21+ and research-use-only language." },
+    ]);
+  });
+
+  it("keeps complete long PDF page text in dashboard observations", () => {
+    const text = `Document heading\n${"full-page-content ".repeat(400)}`;
+    const metrics = { source: "IMPORTED_PDF" as const, pageCount: 1, coverage: {}, severity: { critical: 0, high: 0, medium: 0, low: 0 } };
+    const analysis = analyzeImportedDocument([{ pageNumber: 1, extraction: "TEXT_LAYER", text }], metrics);
+    expect(text.length).toBeGreaterThan(5_000);
+    expect(analysis.observations[0].text).toBe(text);
+  });
 });

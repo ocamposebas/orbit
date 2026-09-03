@@ -173,8 +173,17 @@ function nearbyIntegerForLabels(lines: string[], labels: string[], preferAfter =
   return undefined;
 }
 
+function normalizeReportText(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    // PDF generators often emit tracked headings as one glyph per token.
+    // Collapse those headings for matching while preserving the source text.
+    .replace(/\b[A-Z](?:[ \t][A-Z]){2,}\b/g, (match) => match.replace(/[ \t]+/g, ""));
+}
+
 export function parseOrbitReportMetrics(text: string, pageCount: number): ImportedReportMetrics {
-  const normalized = text.replace(/\s+/g, " ");
+  const normalized = normalizeReportText(text).replace(/\s+/g, " ");
   // OCR commonly confuses the capital I in "AI" with l, L, 1, or i.
   const orbitScannerReport = /\bORBIT\b/i.test(normalized) && /(A[IiLl1]\s+SCANNER|ESC[AÁ]NER DE IA|SENTINEL)/i.test(normalized);
   const postRemediationAudit = /\bWEB AUDIT\b/i.test(normalized) && /(POST[- ]REMEDIATION|VALIDATION)/i.test(normalized);
@@ -183,7 +192,7 @@ export function parseOrbitReportMetrics(text: string, pageCount: number): Import
   const integerLine = (value?: string) => Boolean(value && /^\d{1,9}$/.test(value.replaceAll(",", "")));
   const firstMetricLabel = lines.findIndex((line) => /^(URLs discovered|URLs descubiertas|Pages opened|Páginas abiertas)$/i.test(line));
   const valuesFollowLabels = firstMetricLabel >= 0 && integerLine(lines[firstMetricLabel + 1]) && !integerLine(lines[firstMetricLabel - 1]);
-  const scoreAfterLabel = normalized.match(/(?:Health\s+Score|Posture\s+Score|Final\s+Assessment|Internal\s+Score|Puntuaci[oó]n(?:\s+del)?(?:\s+esc[aá]ner(?:\s+de\s+IA)?|\s+de\s+salud)?)\D{0,80}(\d{1,3})\s*\/\s*100/i);
+  const scoreAfterLabel = normalized.match(/(?:Health\s+Score|Posture\s+Score|Final\s+Assessment|Internal\s+Score|Current\s+(?:Working\s+)?Score|Puntuaci[oó]n(?:\s+del)?(?:\s+esc[aá]ner(?:\s+de\s+IA)?|\s+de\s+salud)?)\D{0,80}(\d{1,3})\s*\/\s*100/i);
   const scoreBeforeLabel = normalized.match(/(\d{1,3})\s*\/\s*100\D{0,80}(?:ORBIT\s+internal\s+health\s+score|Health\s+Score|Posture\s+Score)/i);
   const totalScore = normalized.match(/\bTOTAL\s+(\d{1,3})\s*\/\s*100\b/i);
   const healthScore = scoreAfterLabel ? Number(scoreAfterLabel[1]) : scoreBeforeLabel ? Number(scoreBeforeLabel[1]) : totalScore ? Number(totalScore[1]) : nearbyIntegerForLabels(lines, ["Health Score", "Posture Score", "Puntuación de salud", "Puntuación del escáner de IA transparente"]);
@@ -287,8 +296,83 @@ function severityValue(value: string): ImportedFinding["severity"] {
   return "INFO";
 }
 
-function extractPriorityFindings(pages: ImportedPage[]) {
+function prioritySeverity(priority: string): ImportedFinding["severity"] {
+  if (priority.toUpperCase() === "P0") return "HIGH";
+  if (priority.toUpperCase() === "P3") return "LOW";
+  return "MEDIUM";
+}
+
+function titleSimilarity(left: string, right: string) {
+  const words = (value: string) => new Set(normalizeReportText(value).toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4));
+  const leftWords = words(left);
+  const rightWords = words(right);
+  if (!leftWords.size || !rightWords.size) return 0;
+  const matches = [...leftWords].filter((word) => rightWords.has(word)).length;
+  return matches / Math.min(leftWords.size, rightWords.size);
+}
+
+function severityMentionForTitle(title: string, pages: ImportedPage[]) {
+  let best: { similarity: number; severity: ImportedFinding["severity"] } | undefined;
+  for (const page of pages) {
+    for (const rawLine of page.text.split(/\r?\n/)) {
+      const match = cleanLine(rawLine).match(/^(.{3,160}?)\s+(CRITICAL|HIGH|MEDIUM|LOW)(?:\s+|$)/i);
+      if (!match) continue;
+      const similarity = titleSimilarity(title, match[1]);
+      if (similarity >= 0.5 && (!best || similarity > best.similarity)) best = { similarity, severity: severityValue(match[2]) };
+    }
+  }
+  return best?.severity;
+}
+
+function extractLayoutPriorityFindings(pages: ImportedPage[]) {
   const findings: ImportedFinding[] = [];
+  for (const page of pages) {
+    const items = page.layoutItems?.filter((item) => item.text.trim()) ?? [];
+    const priorityHeader = items.find((item) => /^PRIORITY$/i.test(item.text.trim()));
+    const findingHeader = items.find((item) => /^FINDING$/i.test(item.text.trim()));
+    const actionHeader = items.find((item) => /^(?:RECOMMENDED\s+)?ACTION$/i.test(item.text.trim()));
+    if (!priorityHeader || !findingHeader || !actionHeader) continue;
+
+    const markers = items
+      .filter((item) => /^P[0-3]$/i.test(item.text.trim()) && item.x < findingHeader.x)
+      .sort((left, right) => right.y - left.y);
+    for (const [index, marker] of markers.entries()) {
+      const nextY = markers[index + 1]?.y ?? -Infinity;
+      const rowItems = items.filter((item) => item.y > 40 && item.y <= marker.y + 1 && item.y > nextY + 1 && item.y < priorityHeader.y);
+      const title = rowItems
+        .filter((item) => item.x >= findingHeader.x - 2 && item.x < actionHeader.x - 2)
+        .sort((left, right) => right.y - left.y || left.x - right.x)
+        .map((item) => item.text.trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const recommendedAction = rowItems
+        .filter((item) => item.x >= actionHeader.x - 2)
+        .sort((left, right) => right.y - left.y || left.x - right.x)
+        .map((item) => item.text.trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!title || !recommendedAction) continue;
+      const priority = marker.text.trim().toUpperCase();
+      findings.push({
+        title,
+        severity: severityMentionForTitle(title, pages) ?? prioritySeverity(priority),
+        priority,
+        explanation: findSupportingDetail(title, pages, page.pageNumber) ?? recommendedAction,
+        remediation: recommendedAction,
+        pageNumber: page.pageNumber,
+        affectedProduct: /calculator|policy|affiliate|registration|checkout|seo|index|sitemap|redirect|cache|elementor/i.test(title) ? undefined : title,
+      });
+    }
+  }
+  return findings;
+}
+
+function extractPriorityFindings(pages: ImportedPage[]) {
+  const findings: ImportedFinding[] = extractLayoutPriorityFindings(pages);
   for (const page of pages) {
     const lines = page.text.split(/\r?\n/).map(cleanLine).filter(Boolean);
     for (let index = 0; index < lines.length; index += 1) {
@@ -460,7 +544,10 @@ export function analyzeImportedDocument(pages: ImportedPage[], metrics: Imported
   const priorityFindings = extractPriorityFindings(pages);
   const findings = priorityFindings.length ? priorityFindings : extractGenericFindings(pages);
   const products = extractLayoutProducts(pages);
-  const observations = pages.filter((page) => page.text.trim()).map((page) => ({ text: page.text.trim().slice(0, 5_000), pageNumber: page.pageNumber }));
+  // Keep the complete extracted page in the active analysis. The immutable
+  // evidence record also retains it, but truncating here made longer PDF pages
+  // look as if they had not been read completely.
+  const observations = pages.filter((page) => page.text.trim()).map((page) => ({ text: page.text, pageNumber: page.pageNumber }));
   const summary = `Imported document fully indexed: ${metrics.pageCount} page${metrics.pageCount === 1 ? "" : "s"}, ${products.length} product${products.length === 1 ? "" : "s"}, and ${findings.length} prioritized finding${findings.length === 1 ? "" : "s"}${metrics.healthScore === undefined ? "." : `; reported score ${metrics.healthScore}/100.`}`;
   return { summary, scoreBreakdown: extractScoreBreakdown(pages), findings, products, observations, limitations: extractLimitations(pages) };
 }
